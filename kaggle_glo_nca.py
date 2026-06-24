@@ -28,7 +28,7 @@ import subprocess
 import numpy as np
 
 # ------------------------------------------------------------------ settings
-REPO_URL  = "https://github.com/USERNAME/GLO-NCA.git"   # <-- your repo
+REPO_URL  = "https://github.com/Muhammadwaqas1234/GLO-NCA.git"   # <-- your repo
 REPO_DIR  = "/kaggle/working/GLO-NCA"
 DATA_ROOT = "/kaggle/input/brats2024-small-dataset/BraTS2024_small_dataset"  # <-- patient folders
 OUT_DIR   = "/kaggle/working/glo_out"
