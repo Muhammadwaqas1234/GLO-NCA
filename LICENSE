@@ -1,0 +1,48 @@
+================================================================================
+GLO-NCA: Global Context-Aware Neural Cellular Automata for Brain Tumor
+Segmentation
+================================================================================
+
+ACADEMIC / EDUCATIONAL USE NOTICE
+---------------------------------
+This repository is a derivative work produced for academic and educational
+purposes as part of an MS thesis ("Global Context-Aware Neural Cellular Automata
+for Brain Tumor Segmentation"). It is provided for research, study and teaching
+only. It is NOT a medical device and MUST NOT be used for clinical diagnosis,
+treatment, or any real-world patient-care decision.
+
+The thesis modifications (BraTS multi-modal pipeline, the global-context SE
+block, multi-class WT/TC/ET segmentation, evaluation metrics, and related code)
+are released under the MIT License below.
+
+    Copyright (c) 2025 Muhammad Waqas
+
+This work builds on the original Med-NCA / M3D-NCA framework, whose copyright
+notice is retained as required by its MIT License:
+
+    Copyright (c) 2023 John Kalkhof
+
+Both copyright notices must be preserved in all copies or substantial portions
+of the Software.
+
+--------------------------------------------------------------------------------
+MIT License
+--------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notices and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

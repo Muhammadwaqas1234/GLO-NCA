@@ -1,0 +1,37 @@
+# --- Environments ---
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Data (never commit large medical datasets) ---
+*.nii
+*.nii.gz
+data/
+brats_dl/
+**/BraTS*dataset*/
+Tutorial/Data/
+
+# --- Runs / outputs / checkpoints ---
+runs/
+compare_runs/
+html/
+Models/*
+M:/Models/*
+Study/*
+*.pth
+*.pbz2
+tensorboard/
+*.tfevents.*
+*.log
+
+# --- Notebooks scratch ---
+.ipynb_checkpoints/
+
+# --- OS / IDE ---
+.DS_Store
+.vscode/
+.idea/
+*.zip
