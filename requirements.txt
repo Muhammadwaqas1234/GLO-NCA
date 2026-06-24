@@ -1,0 +1,48 @@
+# ============================================================================
+# Global Context-Aware NCA for Brain Tumor Segmentation (BraTS)
+# ----------------------------------------------------------------------------
+# Target Python: 3.12  (PyTorch has NO stable wheels for 3.14 yet)
+#
+# Install (RTX 3060, CUDA 12.1):
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\activate
+#   pip install --upgrade pip
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#
+# If you only have CPU, install plain torch instead:
+#   pip install torch
+# ============================================================================
+
+# --- Deep learning core -----------------------------------------------------
+# torch is installed separately (see CUDA index URL above) so pip picks the
+# correct GPU build. Listed here for completeness / CPU-only fallback.
+torch>=2.2
+
+# --- Numerics ---------------------------------------------------------------
+# Pin <2.0: NumPy 2.x changed/removed APIs that older torchio & cv2 builds and
+# parts of this codebase rely on. Lift this cap only after verifying the stack.
+numpy<2.0
+scipy                # used for HD95 (distance transform) in evaluation
+
+# --- Medical imaging --------------------------------------------------------
+nibabel              # read/write .nii.gz BraTS volumes
+torchio>=0.20        # 3D transforms (rescale, znorm, resize); old 0.18 won't build on 3.12
+
+# --- Image / vision utils ---------------------------------------------------
+opencv-python
+
+# --- Plotting & logging -----------------------------------------------------
+matplotlib
+seaborn
+tensorboard
+
+# --- Baseline model ---------------------------------------------------------
+unet                 # UNet baseline for NCA-vs-UNet comparison
+
+# --- Tooling ----------------------------------------------------------------
+pyyaml               # YAML experiment configs (m3dnca package)
+gitpython
+ipykernel            # run the training notebooks
+tqdm                 # training progress bars
+pdoc                 # API docs (runPdoc_documentation.py)
