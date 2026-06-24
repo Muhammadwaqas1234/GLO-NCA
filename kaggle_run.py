@@ -248,13 +248,19 @@ def main():
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
 
+    n_train = len(train_loader)
     for epoch in range(EPOCHS):
+        ep_t0 = time.time()
         losses = []
-        for data in train_loader:
+        for i, data in enumerate(train_loader):
             r = agent.batch_step(data, loss_f)
             if r:
                 losses.append(sum(r.values()))
+            # live in-epoch progress (overwrites the same line)
+            print(f"\repoch {epoch+1}/{EPOCHS}  training {i+1}/{n_train} "
+                  f"patients...", end="", flush=True)
         avg_loss = float(np.mean(losses)) if losses else 0.0
+        print(f"\repoch {epoch+1}/{EPOCHS}  validating...        ", end="", flush=True)
 
         val = evaluate(agent, dataset, "val")
         vmean = float(np.mean([val[r]["dice"] for r in REGIONS]))
@@ -262,15 +268,15 @@ def main():
         for r in REGIONS:
             history[f"val_{r}"].append(val[r]["dice"])
         history["val_mean"].append(vmean)
-        print(f"epoch {epoch+1}/{EPOCHS} | loss {avg_loss:.4f} | "
+        print(f"\repoch {epoch+1}/{EPOCHS} | {time.time()-ep_t0:5.1f}s | loss {avg_loss:.4f} | "
               f"val WT {val['WT']['dice']:.3f} TC {val['TC']['dice']:.3f} "
-              f"ET {val['ET']['dice']:.3f} | mean {vmean:.3f}")
+              f"ET {val['ET']['dice']:.3f} | mean {vmean:.3f}        ", flush=True)
 
         if vmean > best_mean:
             best_mean = vmean
             torch.save({"model0": ca[0].state_dict(), "model1": ca[1].state_dict(),
                         "epoch": epoch + 1, "val_mean": vmean, "val": val}, best_path)
-            print(f"   * new best (mean val Dice {vmean:.3f}) saved")
+            print(f"   * new best (mean val Dice {vmean:.3f}) saved", flush=True)
 
     train_time = time.time() - t0
     peak = torch.cuda.max_memory_allocated() / 1e9 if dev.type == "cuda" else 0
