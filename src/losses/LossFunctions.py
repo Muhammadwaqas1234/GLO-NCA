@@ -226,3 +226,37 @@ class DiceCELoss(torch.nn.Module):
         dice_loss = 1 - dice
 
         return self.dice_weight * dice_loss + self.ce_weight * bce
+
+
+class TverskyCELoss(torch.nn.Module):
+    r"""Tversky + BCE loss - tuned for small, imbalanced regions (ET / TC).
+
+    Tversky generalises Dice with separate penalties for false positives
+    (alpha) and false negatives (beta). For tiny structures like the enhancing
+    tumour, setting beta > alpha (e.g. 0.7 / 0.3) penalises MISSED tumour voxels
+    harder than false alarms, which raises recall and typically lifts ET/TC Dice
+    compared with plain Dice. A small BCE term keeps gradients stable.
+
+    #Args:
+        alpha: weight on false positives.
+        beta:  weight on false negatives (use beta > alpha for small regions).
+        ce_weight: weight of the auxiliary BCE term.
+    """
+    def __init__(self, alpha=0.3, beta=0.7, ce_weight=0.5, useSigmoid=True):
+        super(TverskyCELoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.ce_weight = ce_weight
+        self.useSigmoid = useSigmoid
+
+    def forward(self, input, target, smooth=1):
+        prob = torch.sigmoid(input) if self.useSigmoid else input
+        bce = torch.nn.functional.binary_cross_entropy(
+            prob.clamp(1e-6, 1. - 1e-6), target, reduction='mean')
+        p = torch.flatten(prob)
+        t = torch.flatten(target)
+        tp = (p * t).sum()
+        fp = (p * (1 - t)).sum()
+        fn = ((1 - p) * t).sum()
+        tversky = (tp + smooth) / (tp + self.alpha * fp + self.beta * fn + smooth)
+        return (1 - tversky) + self.ce_weight * bce
