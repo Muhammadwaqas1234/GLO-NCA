@@ -216,11 +216,17 @@ def main():
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
 
+    print("Loading + caching volumes for the first epoch (this takes a few "
+          "minutes on the first pass, then speeds up)...", flush=True)
     for ep in range(EPOCHS):
         losses = []
         for i, data in enumerate(torch.utils.data.DataLoader(ds, shuffle=True, batch_size=1)):
             losses.append(step_with_aug(agent, data, loss_f))
-            print(f"\rep {ep+1}/{EPOCHS} training {i+1}/{spe}...", end="", flush=True)
+            # plain newline progress (NOT \r) so it always shows under %run;
+            # only the first epoch is slow, so report it more often.
+            if ep == 0 and (i + 1) % 20 == 0:
+                print(f"  [epoch 1] loaded/trained {i+1}/{spe} patients "
+                      f"({time.time()-t0:.0f}s)...", flush=True)
         cur_lr = agent.optimizer[0].param_groups[0]["lr"]
         val = evaluate(agent, ds, "val")
         vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
@@ -228,9 +234,9 @@ def main():
         hist["lr"].append(cur_lr); hist["val_mean"].append(vm)
         for r in REGIONS:
             hist[f"val_{r}"].append(val[r]["dice"])
-        print(f"\rep {ep+1}/{EPOCHS} | lr {cur_lr:.2e} | loss {np.mean(losses):.3f} | "
+        print(f"ep {ep+1}/{EPOCHS} | lr {cur_lr:.2e} | loss {np.mean(losses):.3f} | "
               f"val mean {vm:.3f} (WT {val['WT']['dice']:.3f} TC {val['TC']['dice']:.3f} "
-              f"ET {val['ET']['dice']:.3f})        ", flush=True)
+              f"ET {val['ET']['dice']:.3f})", flush=True)
         if vm > best:
             best = vm
             torch.save({"m": [m.state_dict() for m in ca], "ep": ep+1, "val_mean": vm}, best_path)
