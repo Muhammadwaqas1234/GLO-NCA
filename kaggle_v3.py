@@ -39,13 +39,19 @@ LR_MIN      = 1e-5
 USE_FOREGROUND_CROP = True     # verified, safe — biggest TC/ET win
 USE_NONZERO_NORM    = True     # verified, safe
 USE_AUG             = True     # flips + intensity (you asked for all; set False if it hurts)
-USE_SLIDING_WINDOW  = True     # tiled inference at test
+USE_SLIDING_WINDOW  = False    # OFF: tiling small post-crop volumes washed out TC/ET
+                               #      (test must use the SAME inference as validation)
 SWIN_HYPERPARAMS    = False    # True = LR 1e-4 + DiceLoss(sigmoid) (their exact recipe)
 
 # ---- speed knobs ----
 NUM_WORKERS = 4                # parallel CPU loading (real bottleneck)
 BATCH_SIZE  = 2                # >=2 needed to use 2 GPUs
 MULTI_GPU   = True             # wrap each NCA in DataParallel across both T4s
+
+# ---- re-evaluate an already-trained best.pth WITHOUT retraining ----
+# If you still have /kaggle/working/glo_v3/best.pth from a previous run, set
+# REEVAL_ONLY = True to just re-score it (e.g. after changing inference toggles).
+REEVAL_ONLY = False
 
 REGIONS     = ["WT", "TC", "ET"]
 MODALITIES  = ["t1n", "t1c", "t2w", "t2f"]
@@ -307,8 +313,12 @@ def main():
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
 
+    if REEVAL_ONLY:
+        print("REEVAL_ONLY: skipping training, loading existing best.pth ...", flush=True)
+        assert os.path.exists(best_path), f"No checkpoint at {best_path} to re-evaluate."
+
     print("Loading + caching volumes (slow first pass)...", flush=True)
-    for ep in range(EPOCHS):
+    for ep in (range(EPOCHS) if not REEVAL_ONLY else []):
         losses = []
         loader = torch.utils.data.DataLoader(ds, shuffle=True, batch_size=eff_batch,
                                              num_workers=NUM_WORKERS, pin_memory=True)
