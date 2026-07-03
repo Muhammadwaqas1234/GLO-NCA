@@ -292,6 +292,25 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         r"""Load a single nii/nii.gz volume as a float numpy array."""
         return nib.load(path).get_fdata()
 
+    @staticmethod
+    def _foreground_bbox(vol_stack):
+        r"""Bounding box of the non-zero brain across all modalities.
+
+            Swin-UNETR-style CropForeground: removes the black background so the
+            resized patch contains brain only (recovers small ET/TC detail).
+            #Args
+                vol_stack (numpy): (X, Y, Z, C) stacked modalities
+            #Returns
+                (x0,x1,y0,y1,z0,z1) or None if the volume is empty
+        """
+        fg = np.any(vol_stack > 0, axis=-1)
+        if not fg.any():
+            return None
+        xs = np.where(fg.any(axis=(1, 2)))[0]
+        ys = np.where(fg.any(axis=(0, 2)))[0]
+        zs = np.where(fg.any(axis=(0, 1)))[0]
+        return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
+
     def _labels_to_regions(self, seg):
         r"""Convert raw BraTS segmentation values into nested ET/TC/WT regions.
             #Args
@@ -320,25 +339,34 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         rescale = torchio.RescaleIntensity(out_min_max=(0, 1), percentiles=(0.5, 99.5))
         znormalisation = torchio.ZNormalization()
 
+        crop_fg = self.exp.get_from_config('foreground_crop') is True
+
         key = self.images_list[idx]
         cached = self.data.get_data(key=key)
         if not cached:
             folder_name, p_id, _ = key
             folder = os.path.join(self.images_path, folder_name)
 
-            # --- Load and stack the four modalities as channels -------------
-            modality_vols = []
-            for mod in self.MODALITIES:
-                vol = self.load_item(self._find_modality_file(folder, folder_name, mod))
-                if self.exp.get_from_config('rescale') is not False:
-                    vol = self.rescale3d(vol)
-                modality_vols.append(vol)
-            img = np.stack(modality_vols, axis=-1)  # (X, Y, Z, 4)
-
-            # --- Load segmentation and build ET/TC/WT regions ---------------
+            # --- Load RAW modalities + seg (no resize yet if we crop first) --
+            raw_vols = [self.load_item(self._find_modality_file(folder, folder_name, mod))
+                        for mod in self.MODALITIES]
+            raw = np.stack(raw_vols, axis=-1)  # (X, Y, Z, C) full resolution
             seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
+
+            # --- Foreground crop to the brain bounding box (Swin-UNETR) ------
+            if crop_fg:
+                bbox = self._foreground_bbox(raw)
+                if bbox is not None:
+                    x0, x1, y0, y1, z0, z1 = bbox
+                    raw = raw[x0:x1, y0:y1, z0:z1, :]
+                    seg = seg[x0:x1, y0:y1, z0:z1]
+
+            # --- Resize to training size -----------------------------------
             if self.exp.get_from_config('rescale') is not False:
+                img = np.stack([self.rescale3d(raw[..., c]) for c in range(raw.shape[-1])], axis=-1)
                 seg = self.rescale3d(seg, isLabel=True)
+            else:
+                img = raw
             label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
 
             img_id = "_" + str(p_id) + "_0"
@@ -353,13 +381,26 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             img, label = self.patchify_multimodal(img, label)
 
         # Per-modality intensity normalisation.
-        img_norm = np.empty_like(img, dtype=np.float32)
-        for c in range(img.shape[-1]):
-            channel = np.expand_dims(img[..., c], axis=0)
-            if np.sum(channel) > 0:
-                channel = znormalisation(channel)
-            channel = rescale(channel)
-            img_norm[..., c] = channel[0]
+        if self.exp.get_from_config('nonzero_norm') is True:
+            # Swin-UNETR nonzero z-norm: normalise using brain voxels only.
+            img_norm = np.empty_like(img, dtype=np.float32)
+            for c in range(img.shape[-1]):
+                ch = img[..., c]
+                mask = ch > 0
+                if mask.sum() > 0:
+                    img_norm[..., c] = np.where(
+                        mask, (ch - ch[mask].mean()) / (ch[mask].std() + 1e-8), 0.0)
+                else:
+                    img_norm[..., c] = ch
+        else:
+            # Original torchio z-norm + rescale-to-[0,1] per channel.
+            img_norm = np.empty_like(img, dtype=np.float32)
+            for c in range(img.shape[-1]):
+                channel = np.expand_dims(img[..., c], axis=0)
+                if np.sum(channel) > 0:
+                    channel = znormalisation(channel)
+                channel = rescale(channel)
+                img_norm[..., c] = channel[0]
         img = img_norm
 
         return (img_id, img, label)

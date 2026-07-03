@@ -52,6 +52,12 @@ class Experiment():
             self.projectConfig[0]['priotize_masks'] = None
         if 'use_attention' not in self.projectConfig[0]:
             self.projectConfig[0]['use_attention'] = False
+        # Swin-UNETR-style preprocessing (the v4 winning config). Default False
+        # so older experiments are unchanged; the BraTS train script turns them on.
+        if 'foreground_crop' not in self.projectConfig[0]:
+            self.projectConfig[0]['foreground_crop'] = False
+        if 'nonzero_norm' not in self.projectConfig[0]:
+            self.projectConfig[0]['nonzero_norm'] = False
 
     def setup(self):
         r"""Initial experiment setup when first started
