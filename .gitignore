@@ -35,3 +35,8 @@ tensorboard/
 .vscode/
 .idea/
 *.zip
+*.png
+*.dt
+SUMMARY.txt
+results*.json
+*_results.json
