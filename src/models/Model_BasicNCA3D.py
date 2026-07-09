@@ -42,8 +42,36 @@ class SEBlock3D(nn.Module):
         return x * gate
 
 
+class GCSpatialBlock3D(nn.Module):
+    r"""Spatial global-context block (attention-pooled).
+
+    Complements the SE block. SE gives *channel* attention (which modality /
+    feature matters); this block gives *spatial* attention (which regions of the
+    volume matter), so each cell's update is modulated by where the tumour is.
+
+        1. Pool     - average + max over the channel axis -> two (B,1,D,H,W) maps
+                      summarising activity at every voxel.
+        2. Attend   - a small 3D conv over the concatenated maps -> a per-voxel
+                      attention weight in [0, 1] (a spatial gate).
+        3. Scale    - features are re-weighted by the spatial gate.
+
+    Cost: one 2->1 channel 3D conv (a few dozen params); negligible VRAM.
+    """
+    def __init__(self, kernel_size=7):
+        super(GCSpatialBlock3D, self).__init__()
+        padding = (kernel_size - 1) // 2
+        self.conv = nn.Conv3d(2, 1, kernel_size=kernel_size, padding=padding)
+
+    def forward(self, x):
+        r"""#Args: x in channels-first layout (B, C, D, H, W)."""
+        avg_map = x.mean(dim=1, keepdim=True)               # (B,1,D,H,W)
+        max_map = x.max(dim=1, keepdim=True)[0]             # (B,1,D,H,W)
+        attn = torch.sigmoid(self.conv(torch.cat([avg_map, max_map], dim=1)))
+        return x * attn
+
+
 class BasicNCA3D(nn.Module):
-    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4):
+    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False):
         r"""Init function
             #Args:
                 channel_n: number of channels per cell
@@ -75,9 +103,13 @@ class BasicNCA3D(nn.Module):
         self.p0 = nn.Conv3d(channel_n, channel_n, kernel_size=kernel_size, stride=1, padding=padding, padding_mode="reflect", groups=channel_n)
         self.bn = torch.nn.BatchNorm3d(hidden_size, track_running_stats=False)
 
-        # Global-context block (thesis novelty). Only built when enabled so the
+        # Global-context blocks (thesis novelty). Only built when enabled so the
         # baseline keeps the original parameter count exactly.
+        #   se: channel attention (which modality/feature matters)
+        #   gc: spatial attention (which regions of the volume matter)
+        self.use_spatial = use_spatial
         self.se = SEBlock3D(channel_n, reduction=se_reduction) if use_attention else None
+        self.gc = GCSpatialBlock3D(kernel_size=7) if use_spatial else None
 
         with torch.no_grad():
             self.fc1.weight.zero_()
@@ -100,7 +132,9 @@ class BasicNCA3D(nn.Module):
         """
         y1 = self.p0(x)
         if self.se is not None:
-            y1 = self.se(y1)
+            y1 = self.se(y1)          # channel global-context (SE)
+        if self.gc is not None:
+            y1 = self.gc(y1)          # spatial global-context (attention-pooled)
         y = torch.cat((x,y1),1)
         return y
 
