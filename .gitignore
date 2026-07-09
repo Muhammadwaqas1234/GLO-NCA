@@ -45,3 +45,4 @@ results*.json
 .claude/
 events.out.tfevents.*
 *.json
+extra/
