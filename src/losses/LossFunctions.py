@@ -260,3 +260,38 @@ class TverskyCELoss(torch.nn.Module):
         fn = ((1 - p) * t).sum()
         tversky = (tp + smooth) / (tp + self.alpha * fp + self.beta * fn + smooth)
         return (1 - tversky) + self.ce_weight * bce
+
+
+class FocalTverskyCELoss(torch.nn.Module):
+    r"""Focal Tversky + BCE - focuses learning on the hard, small regions (ET).
+
+    Focal Tversky raises the Tversky loss to a power gamma > 1, which
+    down-weights easy (already well-segmented) voxels and concentrates gradient
+    on the hard cases. Combined with beta > alpha (recall focus), this is the
+    standard SOTA choice for the tiny enhancing-tumour region on BraTS.
+
+    #Args:
+        alpha / beta: false-positive / false-negative weights (beta > alpha).
+        gamma:  focal exponent (1.0 = plain Tversky; ~1.33 is common).
+        ce_weight: weight of the auxiliary BCE term.
+    """
+    def __init__(self, alpha=0.3, beta=0.7, gamma=1.33, ce_weight=0.5, useSigmoid=True):
+        super(FocalTverskyCELoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.ce_weight = ce_weight
+        self.useSigmoid = useSigmoid
+
+    def forward(self, input, target, smooth=1):
+        prob = torch.sigmoid(input) if self.useSigmoid else input
+        bce = torch.nn.functional.binary_cross_entropy(
+            prob.clamp(1e-6, 1. - 1e-6), target, reduction='mean')
+        p = torch.flatten(prob)
+        t = torch.flatten(target)
+        tp = (p * t).sum()
+        fp = (p * (1 - t)).sum()
+        fn = ((1 - p) * t).sum()
+        tversky = (tp + smooth) / (tp + self.alpha * fp + self.beta * fn + smooth)
+        focal_tversky = torch.pow(1 - tversky, self.gamma)
+        return focal_tversky + self.ce_weight * bce

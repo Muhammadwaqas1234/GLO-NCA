@@ -71,7 +71,7 @@ class GCSpatialBlock3D(nn.Module):
 
 
 class BasicNCA3D(nn.Module):
-    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False):
+    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False, dropout=0.0):
         r"""Init function
             #Args:
                 channel_n: number of channels per cell
@@ -102,6 +102,9 @@ class BasicNCA3D(nn.Module):
 
         self.p0 = nn.Conv3d(channel_n, channel_n, kernel_size=kernel_size, stride=1, padding=padding, padding_mode="reflect", groups=channel_n)
         self.bn = torch.nn.BatchNorm3d(hidden_size, track_running_stats=False)
+        # Light dropout on the hidden update (regularisation; 0.0 = off).
+        self.dropout_p = dropout
+        self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else None
 
         # Global-context blocks (thesis novelty). Only built when enabled so the
         # baseline keeps the original parameter count exactly.
@@ -152,6 +155,8 @@ class BasicNCA3D(nn.Module):
         dx = self.bn(dx)
         dx = dx.transpose(1,4)
         dx = F.relu(dx)
+        if self.drop is not None:
+            dx = self.drop(dx)
         dx = self.fc1(dx)
 
         if fire_rate is None:
