@@ -434,16 +434,26 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         size = self.size
         prioritize = self.exp.get_from_config('priotize_masks')
         contains_mask = prioritize is not None and (random.uniform(0, 1) < prioritize)
+        # Which region to bias the patch toward: 0=WT (default), 1=TC, 2=ET.
+        # Biasing toward ET (the rarest region) improves ET/TC recall.
+        region = self.exp.get_from_config('prioritize_region')
+        region = 0 if region is None else int(region)
 
-        for _ in range(50):  # bounded retries to find a tumour-containing patch
+        pos_x = pos_y = pos_z = 0
+        for _ in range(50):  # bounded retries to find a region-containing patch
             pos_x = random.randint(0, img.shape[0] - size[0])
             pos_y = random.randint(0, img.shape[1] - size[1])
             pos_z = random.randint(0, img.shape[2] - size[2])
             if not contains_mask:
                 break
-            wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
-            if wt_patch.max() > 0:
+            patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], region]
+            if patch.max() > 0:
                 break
+            # Fall back to WT if the target region isn't found (ET can be tiny/absent)
+            wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
+            if region != 0 and wt_patch.max() > 0:
+                # keep looking for the target region, but remember this WT-valid pos
+                continue
 
         img = img[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]
         label = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]
