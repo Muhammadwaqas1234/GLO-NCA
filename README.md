@@ -8,15 +8,17 @@ lightweight **Neural Cellular Automata** with a **global-context mechanism**.
 A plain NCA only communicates locally; GLO-NCA adds a cheap Squeeze-and-
 Excitation (SE) block that injects whole-volume context, so the model captures
 both **local boundaries** and **global tumor location** while staying tiny
-(~13k parameters, fits a 6 GB GPU).
+(~30k parameters, fits a 6 GB GPU).
 
 ---
 
 ## Why GLO-NCA
-- **Lightweight** — ~13k parameters vs millions in U-Net / Transformers; runs on
+- **Lightweight** — ~30k parameters vs millions in U-Net / Transformers; runs on
   low-resource hardware (laptop GPU, edge devices).
-- **Global-context aware** — the SE block (`use_attention=True`) adds whole-
-  volume context for only ~4% extra parameters; this is the thesis novelty.
+- **Global-context aware** — a channel Squeeze-and-Excitation block
+  (`use_attention=True`) plus a spatial global-context block (`use_spatial=True`)
+  inject whole-volume context for a negligible parameter cost; this is the
+  thesis novelty.
 - **Multi-modal** — fuses the four BraTS modalities (T1, T1ce, T2, FLAIR).
 - **Multi-class** — predicts the three standard nested tumor regions
   **WT** (Whole Tumor), **TC** (Tumor Core), **ET** (Enhancing Tumor).
@@ -38,16 +40,17 @@ per region.
 ## Repository layout
 ```
 .
-├── src/                         # GLO-NCA pipeline (the only code you need to run it)
-│   ├── agents/                  #   Agent, Agent_NCA, Agent_Multi_NCA, Agent_GLO_NCA
-│   ├── datasets/                #   BraTS loader (Nii_Gz_Dataset_3D: Dataset_NiiGz_3D_BraTS)
-│   ├── models/                  #   Model_BasicNCA3D (+ SE global-context block)
-│   ├── losses/                  #   DiceCELoss
-│   ├── utils/                   #   Experiment, helper
-│   └── examples/train_GLO_NCA.py
-├── train_GLO_NCA.ipynb          # main notebook (edit paths, run)
-├── extra/                       # non-GLO code kept for reference (UNet/Med-NCA/tutorials)
-├── requirements.txt
+├── src/                       # GLO-NCA pipeline (all code needed to run it)
+│   ├── agents/                #   Agent, Agent_NCA, Agent_Multi_NCA, Agent_GLO_NCA
+│   ├── datasets/              #   BraTS loader (Nii_Gz_Dataset_3D: Dataset_NiiGz_3D_BraTS)
+│   ├── models/                #   Model_BasicNCA3D (+ SE & spatial global-context blocks)
+│   ├── losses/                #   FocalTverskyCELoss, TverskyCELoss, DiceCELoss
+│   └── utils/                 #   Experiment, helper
+├── train.py                   # canonical training entry point (env-driven)
+├── Dockerfile                 # GPU training image for GCP
+├── .dockerignore
+├── requirements-docker.txt    # pinned runtime dependencies
+├── kaggle_v4..v7.py           # experiment history (v4 = proven best, v7 = final recipe)
 └── LICENSE
 ```
 
@@ -57,7 +60,7 @@ py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cu121   # GPU build
-pip install -r requirements.txt
+pip install -r requirements-docker.txt
 ```
 
 ## Dataset
