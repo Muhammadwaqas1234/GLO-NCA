@@ -1,0 +1,41 @@
+# Keep the training image small and reproducible: only src/ + train.py +
+# requirements-docker.txt are needed (see Dockerfile COPY lines).
+
+# --- VCS / IDE / OS ---
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.claude/
+.DS_Store
+
+# --- Python caches / envs ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- Notebooks / experiment history not needed for training ---
+*.ipynb
+.ipynb_checkpoints/
+kaggle_v*.py
+extra/
+
+# --- Data / outputs / artifacts (mounted at run time, never baked in) ---
+scratch_brats/
+out/
+*.pth
+*.nii
+*.nii.gz
+*.png
+*.json
+*.dt
+events.out.tfevents.*
+
+# --- Docs / misc ---
+*.md
+LICENSE
+requirements.txt

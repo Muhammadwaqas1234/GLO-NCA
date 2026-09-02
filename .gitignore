@@ -18,6 +18,8 @@ Tutorial/Data/
 runs/
 compare_runs/
 html/
+out/               # train.py default OUT_DIR
+scratch_brats/     # local smoke-test fixtures
 Models/*
 M:/Models/*
 Study/*

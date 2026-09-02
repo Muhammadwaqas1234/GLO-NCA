@@ -380,6 +380,14 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         if self.exp.get_from_config('patchify') is True and self.state == "train":
             img, label = self.patchify_multimodal(img, label)
 
+        # Light on-the-fly augmentation (train only). Gated by the 'augment'
+        # config flag -- default off, so single-modality / older configs are
+        # unchanged. Cheap, label-safe geometric + intensity transforms that
+        # regularise without distorting tumour shape: axis flips, 90-deg
+        # in-plane rotations and a small per-modality intensity scale/shift.
+        if self.exp.get_from_config('augment') is True and self.state == "train":
+            img, label = self._augment(img, label)
+
         # Per-modality intensity normalisation.
         if self.exp.get_from_config('nonzero_norm') is True:
             # Swin-UNETR nonzero z-norm: normalise using brain voxels only.
@@ -424,6 +432,43 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 resized[:, y, :] = cv2.resize(tmp[:, y, :], dsize=size2, interpolation=interp)
         return resized
 
+    def _augment(self, img, label):
+        r"""Label-safe augmentation for a (X,Y,Z,C) image and (X,Y,Z,R) label.
+
+        Geometric transforms are applied identically to image and label so the
+        masks stay aligned; intensity transforms touch the image only. All are
+        volume-preserving (no interpolation of the label), which keeps the small
+        ET/TC regions intact.
+            #Args
+                img (numpy): (X, Y, Z, C) patch
+                label (numpy): (X, Y, Z, R) patch, same spatial dims
+            #Returns
+                img, label: augmented arrays, same shapes
+        """
+        # Random flips along each spatial axis (X, Y, Z).
+        for ax in (0, 1, 2):
+            if random.random() < 0.5:
+                img = np.flip(img, axis=ax)
+                label = np.flip(label, axis=ax)
+        # Random 90-degree rotation in the axial (X, Y) plane (k * 90 deg).
+        k = random.randint(0, 3)
+        if k:
+            img = np.rot90(img, k, axes=(0, 1))
+            label = np.rot90(label, k, axes=(0, 1))
+        # Small per-modality intensity scale + shift (image only). Applied to
+        # brain voxels; keeps zeros as zeros so the non-zero norm is unaffected.
+        img = img.copy()
+        for c in range(img.shape[-1]):
+            ch = img[..., c]
+            mask = ch != 0
+            if mask.any():
+                scale = 1.0 + random.uniform(-0.1, 0.1)
+                shift = random.uniform(-0.1, 0.1) * (ch[mask].std() + 1e-8)
+                ch[mask] = ch[mask] * scale + shift
+        # np.flip / np.rot90 return views; return contiguous copies so downstream
+        # torch.from_numpy does not choke on negative strides.
+        return np.ascontiguousarray(img), np.ascontiguousarray(label)
+
     def patchify_multimodal(self, img, label):
         r"""Random 3D patch of the configured size, shared across all channels.
             Optionally biased towards patches containing tumour (WT channel).
@@ -440,6 +485,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         region = 0 if region is None else int(region)
 
         pos_x = pos_y = pos_z = 0
+        fallback = None  # best WT-containing position, used if the target region
+        #                  (e.g. ET) is never found within the retry budget.
         for _ in range(50):  # bounded retries to find a region-containing patch
             pos_x = random.randint(0, img.shape[0] - size[0])
             pos_y = random.randint(0, img.shape[1] - size[1])
@@ -448,12 +495,18 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 break
             patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], region]
             if patch.max() > 0:
-                break
-            # Fall back to WT if the target region isn't found (ET can be tiny/absent)
-            wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
-            if region != 0 and wt_patch.max() > 0:
-                # keep looking for the target region, but remember this WT-valid pos
-                continue
+                break  # found a patch containing the target region
+            # Remember the first WT-valid position as a fallback (ET can be tiny
+            # or absent in a given patient, so the target region may not exist).
+            if region != 0 and fallback is None:
+                wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
+                if wt_patch.max() > 0:
+                    fallback = (pos_x, pos_y, pos_z)
+        else:
+            # Retry budget exhausted without hitting the target region: use the
+            # remembered WT-valid patch rather than the last (possibly empty) one.
+            if fallback is not None:
+                pos_x, pos_y, pos_z = fallback
 
         img = img[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]
         label = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]

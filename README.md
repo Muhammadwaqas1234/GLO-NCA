@@ -28,8 +28,10 @@ both **local boundaries** and **global tumor location** while staying tiny
    on a **random patch** (keeps VRAM low during training; full volume at inference).
 3. Read out 3 channels → sigmoid → WT / TC / ET.
 
-Loss: **Dice + Cross-Entropy** (`DiceCELoss`). Optimizer: **AdamW**.
-Metrics: **Dice**, **mIoU**, **HD95** per region.
+Loss: **Focal-Tversky + BCE** (`FocalTverskyCELoss`), tuned for the small,
+imbalanced ET/TC regions. Optimizer: **AdamW** with cosine LR decay, EMA
+weights and gradient-norm clipping. Metrics: **Dice**, **mIoU**, **HD95**
+per region.
 
 ---
 
@@ -63,20 +65,35 @@ Uses the **BraTS** dataset (one folder per patient with the modality + seg
 volumes). Tested on **BraTS 2024** (`*-t1n / -t1c / -t2w / -t2f / -seg .nii`);
 the loader also handles the older `t1 / t1ce / t2 / flair` naming.
 
-## Run
-Edit the paths in `train_GLO_NCA.ipynb` (or `src/examples/train_GLO_NCA.py`) —
-set **both** `img_path` and `label_path` to the BraTS dataset root — then run.
+## Run (canonical: `train.py`)
+`train.py` is the professional entry point (the full v7 recipe, single clean
+inference — no ensemble/TTA). Paths come from the environment, so the same code
+runs on a laptop, Kaggle or a GCP VM without edits:
 
-```python
-# in the config
-'img_path':   r"/path/to/BraTS2024_small_dataset",
-'label_path': r"/path/to/BraTS2024_small_dataset",
-'input_channels': 4,    # T1, T1ce, T2, FLAIR
-'output_channels': 3,   # WT, TC, ET
-'use_attention': True,  # global-context SE block (the novelty)
+```bash
+DATA_ROOT=/path/to/BraTS OUT_DIR=./out python train.py
 ```
 
-Evaluation prints **Dice / mIoU / HD95** per region on the test split.
+Optional overrides: `EPOCHS`, `N_PATIENTS` (0 = all), `SEED`, `BATCH_SIZE`,
+`NUM_WORKERS`. It writes `best.pth`, `results.json` and `curves.png` to
+`OUT_DIR` and prints **Dice / mIoU / HD95** per region on the test split.
+
+The `kaggle_v4..v7.py` scripts are kept as the experiment history that led to
+this recipe; `train.py` supersedes them.
+
+## Run on GCP (Docker)
+```bash
+docker build -t glo-nca .
+
+docker run --gpus all \
+    -e DATA_ROOT=/data -e OUT_DIR=/out -e EPOCHS=150 \
+    -v /mnt/brats:/data:ro \
+    -v /mnt/checkpoints:/out \
+    glo-nca
+```
+Mount the BraTS dataset at `/data` (read-only) and a writable checkpoint dir at
+`/out` — on GCP these can be a persistent disk or a GCS bucket via `gcsfuse`.
+Nothing about the data is baked into the image.
 
 ## Ablation (baseline vs GLO-NCA)
 Set `use_attention: False` to get the plain multi-level NCA baseline, and
