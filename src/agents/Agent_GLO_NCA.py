@@ -4,7 +4,6 @@ from src.agents.Agent_Multi_NCA import Agent_Multi_NCA
 import os
 import random
 import math
-import nibabel as nib
 
 class Agent_GLO_NCA(Agent_Multi_NCA):
     """GLO-NCA (Global Context-Aware NCA) training agent.
@@ -55,103 +54,39 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
         input_channel = self.exp.get_from_config('input_channels')
         
 
-        # After training run inference on full image
+        # After training: run inference on the FULL image (coarse -> fine).
         if full_img == True:
-
-            # REFACTOR: Visualisation
-            save4d = False
-            slice_all_Channels = False
-            if not slice_all_Channels:
-                label_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1], inputs.shape[2], inputs.shape[3]))
-                img_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1], inputs.shape[2], inputs.shape[3]))
-            else:
-                x_size = math.ceil(math.sqrt(inputs.shape[4]))
-                label_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
-                img_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
-            step = 0
-            # -------------------------
-            
             with torch.no_grad():
-                # Start with low res lvl and go to high res level
+                # Start at the low-res level and climb to the high-res level.
                 for m in range(self.exp.get_from_config('train_model')+1):
                     if m == self.exp.get_from_config('train_model'):
+                        # Final (highest-res) level: run the model on the full volume.
                         if type(self.getInferenceSteps()) is list:
                             stp = self.getInferenceSteps()[m]
                         else:
                             stp = self.getInferenceSteps()
-                        # REFACTOR: Visualisation
-                        if save4d:
-                            outputs = inputs_loc
-                            for i in range(self.getInferenceSteps()[m]):
-                                outputs = self.model[m](outputs, steps=1, fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                                if not slice_all_Channels:
-                                    label_mri_4d[step, ...] = outputs[0, ..., 1].detach().cpu().numpy() 
-                                    img_mri_4d[step, ...] = inputs_loc[0, ..., 0].detach().cpu().numpy() 
-                                else:
-                                    for x in range(4):
-                                        for y in range(4):
-                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = outputs[0, ..., 11, x+y*4].detach().cpu().numpy() 
-                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = inputs_loc[0, ..., 11, x+y*4].detach().cpu().numpy() 
-
-                                step = step +1 
-                        else:
-                            # Standard inference
-                            outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                    # Scale m-1 times 
+                        outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
                     else:
+                        # Lower level: run, then upscale its features to the next level.
                         up = torch.nn.Upsample(scale_factor=scale_fac, mode='nearest')
+                        outputs = self.model[m](inputs_loc, steps=self.getInferenceSteps()[m], fire_rate=self.exp.get_from_config('cell_fire_rate'))
 
-                        # REFACTOR: Visualisation
-                        if save4d:
-                            outputs = inputs_loc
-                            for i in range(self.getInferenceSteps()[m]):
-                                outputs = self.model[m](outputs, steps=1, fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                                if not slice_all_Channels:
-                                    label_mri_4d[step, ...] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 1].detach().cpu().numpy() 
-                                    img_mri_4d[step, ...] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 0].detach().cpu().numpy() 
-                                else:
-                                    for x in range(4):
-                                        for y in range(4):
-                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy() 
-                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy()                                     
-                                step = step +1 
-                        else:
-                            outputs = self.model[m](inputs_loc, steps=self.getInferenceSteps()[m], fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                        
-
-                        # Upscale lowres features to next level
+                        # Upscale low-res features to the next level.
                         outputs = torch.permute(outputs, (0, 4, 1, 2, 3))
                         outputs = up(outputs)
-                        inputs_loc = inputs     
-                        outputs = torch.permute(outputs, (0, 2, 3, 4, 1))         
-   
-                        # Create higher res image for next level -> Replace with single downscaling step
+                        inputs_loc = inputs
+                        outputs = torch.permute(outputs, (0, 2, 3, 4, 1))
+
+                        # Build the higher-res image for the next level.
                         next_res = full_res
                         for i in range(self.exp.get_from_config('train_model') - (m +1)):
                             next_res = next_res.transpose(1,4)
                             next_res = max_pool(next_res)
                             next_res = next_res.transpose(1,4)
 
-                        # Concat lowres features with higher res image
+                        # Concat low-res features with the higher-res image.
                         inputs_loc = torch.concat((next_res[...,:input_channel], outputs[...,input_channel:]), 4)
                         targets_loc = targets
-            
-            # REFACTOR: Visualisation
-            if save4d:
-                if not slice_all_Channels:
-                    nib_save = torch.sigmoid(torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0)))).numpy()
-                    nib_save[nib_save>0.5] = 1
-                    nib_save[nib_save != 1] = 0 
-                else:
-                    nib_save = torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0))).numpy() 
-                    sign = nib_save<0
-                    
-                nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) 
-                nib.save(nib_save, os.path.join("path", str(id)+"_"+tag+".nii.gz"))
-
-                nib_save = torch.sigmoid(torch.from_numpy(np.transpose(img_mri_4d, (1, 2, 3, 0)))).numpy()
-                nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
-                nib.save(nib_save, os.path.join("path", str(id)+"_img.nii.gz"))
         # During training run inference on patches
         else:
             # For number of downscaling levels
