@@ -89,6 +89,7 @@ DROPOUT      = 0.1
 USE_EMA      = True
 EMA_DECAY    = 0.999
 GRAD_CLIP    = 1.0                        # gradient-NORM clip (0 disables)
+BEST_WINDOW  = 3                          # epochs averaged for best-model choice
 
 # --- preprocessing (the v3->v4 win) ---
 USE_FOREGROUND_CROP = True
@@ -163,31 +164,42 @@ def make_split(data_root, seed):
 # =============================================================================
 # Evaluation (single clean forward pass -- no ensemble, no TTA)
 # =============================================================================
-def evaluate(agent, dataset, state):
-    r"""Per-region Dice / mIoU / HD95 on ``state`` with a single forward pass.
+def _collect_probs(agent, dataset, state):
+    r"""Run one clean forward pass over ``state`` and return the per-case
+    (probability, ground-truth) volume pairs.
 
     The 200-case study showed the stochastic pseudo-ensemble + flip-TTA lowered
-    TC/ET, so evaluation is deliberately a single deterministic-as-possible
-    inference; the only stochasticity left is the NCA fire-rate, which we do not
-    average over.
+    TC/ET, so inference is a single forward pass; the only stochasticity left is
+    the NCA fire-rate, which we do not average over. Collecting probs once lets
+    us both score and tune the decision threshold without re-running the model.
     """
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
-    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
+    pairs = []
     with torch.no_grad():
         for data in loader:
             data = agent.prepare_data(data, eval=True)
             out, targets = agent.get_outputs(data, full_img=True)
             prob = torch.sigmoid(out).detach().cpu().numpy()
             gt = targets.detach().cpu().numpy()
-            for i, r in enumerate(REGIONS):
-                p, t = prob[..., i], gt[..., i]
-                inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
-                denom = (p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6
-                acc[r]["dice"].append((2 * inter) / denom)
-                acc[r]["iou"].append(iou_score(p, t))
-                acc[r]["hd95"].append(hd95_score(p, t))
+            pairs.append((prob, gt))
     agent.exp.set_model_state("train")
+    return pairs
+
+
+def _score(pairs, thresholds):
+    r"""Dice / mIoU / HD95 per region from collected (prob, gt) pairs, using a
+    per-region decision threshold ``thresholds`` (dict region -> float)."""
+    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
+    for prob, gt in pairs:
+        for i, r in enumerate(REGIONS):
+            th = thresholds[r]
+            p, t = prob[..., i], gt[..., i]
+            inter = np.logical_and(p >= th, t >= 0.5).sum()
+            denom = (p >= th).sum() + (t >= 0.5).sum() + 1e-6
+            acc[r]["dice"].append((2 * inter) / denom)
+            acc[r]["iou"].append(iou_score(p, t, threshold=th))
+            acc[r]["hd95"].append(hd95_score(p, t, threshold=th))
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
@@ -195,6 +207,41 @@ def evaluate(agent, dataset, state):
                   "iou": float(np.mean(acc[r]["iou"])),
                   "hd95": float(np.mean(hd)) if hd else float("nan")}
     return out
+
+
+def evaluate(agent, dataset, state, thresholds=None):
+    r"""Per-region Dice / mIoU / HD95 on ``state`` (single forward pass).
+        #Args
+            thresholds: optional dict region->float; defaults to 0.5 each.
+    """
+    if thresholds is None:
+        thresholds = {r: 0.5 for r in REGIONS}
+    return _score(_collect_probs(agent, dataset, state), thresholds)
+
+
+def tune_thresholds(pairs, grid=None):
+    r"""Pick the per-region decision threshold that maximises mean Dice on the
+    given (prob, gt) pairs. Tuned on VALIDATION only, then applied to test --
+    a standard, legitimate post-processing step. Tiny regions (ET/TC) often peak
+    below 0.5, so this recovers Dice at zero training cost.
+    """
+    if grid is None:
+        grid = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6]
+    best = {}
+    for i, r in enumerate(REGIONS):
+        best_th, best_d = 0.5, -1.0
+        for th in grid:
+            dices = []
+            for prob, gt in pairs:
+                p, t = prob[..., i], gt[..., i]
+                inter = np.logical_and(p >= th, t >= 0.5).sum()
+                denom = (p >= th).sum() + (t >= 0.5).sum() + 1e-6
+                dices.append((2 * inter) / denom)
+            d = float(np.mean(dices))
+            if d > best_d:
+                best_d, best_th = d, th
+        best[r] = best_th
+    return best
 
 
 # =============================================================================
@@ -318,14 +365,21 @@ def main():
         hist["val_mean"].append(vm)
         for r in REGIONS:
             hist[f"val_{r}"].append(val[r]["dice"])
+        # Smoothed val: mean of this and the previous BEST_WINDOW-1 epochs. The
+        # per-epoch val on a small split is spiky (a lucky single epoch can win
+        # on noise, then generalise worse -- the observed val->test gap). Saving
+        # on the rolling mean picks a genuinely stable point, not a spike.
+        recent = hist["val_mean"][-BEST_WINDOW:]
+        vm_smooth = float(np.mean(recent))
         print(f"ep {ep+1}/{EPOCHS} | lr {cur_lr:.2e} | loss {hist['loss'][-1]:.3f} | "
               f"val mean {vm:.3f} (WT {val['WT']['dice']:.3f} TC {val['TC']['dice']:.3f} "
-              f"ET {val['ET']['dice']:.3f})", flush=True)
-        if vm > best:
-            best = vm
+              f"ET {val['ET']['dice']:.3f}) | smooth {vm_smooth:.3f}", flush=True)
+        if vm_smooth > best:
+            best = vm_smooth
             save_states = ema if ema is not None else [m.state_dict() for m in ca]
-            torch.save({"m": save_states, "ep": ep + 1, "val_mean": vm}, best_path)
-            print(f"   * new best {vm:.3f} saved", flush=True)
+            torch.save({"m": save_states, "ep": ep + 1,
+                        "val_mean": vm, "val_smooth": vm_smooth}, best_path)
+            print(f"   * new best (smoothed) {vm_smooth:.3f} saved", flush=True)
 
     train_time = time.time() - t0
     peak = torch.cuda.max_memory_allocated() / 1e9 if dev.type == "cuda" else 0.0
@@ -334,21 +388,36 @@ def main():
     ck = torch.load(best_path, map_location=dev)
     for m, sd in zip(ca, ck["m"]):
         m.load_state_dict(sd)
-    test = evaluate(agent, ds, "test")
 
-    print("\n" + "=" * 60)
-    print(f"GLO-NCA -- FINAL TEST (best @ epoch {ck['ep']})")
-    print("=" * 60)
-    print(f"{'region':<8}{'Dice':<12}{'mIoU':<12}{'HD95(vox)':<12}")
-    print("-" * 60)
-    for r in REGIONS:
-        print(f"{r:<8}{test[r]['dice']:<12.4f}{test[r]['iou']:<12.4f}{test[r]['hd95']:<12.3f}")
-    mean = float(np.mean([test[r]['dice'] for r in REGIONS]))
-    print("-" * 60)
-    print(f"{'mean':<8}{mean:<12.4f}")
-    print(f"train time {train_time:.0f}s | peak VRAM {peak:.2f} GB | params {n_params}")
+    # Tune the per-region decision threshold on VALIDATION, then apply it to the
+    # held-out test set (thresholds never see the test labels -- a legitimate
+    # post-processing step). Report both 0.5 and tuned so the gain is explicit.
+    val_pairs = _collect_probs(agent, ds, "val")
+    thresholds = tune_thresholds(val_pairs)
+    test_pairs = _collect_probs(agent, ds, "test")
+    test_05 = _score(test_pairs, {r: 0.5 for r in REGIONS})
+    test = _score(test_pairs, thresholds)
 
-    json.dump({"test": test, "history": hist, "best_epoch": ck["ep"],
+    def _print_table(title, res):
+        print("\n" + "=" * 60)
+        print(title)
+        print("=" * 60)
+        print(f"{'region':<8}{'Dice':<12}{'mIoU':<12}{'HD95(vox)':<12}")
+        print("-" * 60)
+        for r in REGIONS:
+            print(f"{r:<8}{res[r]['dice']:<12.4f}{res[r]['iou']:<12.4f}{res[r]['hd95']:<12.3f}")
+        m = float(np.mean([res[r]['dice'] for r in REGIONS]))
+        print("-" * 60)
+        print(f"{'mean':<8}{m:<12.4f}")
+        return m
+
+    _print_table(f"GLO-NCA -- FINAL TEST @ 0.5 (best @ epoch {ck['ep']})", test_05)
+    th_str = ", ".join(f"{r}={thresholds[r]:.2f}" for r in REGIONS)
+    mean = _print_table(f"GLO-NCA -- FINAL TEST @ tuned thresholds ({th_str})", test)
+    print(f"\ntrain time {train_time:.0f}s | peak VRAM {peak:.2f} GB | params {n_params}")
+
+    json.dump({"test": test, "test_at_0.5": test_05, "thresholds": thresholds,
+               "history": hist, "best_epoch": ck["ep"],
                "params": n_params, "train_time": train_time, "peak_vram": peak,
                "config": {"steps": STEPS, "fire": FIRE_RATE, "patch": INPUT_SIZE,
                           "beta": TVERSKY_BETA, "gamma": FOCAL_GAMMA, "aug": USE_AUG,
@@ -387,11 +456,16 @@ def _clipped_batch_step(agent, data, loss_f, grad_clip):
         opt.zero_grad()
     loss = 0
     loss_ret = {}
+    # Always compute the per-region loss, even when the region is absent from
+    # this patch. The old framework guarded this with `if 1 in targets[...,m]`,
+    # which gave a region zero gradient on empty patches -- so the model was
+    # never taught "this area is NOT tumour", inflating false positives on the
+    # tiny ET region. Focal-Tversky is well-defined on an empty target (the
+    # smooth term keeps it finite), so include every region every step.
     for m in range(outputs.shape[-1]):
-        if 1 in targets[..., m]:
-            loss_loc = loss_f(outputs[..., m], targets[..., m])
-            loss = loss + loss_loc
-            loss_ret[m] = loss_loc.item()
+        loss_loc = loss_f(outputs[..., m], targets[..., m])
+        loss = loss + loss_loc
+        loss_ret[m] = loss_loc.item()
     if loss != 0:
         loss.backward()
         if grad_clip and grad_clip > 0:

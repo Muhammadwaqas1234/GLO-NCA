@@ -28,14 +28,6 @@ class Dataset_3D(Dataset_Base):
         idx = self.images_list.index(name)
         return self.__getitem__(idx)
     
-    def resize_image(self, img, isLabel):
-        r"""TODO REMOVE OR USE"""
-        if not isLabel:
-            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_CUBIC) 
-        else:
-            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_NEAREST) 
-        return img
-    
     def preprocessing(self, img, isLabel=False):
         r"""Preprocessing of image slices
             #Args
