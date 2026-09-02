@@ -58,6 +58,13 @@ class Experiment():
             self.projectConfig[0]['foreground_crop'] = False
         if 'nonzero_norm' not in self.projectConfig[0]:
             self.projectConfig[0]['nonzero_norm'] = False
+        # On-the-fly train-time augmentation (flips / 90-deg rotations / small
+        # intensity jitter). Default off so older configs are unchanged.
+        if 'augment' not in self.projectConfig[0]:
+            self.projectConfig[0]['augment'] = False
+        # Which region to bias random patches toward: 0=WT, 1=TC, 2=ET.
+        if 'prioritize_region' not in self.projectConfig[0]:
+            self.projectConfig[0]['prioritize_region'] = 0
 
     def setup(self):
         r"""Initial experiment setup when first started

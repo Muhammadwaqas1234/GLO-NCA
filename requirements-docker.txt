@@ -1,0 +1,13 @@
+# ============================================================================
+# GLO-NCA -- runtime dependencies for the Docker training image (GCP).
+# Torch is installed separately in the Dockerfile from the CUDA 12.1 index so
+# the GPU build is picked; this file pins everything else. Versions match the
+# stack the model was developed and validated on.
+# ============================================================================
+numpy<2.0            # torchio / cv2 / this codebase rely on the 1.x API
+scipy>=1.11          # HD95 distance transform in evaluation
+nibabel>=5.2         # read .nii / .nii.gz BraTS volumes
+torchio>=0.20        # 3D intensity transforms (rescale, z-norm)
+opencv-python-headless>=4.9   # headless: no GUI libs needed in a container
+matplotlib>=3.8      # training curves (Agg backend, headless)
+tensorboard>=2.15    # scalar logging
