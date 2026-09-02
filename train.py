@@ -78,7 +78,18 @@ HIDDEN      = 128
 USE_SPATIAL = True                       # spatial global-context block (GC)
 STEPS       = [20, 20]                    # inference steps per level (low, high)
 FIRE_RATE   = 0.6
-INPUT_SIZE  = [[32, 32, 24], [64, 64, 48]]
+
+# High-res patch size is an env knob so you can test VRAM headroom without
+# editing code: PATCH=64 (laptop / Kaggle-safe), 96 (balanced), 128 (max context,
+# GCP-class GPU only -- can OOM a 6 GB card). The low-res level is always the
+# high-res size halved. Z is kept ~0.75*XY (BraTS volumes are thinner in Z).
+_PATCH = _env_int("PATCH", 96)
+_PATCH_TABLE = {
+    64:  [[32, 32, 24], [64, 64, 48]],
+    96:  [[48, 48, 32], [96, 96, 64]],
+    128: [[64, 64, 48], [128, 128, 96]],
+}
+INPUT_SIZE = _PATCH_TABLE.get(_PATCH, _PATCH_TABLE[96])
 
 # --- training ---
 LR_START     = 16e-4
@@ -95,6 +106,7 @@ BEST_WINDOW  = 3                          # epochs averaged for best-model choic
 USE_FOREGROUND_CROP = True
 USE_NONZERO_NORM    = True
 USE_AUG             = True                # anti-overfit; safe at 882-case scale
+AUG_LEVEL           = os.environ.get("AUG_LEVEL", "heavy")  # 'light' | 'heavy'
 PRIORITIZE_REGION   = 2                   # bias patches toward ET (rarest)
 PRIORITIZE_MASKS    = 0.7                 # P(patch must contain the region)
 
@@ -245,6 +257,81 @@ def tune_thresholds(pairs, grid=None):
 
 
 # =============================================================================
+# Diagnostics -- turn the run into a "what helped / what to change" report
+# =============================================================================
+def _diagnose(hist, ck, val_pairs, test_pairs, test_05, test, thresholds, peak):
+    r"""Summarise the run into decision signals with plain verdicts, so a cheap
+    Kaggle run tells you what to keep before paying for the full GCP run.
+    Returns {"lines": [...printable...], "verdict": str, plus raw numbers}.
+    """
+    lines, raw = [], {}
+
+    # 1) Overfitting: gap between the best VAL mean and the TEST mean (@0.5).
+    val_best = max(hist["val_mean"]) if hist["val_mean"] else 0.0
+    test_mean_05 = float(np.mean([test_05[r]["dice"] for r in REGIONS]))
+    gap = val_best - test_mean_05
+    raw["val_best"], raw["test_mean_05"], raw["val_test_gap"] = val_best, test_mean_05, gap
+    tag = "GOOD" if gap < 0.03 else ("OK" if gap < 0.06 else "WATCH: overfitting / small-val noise")
+    lines.append(f"[overfit ] val_best {val_best:.3f} -> test {test_mean_05:.3f} "
+                 f"(gap {gap:+.3f})  -> {tag}")
+
+    # 2) Threshold tuning: did moving off 0.5 help, and where?
+    per = []
+    for r in REGIONS:
+        d = test[r]["dice"] - test_05[r]["dice"]
+        per.append(f"{r}{d:+.3f}@{thresholds[r]:.2f}")
+    tmean = float(np.mean([test[r]["dice"] for r in REGIONS])) - test_mean_05
+    raw["threshold_gain_mean"] = tmean
+    tag = "GOOD: keep tuned thresholds" if tmean > 0.005 else "OK: 0.5 is already fine"
+    lines.append(f"[thresh  ] tuning gain {tmean:+.3f} ({', '.join(per)})  -> {tag}")
+
+    # 3) Convergence: is val still rising at the end (undertrained) or plateaued?
+    vm = hist["val_mean"]
+    if len(vm) >= 10:
+        late = np.mean(vm[-5:]) - np.mean(vm[-10:-5])
+        raw["late_slope"] = float(late)
+        if late > 0.01:
+            tag = "WATCH: still rising -> train MORE epochs"
+        elif late < -0.02:
+            tag = "WATCH: val falling -> overfit late, best-epoch earlier / fewer epochs"
+        else:
+            tag = "GOOD: plateaued (epoch budget about right)"
+        lines.append(f"[converge] last-5 vs prev-5 val change {late:+.3f}  -> {tag}")
+
+    # 4) Per-region weakness: which region is dragging the mean?
+    worst = min(REGIONS, key=lambda r: test[r]["dice"])
+    raw["worst_region"] = worst
+    lines.append(f"[weakest ] {worst} is lowest at {test[worst]['dice']:.3f}  "
+                 f"-> focus next tweaks here (sampling / loss weight)")
+
+    # 5) Best epoch position -- very early best on many epochs = noise/overfit.
+    if hist["epoch"]:
+        frac = ck["ep"] / max(hist["epoch"])
+        raw["best_epoch_frac"] = float(frac)
+        tag = ("WATCH: best came early -> likely lucky/overfit" if frac < 0.4
+               else "GOOD: best in the mature phase")
+        lines.append(f"[bestep  ] best @ {ck['ep']}/{max(hist['epoch'])} "
+                     f"({frac*100:.0f}%)  -> {tag}")
+
+    # 6) VRAM headroom -- tells you if a bigger patch is feasible next.
+    if peak > 0:
+        tag = ("room to grow: try larger PATCH" if peak < 8 else
+               "near a 16 GB budget" if peak < 14 else "WATCH: close to OOM")
+        lines.append(f"[vram    ] peak {peak:.2f} GB  -> {tag}")
+
+    # Overall verdict.
+    if gap < 0.03 and (len(vm) < 10 or -0.02 <= raw.get("late_slope", 0) <= 0.01):
+        verdict = f"Healthy run. Weakest region = {worst}. Config looks GCP-ready."
+    elif gap >= 0.06:
+        verdict = ("Large val->test gap: small-val noise or overfitting. On 882 "
+                   "cases this should shrink; if not, add regularisation / more data.")
+    else:
+        verdict = (f"Usable. Address the WATCH lines above (weakest = {worst}) "
+                   f"before the full GCP run.")
+    return {"lines": lines, "verdict": verdict, "raw": raw}
+
+
+# =============================================================================
 # Training
 # =============================================================================
 def main():
@@ -260,7 +347,7 @@ def main():
     print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
     print(f"GLO-NCA: ch={CHANNEL_N} hidden={HIDDEN} steps={STEPS} fire={FIRE_RATE} "
           f"patch={INPUT_SIZE[-1]} beta={TVERSKY_BETA} gamma={FOCAL_GAMMA} "
-          f"aug={USE_AUG} ema={USE_EMA} clip={GRAD_CLIP} ep={EPOCHS}", flush=True)
+          f"aug={USE_AUG}/{AUG_LEVEL} ema={USE_EMA} clip={GRAD_CLIP} ep={EPOCHS}", flush=True)
 
     dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -279,7 +366,7 @@ def main():
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         # Preprocessing flags now drive the REAL dataset (no subclass override).
         "foreground_crop": USE_FOREGROUND_CROP, "nonzero_norm": USE_NONZERO_NORM,
-        "augment": USE_AUG,
+        "augment": USE_AUG, "augment_level": AUG_LEVEL,
         "patchify": True, "priotize_masks": PRIORITIZE_MASKS,
         "prioritize_region": PRIORITIZE_REGION,
     }]
@@ -416,12 +503,29 @@ def main():
     mean = _print_table(f"GLO-NCA -- FINAL TEST @ tuned thresholds ({th_str})", test)
     print(f"\ntrain time {train_time:.0f}s | peak VRAM {peak:.2f} GB | params {n_params}")
 
+    # =====================================================================
+    # DIAGNOSTIC REPORT -- read this to decide what helped before spending on
+    # a full GCP run. Each line ends in a plain verdict (GOOD / OK / WATCH).
+    # =====================================================================
+    diag = _diagnose(hist, ck, val_pairs, test_pairs, test_05, test, thresholds, peak)
+    print("\n" + "#" * 60)
+    print("# DIAGNOSTIC REPORT  (what helped / what to change)")
+    print("#" * 60)
+    print(f"run: patch={INPUT_SIZE[-1]} aug={USE_AUG}/{AUG_LEVEL} steps={STEPS} "
+          f"ema={USE_EMA} clip={GRAD_CLIP} params={n_params} peakVRAM={peak:.2f}GB")
+    print("-" * 60)
+    for line in diag["lines"]:
+        print(line)
+    print("-" * 60)
+    print("VERDICT:", diag["verdict"])
+    print("#" * 60, flush=True)
+
     json.dump({"test": test, "test_at_0.5": test_05, "thresholds": thresholds,
-               "history": hist, "best_epoch": ck["ep"],
+               "history": hist, "best_epoch": ck["ep"], "diagnostics": diag,
                "params": n_params, "train_time": train_time, "peak_vram": peak,
                "config": {"steps": STEPS, "fire": FIRE_RATE, "patch": INPUT_SIZE,
                           "beta": TVERSKY_BETA, "gamma": FOCAL_GAMMA, "aug": USE_AUG,
-                          "n_patients": N_PATIENTS or nf}},
+                          "aug_level": AUG_LEVEL, "n_patients": N_PATIENTS or nf}},
               open(os.path.join(OUT_DIR, "results.json"), "w"), indent=2, default=str)
 
     try:

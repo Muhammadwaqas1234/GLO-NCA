@@ -62,6 +62,9 @@ class Experiment():
         # intensity jitter). Default off so older configs are unchanged.
         if 'augment' not in self.projectConfig[0]:
             self.projectConfig[0]['augment'] = False
+        # 'light' (flips/rot/intensity) or 'heavy' (+ elastic/gamma/noise/blur).
+        if 'augment_level' not in self.projectConfig[0]:
+            self.projectConfig[0]['augment_level'] = 'light'
         # Which region to bias random patches toward: 0=WT, 1=TC, 2=ET.
         if 'prioritize_region' not in self.projectConfig[0]:
             self.projectConfig[0]['prioritize_region'] = 0

@@ -6,6 +6,13 @@ import cv2
 import random
 import torchio
 
+try:
+    from scipy.ndimage import gaussian_filter as _gaussian_filter
+    from scipy.ndimage import map_coordinates as _map_coordinates
+    _NDIMAGE = True
+except Exception:  # heavy-aug elastic/blur fall back to no-op if scipy missing
+    _NDIMAGE = False
+
 
 class Dataset_NiiGz_3D_BraTS(Dataset_3D):
     r"""3D loader for the multi-modal BraTS dataset (Kaggle / official layout).
@@ -230,39 +237,94 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
     def _augment(self, img, label):
         r"""Label-safe augmentation for a (X,Y,Z,C) image and (X,Y,Z,R) label.
 
-        Geometric transforms are applied identically to image and label so the
-        masks stay aligned; intensity transforms touch the image only. All are
-        volume-preserving (no interpolation of the label), which keeps the small
-        ET/TC regions intact.
+        Two intensities, chosen by the 'augment_level' config value:
+          'light'  -- flips, 90-deg rotations, per-modality scale/shift.
+          'heavy'  -- light + gamma, Gaussian noise, Gaussian blur, and (label-
+                      safe) elastic deformation. The nnU-Net-style set, the most
+                      proven generalisation win at the 882-case scale.
+
+        Geometric transforms use the SAME field/axes for image and label so the
+        masks stay aligned; intensity transforms touch the image only and keep
+        zeros as zeros, so the non-zero z-norm is unaffected and the small ET/TC
+        regions are preserved.
             #Args
                 img (numpy): (X, Y, Z, C) patch
                 label (numpy): (X, Y, Z, R) patch, same spatial dims
             #Returns
                 img, label: augmented arrays, same shapes
         """
-        # Random flips along each spatial axis (X, Y, Z).
+        level = self.exp.get_from_config('augment_level') or 'light'
+
+        # --- Geometric: flips (all levels) ---
         for ax in (0, 1, 2):
             if random.random() < 0.5:
                 img = np.flip(img, axis=ax)
                 label = np.flip(label, axis=ax)
-        # Random 90-degree rotation in the axial (X, Y) plane (k * 90 deg).
+        # --- Geometric: 90-deg axial rotation (all levels) ---
         k = random.randint(0, 3)
         if k:
             img = np.rot90(img, k, axes=(0, 1))
             label = np.rot90(label, k, axes=(0, 1))
-        # Small per-modality intensity scale + shift (image only). Applied to
-        # brain voxels; keeps zeros as zeros so the non-zero norm is unaffected.
+        img = np.ascontiguousarray(img)
+        label = np.ascontiguousarray(label)
+
+        # --- Heavy: elastic deformation (label-safe: one field, NN for labels) ---
+        if level == 'heavy' and random.random() < 0.3:
+            img, label = self._elastic(img, label)
+
+        # --- Intensity: per-modality scale + shift (all levels, image only) ---
         img = img.copy()
+        s_range = 0.1 if level != 'heavy' else 0.2
         for c in range(img.shape[-1]):
             ch = img[..., c]
             mask = ch != 0
-            if mask.any():
-                scale = 1.0 + random.uniform(-0.1, 0.1)
-                shift = random.uniform(-0.1, 0.1) * (ch[mask].std() + 1e-8)
-                ch[mask] = ch[mask] * scale + shift
-        # np.flip / np.rot90 return views; return contiguous copies so downstream
-        # torch.from_numpy does not choke on negative strides.
+            if not mask.any():
+                continue
+            scale = 1.0 + random.uniform(-s_range, s_range)
+            shift = random.uniform(-s_range, s_range) * (ch[mask].std() + 1e-8)
+            ch[mask] = ch[mask] * scale + shift
+            if level == 'heavy':
+                # Gamma (contrast) on the min-max normalised brain voxels.
+                if random.random() < 0.3:
+                    v = ch[mask]
+                    lo, hi = v.min(), v.max()
+                    if hi > lo:
+                        g = random.uniform(0.7, 1.5)
+                        ch[mask] = ((v - lo) / (hi - lo)) ** g * (hi - lo) + lo
+                # Additive Gaussian noise.
+                if random.random() < 0.2:
+                    ch[mask] = ch[mask] + np.random.normal(
+                        0, 0.05 * (ch[mask].std() + 1e-8), size=ch[mask].shape)
+                # Gaussian blur (whole channel; zeros stay ~zero).
+                if random.random() < 0.2 and _NDIMAGE:
+                    img[..., c] = _gaussian_filter(img[..., c], sigma=random.uniform(0.4, 0.8))
+
         return np.ascontiguousarray(img), np.ascontiguousarray(label)
+
+    def _elastic(self, img, label, alpha=8.0, sigma=3.0):
+        r"""3D elastic deformation applied identically to image (linear) and
+        label (nearest, so masks stay strictly binary). Skipped gracefully if
+        scipy.ndimage is unavailable.
+        """
+        if not _NDIMAGE:
+            return img, label
+        shape = img.shape[:3]
+        # One smooth random displacement field, shared by image and label.
+        dx = _gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+        dy = _gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+        dz = _gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+        gx, gy, gz = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]),
+                                 np.arange(shape[2]), indexing='ij')
+        coords = [np.reshape(gx + dx, -1), np.reshape(gy + dy, -1), np.reshape(gz + dz, -1)]
+        out_img = np.empty_like(img)
+        for c in range(img.shape[-1]):
+            out_img[..., c] = _map_coordinates(
+                img[..., c], coords, order=1, mode='nearest').reshape(shape)
+        out_lab = np.empty_like(label)
+        for r in range(label.shape[-1]):
+            out_lab[..., r] = _map_coordinates(
+                label[..., r], coords, order=0, mode='nearest').reshape(shape)
+        return out_img, out_lab
 
     def patchify_multimodal(self, img, label):
         r"""Random 3D patch of the configured size, shared across all channels.
