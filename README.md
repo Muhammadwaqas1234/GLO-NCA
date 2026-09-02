@@ -77,9 +77,24 @@ runs on a laptop, Kaggle or a GCP VM without edits:
 DATA_ROOT=/path/to/BraTS OUT_DIR=./out python train.py
 ```
 
-Optional overrides: `EPOCHS`, `N_PATIENTS` (0 = all), `SEED`, `BATCH_SIZE`,
-`NUM_WORKERS`. It writes `best.pth`, `results.json` and `curves.png` to
-`OUT_DIR` and prints **Dice / mIoU / HD95** per region on the test split.
+Optional overrides (env vars):
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `EPOCHS` | 150 | training epochs |
+| `N_PATIENTS` | 0 (=all) | cap patients (use a small value for a cheap Kaggle test) |
+| `PATCH` | 96 | high-res patch: **64** (laptop/Kaggle), **96** (balanced), **128** (max context, GCP-class GPU only — can OOM 6 GB) |
+| `AUG_LEVEL` | heavy | `light` (flips/rot/intensity) or `heavy` (+ elastic/gamma/noise/blur) |
+| `SEED`, `BATCH_SIZE`, `NUM_WORKERS` | 42 / 1 / 4 | reproducibility & loader |
+
+It writes `best.pth`, `results.json` and `curves.png` to `OUT_DIR`, prints
+**Dice / mIoU / HD95** per region (at 0.5 and at val-tuned thresholds), and ends
+with a **diagnostic report** — one GOOD/OK/WATCH verdict per signal (overfitting,
+threshold gain, convergence, weakest region, best-epoch position, VRAM headroom)
+so a cheap run tells you what to change before a full GCP run.
+
+**Cheap Kaggle test first:** `N_PATIENTS=40 EPOCHS=20 PATCH=64 python train.py`
+— confirms it trains and reads the diagnostics, then scale up on GCP.
 
 The `kaggle_v4..v7.py` scripts are kept as the experiment history that led to
 this recipe; `train.py` supersedes them.
