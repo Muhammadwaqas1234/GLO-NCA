@@ -560,14 +560,22 @@ def _clipped_batch_step(agent, data, loss_f, grad_clip):
         opt.zero_grad()
     loss = 0
     loss_ret = {}
-    # Always compute the per-region loss, even when the region is absent from
-    # this patch. The old framework guarded this with `if 1 in targets[...,m]`,
-    # which gave a region zero gradient on empty patches -- so the model was
-    # never taught "this area is NOT tumour", inflating false positives on the
-    # tiny ET region. Focal-Tversky is well-defined on an empty target (the
-    # smooth term keeps it finite), so include every region every step.
+    # Per-region loss. When the region IS present in the patch, use the full
+    # Focal-Tversky (+BCE) loss. When it is ABSENT, do NOT apply Focal-Tversky:
+    # on an empty target its value is (1 - smooth/(smooth+alpha*fp))^gamma, which
+    # is a strong "predict nothing" signal -- with heavy aug shrinking the tiny
+    # ET mask this fired on most patches and pinned TC/ET at 0. Instead apply a
+    # small BCE-only term so the model still learns "this area is not tumour"
+    # without the degenerate Tversky collapse. (empty_weight=0 reproduces the
+    # original present-only behaviour.)
+    empty_weight = 0.1
     for m in range(outputs.shape[-1]):
-        loss_loc = loss_f(outputs[..., m], targets[..., m])
+        if 1 in targets[..., m]:
+            loss_loc = loss_f(outputs[..., m], targets[..., m])
+        else:
+            prob = torch.sigmoid(outputs[..., m]).clamp(1e-6, 1. - 1e-6)
+            loss_loc = empty_weight * torch.nn.functional.binary_cross_entropy(
+                prob, targets[..., m], reduction='mean')
         loss = loss + loss_loc
         loss_ret[m] = loss_loc.item()
     if loss != 0:
