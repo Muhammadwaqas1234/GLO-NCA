@@ -54,3 +54,7 @@ experiments/
 
 # --- Phase 2 cloud secrets/config (never commit) ---
 cloud/config/gcp.env
+
+# --- Phase 3.1: allow the (data-free, patient-IDs-only) master split to be
+# committed for reproducibility, but keep everything else in split/ ignored ---
+!split/master_split.json

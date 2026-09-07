@@ -17,6 +17,10 @@ from typing import Any, Dict, List
 import numpy as np
 import torch
 
+# repo root (…/src/experiment/runner.py -> repo root), for resolving relative
+# paths like a configured master split file on both the VM and locally.
+_HERE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.datasets.Nii_Gz_Dataset_3D import Dataset_NiiGz_3D_BraTS
 from src.models.Model_BasicNCA3D import BasicNCA3D
 from src.losses.LossFunctions import FocalTverskyCELoss
@@ -193,16 +197,52 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     ds, ca, agent, exp, flat_cfg = _build(
         cfg, data_root, device, epochs, ws.path("checkpoints", "model_internal"))
 
+    # Split resolution priority:
+    #   1. resume        -> reuse the split already saved in this experiment dir
+    #   2. data.split_file configured -> load that MASTER split (fail if missing;
+    #      never silently regenerate -- prevents experimental drift across A0-A3)
+    #   3. otherwise      -> deterministic seeded split (synthetic smoke tests)
+    split_file = cfg.get("data", "split_file") if cfg.section("data") else None
+    split_meta = {"source": None, "split_sha256": None, "split_file": split_file}
     existing = datasource.read_split(ws) if resume else None
     if existing:
         tr, va, te = existing
+        split_meta["source"] = "resume"
+        split_meta["split_sha256"] = datasource.split_fingerprint(tr, va, te)
         logger.info("resume: reusing saved split (train %d/val %d/test %d)",
                     len(tr), len(va), len(te))
+    elif split_file:
+        # resolve relative to CWD, then repo root, so it works on VM + local
+        cand = split_file if os.path.exists(split_file) else os.path.join(_HERE_ROOT, split_file)
+        master = datasource.load_master_split(cand)
+        tr, va, te = master["train"], master["validation"], master["test"]
+        split_meta.update(source="master", split_sha256=master["split_sha256"],
+                          split_file=cand, split_version=master.get("split_version"))
+        datasource.write_split(ws, tr, va, te)
+        logger.info("MASTER split %s (fp %s) -> train %d/val %d/test %d",
+                    cand, master["split_sha256"][:12], len(tr), len(va), len(te))
     else:
         tr, va, te = datasource.make_split(data_root, cfg.split_seed,
                                            n_patients=n_pat or 0)
+        split_meta.update(source="seeded", split_sha256=datasource.split_fingerprint(tr, va, te))
         datasource.write_split(ws, tr, va, te)
-    logger.info("Split -> train %d | val %d | test %d", len(tr), len(va), len(te))
+    logger.info("Split -> train %d | val %d | test %d | fp %s",
+                len(tr), len(va), len(te), (split_meta["split_sha256"] or "n/a")[:12])
+
+    # --- automatic dataset identity (read-only provenance) ------------------
+    # Reuses the fingerprint helpers; never modifies the dataset. Stored so the
+    # researcher does not need a separate manual command per experiment.
+    all_ids = datasource.list_patients(data_root)
+    dataset_identity = {
+        "dataset_root": data_root,
+        "dataset_case_count": len(all_ids),
+        "patient_id_hash": datasource.patient_id_hash(all_ids),
+        "modalities": list(cfg.get("dataset", "modalities")),
+        "split_source": split_meta["source"],
+        "split_sha256": split_meta["split_sha256"],
+        "split_file": split_meta.get("split_file"),
+    }
+    ws.write_json(os.path.join("config", "dataset_identity.json"), dataset_identity)
 
     def entry(p):
         return (p, p, 0)
@@ -432,7 +472,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     tb.close()
 
     manifest = _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
-                         bw["ep"], test, train_time, peak, "completed")
+                         bw["ep"], test, train_time, peak, "completed",
+                         dataset_identity=dataset_identity, split_meta=split_meta)
     ws.write_manifest(manifest)
     ws.write_status("completed", progress=1.0, best_epoch=bw["ep"],
                     best_score=best, test_mean=metrics_test["dice_mean"])
@@ -517,14 +558,21 @@ def _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds) -> None:
 
 
 def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
-              best_epoch, test, train_time, peak, status) -> Dict[str, Any]:
+              best_epoch, test, train_time, peak, status,
+              dataset_identity=None, split_meta=None) -> Dict[str, Any]:
     return {
         "experiment_id": ws.experiment_id,
         "name": cfg.name,
         "datetime": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
         "git": env_summary.get("git"),
         "dataset": {"root": data_root, "modalities": list(cfg.get("dataset", "modalities")),
-                    "counts": {"train": len(tr), "val": len(va), "test": len(te)}},
+                    "counts": {"train": len(tr), "val": len(va), "test": len(te)},
+                    "case_count": (dataset_identity or {}).get("dataset_case_count"),
+                    "patient_id_hash": (dataset_identity or {}).get("patient_id_hash")},
+        "split": {"source": (split_meta or {}).get("source"),
+                  "split_sha256": (split_meta or {}).get("split_sha256"),
+                  "split_file": (split_meta or {}).get("split_file"),
+                  "split_version": (split_meta or {}).get("split_version")},
         "model": info,
         "training": {"epochs": int(cfg.get("training", "epochs")),
                      "batch_size": int(cfg.get("training", "batch_size")),

@@ -7,9 +7,14 @@ to files and *reloaded* so a resumed run uses identical patient IDs.
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
+import json
 import os
 import random
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+SPLIT_VERSION = "GLO-NCA-V2-master-v1"
 
 
 def resolve_data_root(explicit: Optional[str] = None) -> Optional[str]:
@@ -70,7 +75,73 @@ def read_split(ws) -> Optional[Tuple[List[str], List[str], List[str]]]:
     path = ws.path("split", "split.json")
     if not os.path.exists(path):
         return None
-    import json
     with open(path, encoding="utf-8") as fh:
         d = json.load(fh)
     return d["train"], d["validation"], d["test"]
+
+
+# =============================================================================
+# Master split -- ONE canonical patient-level split shared by every experiment.
+# =============================================================================
+def split_fingerprint(train: List[str], val: List[str], test: List[str]) -> str:
+    """Deterministic sha256 over the canonical (sorted-within-partition) split.
+    Order of partitions is fixed; IDs are sorted so the fingerprint depends only
+    on which patient is in which partition, not on list order."""
+    canon = json.dumps({"train": sorted(train), "val": sorted(val),
+                        "test": sorted(test)}, sort_keys=True)
+    return hashlib.sha256(canon.encode()).hexdigest()
+
+
+def patient_id_hash(all_ids: List[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(all_ids)).encode()).hexdigest()
+
+
+def build_master_split(data_root: str, seed: int = 42) -> Dict:
+    """Build the canonical split dict from the dataset. Fails loudly on any
+    integrity problem. Patient IDs only -- never image data."""
+    pats = list_patients(data_root)
+    if not pats:
+        raise ValueError(f"no patient folders found under {data_root!r}")
+    tr, va, te = make_split(data_root, seed, n_patients=0)
+
+    # integrity: disjoint + union == population
+    s_tr, s_va, s_te, pop = set(tr), set(va), set(te), set(pats)
+    if s_tr & s_va or s_tr & s_te or s_va & s_te:
+        raise ValueError("split partitions overlap -- refusing to write master split")
+    if (s_tr | s_va | s_te) != pop:
+        missing = pop - (s_tr | s_va | s_te)
+        extra = (s_tr | s_va | s_te) - pop
+        raise ValueError(f"split does not cover dataset (missing={len(missing)}, "
+                         f"unknown={len(extra)})")
+
+    return {
+        "split_version": SPLIT_VERSION,
+        "seed": seed,
+        "train": tr, "validation": va, "test": te,
+        "train_count": len(tr), "val_count": len(va), "test_count": len(te),
+        "dataset_case_count": len(pats),
+        "split_sha256": split_fingerprint(tr, va, te),
+        "patient_id_hash": patient_id_hash(pats),
+        "created_at_utc": datetime.datetime.now(datetime.timezone.utc)
+                                  .isoformat(timespec="seconds"),
+    }
+
+
+def load_master_split(path: str) -> Dict:
+    """Load a master split file. Fails loudly if absent or structurally invalid."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"configured master split not found: {path}. Create it once with "
+            f"scripts/create_master_split.py -- it is NOT auto-regenerated.")
+    with open(path, encoding="utf-8") as fh:
+        d = json.load(fh)
+    for k in ("train", "validation", "test", "split_sha256"):
+        if k not in d:
+            raise ValueError(f"master split {path} missing key {k!r}")
+    # re-verify the stored fingerprint matches the stored IDs (tamper check)
+    recomputed = split_fingerprint(d["train"], d["validation"], d["test"])
+    if recomputed != d["split_sha256"]:
+        raise ValueError(f"master split fingerprint mismatch in {path} "
+                         f"(stored {d['split_sha256'][:12]}, recomputed "
+                         f"{recomputed[:12]}) -- file altered? refusing to use.")
+    return d
