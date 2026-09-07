@@ -21,9 +21,13 @@ whole project.
 7. [The loss functions](#7-the-loss-functions)
 8. [Training loop & the v2 fixes](#8-training-loop--the-v2-fixes)
 9. [Evaluation, thresholds & the diagnostic report](#9-evaluation)
-10. [How to run (Kaggle, laptop, GCP/Docker)](#10-how-to-run)
-11. [Version history (v4 → v7 → v2)](#11-version-history)
-12. [Results & honest positioning](#12-results--honest-positioning)
+10. [The metrics: Dice, mIoU, HD95](#10-the-metrics)
+11. [Hardware & VRAM guide](#11-hardware--vram-guide)
+12. [How to run (Kaggle, laptop, GCP/Docker)](#12-how-to-run)
+13. [Troubleshooting / FAQ](#13-troubleshooting--faq)
+14. [Glossary](#14-glossary)
+15. [Version history (v4 → v7 → v2)](#15-version-history)
+16. [Results & honest positioning](#16-results--honest-positioning)
 
 ---
 
@@ -367,7 +371,51 @@ Each line ends in **GOOD / OK / WATCH** plus a one-line overall verdict.
 
 ---
 
-## 10. How to run
+## 10. The metrics
+
+The model is scored with three standard segmentation metrics, per region.
+
+- **Dice** (0–1, higher better) — overlap between prediction and ground truth:
+  `2·|P∩G| / (|P|+|G|)`. The primary BraTS metric. 1.0 = perfect, 0 = no overlap.
+- **mIoU / Jaccard** (0–1, higher better) — `|P∩G| / |P∪G|`. Stricter than Dice
+  (always ≤ Dice); measures the same idea a different way.
+- **HD95** (lower better) — the 95th-percentile Hausdorff distance: how far apart
+  the prediction and ground-truth *surfaces* are, ignoring the worst 5% of
+  outliers. Measures boundary quality, not just overlap.
+
+> **⚠️ HD95 units — read this before the thesis defense.** The code computes HD95
+> in **voxels on the resampled training grid** (the volume is cropped and resized
+> before inference). The output is labelled `HD95(vox)`. If your slides/report
+> state HD95 in **millimetres (mm)**, that is not what the code currently
+> produces — after resizing, a voxel is no longer 1 mm. To report true mm you
+> must store each patient's original voxel spacing and scale the distance back,
+> or inverse-resample the prediction to native resolution before measuring.
+> Until then, report the number as **voxels**, not mm, to stay accurate.
+
+---
+
+## 11. Hardware & VRAM guide
+
+Peak VRAM depends mostly on `PATCH`. Measured/estimated for the 2-level cascade
+at `STEPS=[20,20]`:
+
+| `PATCH` | Patch (high-res) | ~Peak VRAM | 6 GB laptop | 16 GB (T4/GCP) | 40 GB (A100) |
+|---|---|---|---|---|---|
+| 64 | 64³ | ~2.4 GB | ✅ easily | ✅ | ✅ |
+| 96 | 96³ | ~5–6 GB | ⚠️ risky | ✅ | ✅ |
+| 128 | 128³ | ~10–19 GB | ❌ OOM | ✅ | ✅ |
+
+Notes:
+- The diagnostic report's `[vram]` line prints the actual peak so you know if a
+  bigger patch is feasible next time.
+- More **epochs** do not cost more VRAM (only more time). The plateau in the val
+  curve means ~200 epochs is enough; 500 mostly burns compute.
+- The model itself is ~30K params — trivial memory; the cost is the 3D activation
+  volumes during the NCA steps.
+
+---
+
+## 12. How to run
 
 ### Cheap Kaggle test (internet ON, dataset attached)
 ```python
@@ -404,7 +452,82 @@ Outputs `best.pth`, `results.json`, `curves.png` to `OUT_DIR`.
 
 ---
 
-## 11. Version history
+## 13. Troubleshooting / FAQ
+
+Real issues hit while running this project, and their fixes.
+
+**`Could not resolve host: github.com` / `Temporary failure in name resolution`**
+→ The Kaggle notebook has **internet OFF**. It is a *per-session* setting that
+resets to off on every restart. Fix: Settings → **Turn on internet** (the menu
+label says "Turn on" only when it's currently off), wait for the session to
+restart fully, then re-run. If the toggle won't stick, your account needs
+one-time **phone verification** (kaggle.com → Settings → Phone Verification).
+
+**`BraTS dataset not found` / `/kaggle/input` is empty**
+→ No **dataset** is attached. Right sidebar → **+ Add Input → Datasets tab**
+(not "Notebooks") → search `brats2024-small-dataset` → Add. `train.py`
+auto-detects it under `/kaggle/input`.
+
+**`No space left on device` when downloading the dataset**
+→ `/kaggle/working` is only ~20 GB; downloading + unzipping a 6.5 GB dataset
+overflows it. Use **Add Input** instead (mounts read-only, zero working disk) —
+never download when you can attach.
+
+**`Unable to read current working directory` after `rm -rf`**
+→ Your shell was *inside* the folder you just deleted. Add `os.chdir("/kaggle/working")`
+before the `rm`/clone, or Restart the session.
+
+**TC/ET stuck at 0.000 for many epochs**
+→ This was the v2 empty-region loss bug (now fixed on the `v2` branch). If you
+ever see it again after a change, suspect the loss being applied to absent
+regions, or heavy aug emptying the tiny ET mask.
+
+**Val is high but test is much lower (big gap)**
+→ Overfitting or small-val noise. Mitigations already in v2: smoothed
+best-epoch, EMA, augmentation. On more data (882) the gap shrinks. Judge on the
+**test** number and the diagnostic `[overfit]` line, not peak val.
+
+**Should I train 500 epochs for a better result?**
+→ No. The val curve plateaus by ~epoch 90–120; extra epochs mostly waste GCP
+money and can overfit. 200 is generous. The real levers are **more data (882)**
+and a **bigger patch**, not more epochs.
+
+**Can I mix BraTS 2024 (train) and 2026 (val/test)?**
+→ Not as separate splits — that measures domain shift, not model quality. Pool
+both, shuffle, then split train/val/test from the combined set. Keep any
+cross-dataset test as a separate "external validation" number.
+
+---
+
+## 14. Glossary
+
+| Term | Meaning |
+|---|---|
+| **NCA** | Neural Cellular Automata — a tiny update rule applied to every voxel, iterated for several steps |
+| **WT / TC / ET** | Whole Tumor / Tumor Core / Enhancing Tumor — the three nested BraTS regions (ET ⊆ TC ⊆ WT) |
+| **Modalities** | The four MRI scans per patient: T1, T1ce (T1c), T2, FLAIR |
+| **Fire rate** | Probability a voxel updates on a given NCA step (stochastic regularisation) |
+| **SE block** | Squeeze-and-Excitation — channel (global) attention |
+| **Spatial GC block** | Spatial global-context — per-voxel (global) attention |
+| **Foreground crop** | Cropping to the brain's bounding box, removing black background |
+| **Nonzero z-norm** | Normalising intensities using only brain (non-zero) voxels |
+| **Patchify** | Taking a random 3D sub-cube for training (cheaper than the full volume) |
+| **ET-aware sampling** | Biasing training patches to contain the rare ET region |
+| **Tversky** | A Dice-like loss with separate false-positive/negative weights |
+| **Focal-Tversky** | Tversky raised to a power γ — focuses on hard voxels |
+| **EMA** | Exponential Moving Average of weights — a smoothed, more robust copy |
+| **Grad clip** | Capping the gradient norm for training stability |
+| **Smoothing (best-epoch)** | Saving the model on a rolling-mean val score, not a single spike |
+| **Threshold tuning** | Picking the best probability cutoff per region on validation |
+| **TTA / ensemble** | Test-time augmentation / averaging passes — removed here (hurt TC/ET) |
+| **Deep supervision** | nnU-Net trick (loss at multiple decoder scales) — not used here |
+| **HD95** | 95th-percentile Hausdorff distance — boundary quality (lower better) |
+| **Dice / mIoU** | Overlap metrics (higher better) |
+| **Cascade** | The coarse-to-fine 2-level (low-res → high-res) structure |
+
+---
+
+## 15. Version history
 
 | Version | Key change | 200-case result (WT/TC/ET) |
 |---|---|---|
@@ -418,7 +541,7 @@ Outputs `best.pth`, `results.json`, `curves.png` to `OUT_DIR`.
 
 ---
 
-## 12. Results & honest positioning
+## 16. Results & honest positioning
 
 **GLO-NCA does not beat nnU-Net / Swin UNETR on raw Dice** — no 30K-parameter
 model can. On BraTS the big models reach WT ~0.89–0.91; GLO-NCA reaches WT
