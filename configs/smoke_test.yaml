@@ -1,0 +1,61 @@
+# =============================================================================
+# GLO-NCA V2 -- smoke test: a tiny, fast run that exercises the WHOLE pipeline
+# (dataset load, preprocess, model, forward/backward, EMA, checkpoint, val,
+# metrics, graphs, tensorboard, packaging) without training to convergence.
+#
+# It only overrides sizes/counts; all methodology (loss, EMA, thresholds, etc.)
+# stays identical to gcp_full.yaml so the smoke test faithfully mirrors the real
+# run. Use the smallest patch and a handful of patients/epochs.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V2-smoke
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 8      # tiny subset
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+model:
+  channel_n: 24
+  hidden: 128
+  steps: [20, 20]
+  fire_rate: 0.6
+  use_attention: true
+  use_spatial: true
+  dropout: 0.1
+
+training:
+  epochs: 2                  # just enough to exercise the loop twice
+  batch_size: 1
+  patch_size: 64             # smallest -> laptop/CPU friendly
+  augmentation: light        # lighter for a fast smoke run
+  workers: 0                 # 0 workers -> simplest, most portable
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 2        # window <= epochs
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 1

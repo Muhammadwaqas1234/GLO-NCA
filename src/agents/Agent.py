@@ -5,9 +5,19 @@ import torch
 import torch.optim as optim
 from src.utils.helper import convert_image
 from src.losses.LossFunctions import DiceLoss
-import seaborn as sns
 import math
-import matplotlib.pyplot as plt
+
+# seaborn / matplotlib are only used by the optional NQM visualisation methods
+# (plot_results_byPatient, labelVariance). Import them lazily so training does
+# not require them -- they are not runtime dependencies of the model.
+try:
+    import seaborn as sns
+except Exception:  # pragma: no cover - visualisation only
+    sns = None
+try:
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover - visualisation only
+    plt = None
 
 try:
     from scipy.ndimage import distance_transform_edt

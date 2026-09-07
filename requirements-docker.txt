@@ -10,4 +10,6 @@ nibabel>=5.2         # read .nii / .nii.gz BraTS volumes
 torchio>=0.20        # 3D intensity transforms (rescale, z-norm)
 opencv-python-headless>=4.9   # headless: no GUI libs needed in a container
 matplotlib>=3.8      # training curves (Agg backend, headless)
-tensorboard>=2.15    # scalar logging
+tensorboard>=2.15    # scalar logging (Phase 1 monitoring)
+pyyaml>=6.0          # experiment YAML configs
+seaborn>=0.13        # optional NQM visualisation (imported lazily by the agent)

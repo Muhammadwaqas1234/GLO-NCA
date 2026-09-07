@@ -46,14 +46,20 @@ RUN python -m pip install -r requirements-docker.txt
 
 # --- Copy the source (respect .dockerignore) ---------------------------------
 COPY src/ ./src/
+COPY configs/ ./configs/
+COPY scripts/ ./scripts/
 COPY train.py ./
 
-# Default output location inside the container (override with -e OUT_DIR / -v).
+# Experiments are written here by default (override with --output / a mount).
 ENV OUT_DIR=/out
-# DATA_ROOT has no default: it MUST be provided at run time (mounted volume),
-# otherwise train.py falls back to auto-detection under /data.
+# DATA_ROOT has no default: it MUST be provided at run time (mounted volume);
+# otherwise the trainer auto-detects a dataset under /data or /kaggle/input.
 
-# Fail fast if CUDA/torch is broken before starting a long training run.
-RUN python -c "import torch, torchio, nibabel, scipy, cv2; print('deps OK, torch', torch.__version__)"
+# Fail fast if the stack is broken before starting a long training run.
+RUN python -c "import torch, torchio, nibabel, scipy, cv2, yaml; print('deps OK, torch', torch.__version__)"
 
+# Default: run the full config. Override the config at run time, e.g.:
+#   docker run ... glo-nca --config configs/smoke_test.yaml
+#   docker run ... glo-nca --resume experiments/<id>
 ENTRYPOINT ["python", "train.py"]
+CMD ["--config", "configs/gcp_full.yaml"]

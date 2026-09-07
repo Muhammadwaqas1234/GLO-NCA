@@ -48,3 +48,6 @@ results*.json
 events.out.tfevents.*
 *.json
 extra/
+
+# --- Phase 1 experiment outputs ---
+experiments/

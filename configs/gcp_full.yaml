@@ -1,0 +1,64 @@
+# =============================================================================
+# GLO-NCA V2 -- full training configuration (the canonical thesis run).
+#
+# Every value here is the CURRENT V2 default taken verbatim from train.py, so
+# using this config reproduces the established methodology exactly. This file is
+# copied into every experiment directory (config/) so each result carries an
+# exact record of how it was produced.
+#
+# NOTE on patch_size: the two-level cascade sizes are derived from patch_size in
+# code (64 -> [[32,32,24],[64,64,48]], 96 -> [[48,48,32],[96,96,64]],
+# 128 -> [[64,64,48],[128,128,96]]), preserving the existing PATCH mapping.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V2
+  seed: 42
+
+dataset:
+  root: null                 # null -> auto-detect ($DATA_ROOT or /kaggle/input, /data)
+  number_of_patients: 0      # 0 -> use all patients
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42             # split uses experiment.seed unless overridden here
+
+model:
+  channel_n: 24
+  hidden: 128
+  steps: [20, 20]            # NCA steps per level [low-res, high-res]
+  fire_rate: 0.6
+  use_attention: true        # SE channel global-context block
+  use_spatial: true          # spatial global-context block
+  dropout: 0.1
+
+training:
+  epochs: 150
+  batch_size: 1
+  patch_size: 96             # 64 | 96 | 128 (see note above)
+  augmentation: heavy        # light | heavy | none
+  workers: 4
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10   # save a periodic checkpoint every N epochs

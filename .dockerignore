@@ -39,3 +39,6 @@ events.out.tfevents.*
 *.md
 LICENSE
 requirements.txt
+
+experiments/
+scratch_brats/

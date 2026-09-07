@@ -1,0 +1,68 @@
+# =============================================================================
+# GLO-NCA V2 -- ablation template.
+#
+# Copy this and toggle ONE component at a time to measure its contribution,
+# keeping everything else at the gcp_full defaults. The example below disables
+# both global-context blocks to give the plain multi-level NCA baseline
+# (use_attention + use_spatial = false) -- the headline ablation for the thesis.
+#
+# For other ablations, change exactly one field and rename experiment.name so
+# each variant lands in its own experiment directory:
+#   * no SE:        model.use_attention: false
+#   * no spatial:   model.use_spatial: false
+#   * light aug:    training.augmentation: light
+#   * no EMA:       ema.enabled: false
+#   * fixed thresh: evaluation.tune_thresholds: false
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V2-ablation-no-globalcontext
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 0
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+model:
+  channel_n: 24
+  hidden: 128
+  steps: [20, 20]
+  fire_rate: 0.6
+  use_attention: false       # ablated: no SE channel global-context
+  use_spatial: false         # ablated: no spatial global-context
+  dropout: 0.1
+
+training:
+  epochs: 150
+  batch_size: 1
+  patch_size: 96
+  augmentation: heavy
+  workers: 4
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10
