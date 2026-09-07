@@ -1,0 +1,6 @@
+# Force LF line-endings for shell scripts + the systemd unit so they run
+# correctly on the Linux GPU VM even when committed from Windows (CRLF would
+# break the shebang / systemd parsing).
+*.sh            text eol=lf
+*.service       text eol=lf
+cloud/scripts/* text eol=lf

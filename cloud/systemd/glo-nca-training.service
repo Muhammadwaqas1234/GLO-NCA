@@ -1,0 +1,25 @@
+# GLO-NCA V2 training service (installed by run_training.sh on the GPU VM).
+#
+# Runs training under systemd so it SURVIVES SSH disconnect / terminal close /
+# laptop shutdown. Restart=no on purpose: training either completes or fails
+# once -- we must NOT loop a finished or permanently-failed experiment (that
+# would waste GPU money and could corrupt outputs). Recovery from a genuine VM
+# loss is done deliberately via resume_training.sh, not by auto-restart.
+[Unit]
+Description=GLO-NCA V2 training (Docker, GPU)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/glo-nca.env
+# The repo path is in the env file; the wrapper reads /etc/glo-nca.env itself.
+ExecStart=/bin/bash -lc '"${GLO_REPO}"/cloud/scripts/_train_entrypoint.sh'
+Restart=no
+# Give a long stop timeout so an in-flight checkpoint write can finish.
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

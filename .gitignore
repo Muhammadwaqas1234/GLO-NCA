@@ -51,3 +51,6 @@ extra/
 
 # --- Phase 1 experiment outputs ---
 experiments/
+
+# --- Phase 2 cloud secrets/config (never commit) ---
+cloud/config/gcp.env
