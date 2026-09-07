@@ -16,58 +16,83 @@ selection use validation only; the test set is evaluated once, frozen.
 - Dataset uploaded and validated (`cloud/scripts/upload_dataset.sh`).
 - Branch `v2`, clean working tree. Record the commit you run with.
 
-## 1. Cloud smoke test (Phase 3A) — MUST pass before anything expensive
+## HARDENED SEQUENCE (Phase 3.1) — run in this exact order
+
+### Step 0 — clean repo
+```bash
+git status && git rev-parse HEAD          # record the commit you run with
+python scripts/verify_phase3_ready.py     # must print READY
+```
+
+### Step 1 — start VM
 ```bash
 ./cloud/scripts/start_vm.sh
 gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE"
-cd /opt/glo-nca && ./cloud/scripts/setup_gcp.sh && ./cloud/scripts/verify_gcp.sh
+cd /opt/glo-nca && ./cloud/scripts/setup_gcp.sh
+```
+
+### Step 2 — infrastructure smoke test (synthetic split; MUST pass first)
+```bash
+./cloud/scripts/verify_gcp.sh
 ./cloud/scripts/run_training.sh configs/smoke_test.yaml
 ./cloud/scripts/monitor.sh
-# from local PC, verify round-trip:
+# round-trip from local PC:
 ./cloud/scripts/download_experiment.sh <smoke_experiment_id>
 python cloud/scripts/validate_checkpoint.py experiments/<smoke_experiment_id>
 ```
-If any step fails, STOP and fix infrastructure (do not use the final run as a test).
+STOP and fix infrastructure if anything fails. Never use the final run as a test.
 
-## 2. Dataset + split validation (Phase 3B)
+### Step 3 — validate the REAL BraTS dataset
 ```bash
-# on the VM (dataset cached locally by run_training / cache_dataset)
-python scripts/validate_dataset.py --root "$VM_DATA_DIR"          # PASS required
-python scripts/dataset_identity.py --root "$VM_DATA_DIR" --out /out/dataset_identity.json
-```
-The split is created + persisted by the first training run and reused by all
-others; verify integrity after the first ablation (step 3) with:
-```bash
-python scripts/check_split.py --experiment /out/<first_exp_id> --data-root "$VM_DATA_DIR"
+python scripts/validate_dataset.py --root "$VM_DATA_DIR"     # PASS required
 ```
 
-## 3. Ablations (Phase 3C) — four runs, identical control vars, only switches differ
-Run each with the same seed/epochs/patch/aug. Each writes its own experiment dir
-and syncs to GCS automatically.
+### Step 4 — create the master split ONCE (shared by all 5 experiments)
 ```bash
-./cloud/scripts/run_training.sh configs/ablation_baseline.yaml   # A0: attn F, spatial F
-./cloud/scripts/run_training.sh configs/ablation_se.yaml         # A1: attn T, spatial F
-./cloud/scripts/run_training.sh configs/ablation_spatial.yaml    # A2: attn F, spatial T
-./cloud/scripts/run_training.sh configs/ablation_full.yaml       # A3: attn T, spatial T
+python scripts/create_master_split.py --data-root "$VM_DATA_DIR"
+# writes split/master_split.json (patient IDs only). Records the ACTUAL case
+# count (do not assume 882). Refuses to overwrite without --force.
 ```
-> Budget note: all four use the SAME 200-epoch budget so the comparison is fair
-> (§17). If you first want a cheap trend check, copy a config and set
-> `training.epochs` lower — but the REPORTED ablation must use equal budgets.
 
-## 4. Final GLO-NCA run (Phase 3D)
-`configs/gcp_full.yaml` is the final config (epochs 200, patch 96, aug light,
-SE+spatial on, seed 42). A3(full) and the final share the architecture, but run
-the final as its own clearly-named experiment:
+### Step 5 — validate the master split
+```bash
+python scripts/check_split.py --split split/master_split.json --data-root "$VM_DATA_DIR"
+# must print SPLIT OK (disjoint partitions, full coverage, fingerprint matches)
+```
+
+### Step 6 — GCP preflight (cheap gate before GPU spend)
+```bash
+python scripts/preflight_gcp.py --data-root "$VM_DATA_DIR" --split split/master_split.json
+# must print PREFLIGHT: PASS (GPU, CUDA, dataset, master split, configs, disk)
+```
+
+### Steps 7-11 — ablations A0-A3 then verify each used the master split
+All five configs already point at `split/master_split.json`; each run FAILS if
+that file is missing (no silent regeneration), guaranteeing an identical split.
+```bash
+./cloud/scripts/run_training.sh configs/ablation_baseline.yaml   # A0: F/F  (Step 7)
+# Step 8 — verify A0 used the master split:
+grep "MASTER split" /out/<A0_id>/logs/training.log
+python scripts/check_split.py --experiment /out/<A0_id> --data-root "$VM_DATA_DIR"
+./cloud/scripts/run_training.sh configs/ablation_se.yaml         # A1: T/F  (Step 9)
+./cloud/scripts/run_training.sh configs/ablation_spatial.yaml    # A2: F/T  (Step 10)
+./cloud/scripts/run_training.sh configs/ablation_full.yaml       # A3: T/T  (Step 11)
+```
+All four share the SAME 200-epoch budget + the SAME master split; only the two
+switches differ. Confirm every experiment_manifest.json shows the SAME
+`split.split_sha256`.
+
+### Step 12 — final GLO-NCA run
 ```bash
 ./cloud/scripts/run_training.sh configs/gcp_full.yaml            # name: GLO-NCA-V2-final
 ```
-Best-checkpoint selection (validation smoothed), validation threshold tuning,
-frozen test @0.5 and @tuned, per-case metrics, statistical summary, diagnostic
-report — all produced automatically by the run.
+Best-checkpoint (validation smoothed), validation threshold tuning, frozen test
+@0.5 and @tuned, per-case metrics, statistical summary, diagnostic report — all
+automatic. Uses the SAME master split fingerprint as A0-A3.
 
-## 5. Aggregate into thesis tables + figures (Phase 3E/3F) — from REAL outputs
+### Steps 13-15 — download archives, then aggregate thesis tables + figures
 ```bash
-# download the finished experiments locally (or run these on the VM)
+# download all five finished experiments locally (or run these on the VM)
 python scripts/make_ablation_table.py \
     --baseline experiments/GLO-NCA-V2-ablation-baseline-<ts> \
     --se       experiments/GLO-NCA-V2-ablation-se-<ts> \
@@ -85,7 +110,7 @@ python scripts/make_figures.py \
     --out experiments/GLO-NCA-V2-final-<ts>/reports/thesis/figures
 ```
 
-## 6. Archive + verify + stop (Phase 3 §50-52, §71)
+### Steps 16-17 — archive, verify, STOP VM (cost control)
 ```bash
 ./cloud/scripts/sync_experiment.sh /out/GLO-NCA-V2-final-<ts>     # ensure in GCS
 ./cloud/scripts/status.sh                                        # list GCS experiments

@@ -21,6 +21,12 @@ dataset:
   modalities: [t1n, t1c, t2w, t2f]
   split_seed: 42             # split uses experiment.seed unless overridden here
 
+data:
+  # ALL experiments share this ONE master split (create it once with
+  # scripts/create_master_split.py). Missing file -> hard FAIL (no silent
+  # regeneration), so A0-A3 + Final are guaranteed identical splits.
+  split_file: split/master_split.json
+
 model:
   channel_n: 24
   hidden: 128

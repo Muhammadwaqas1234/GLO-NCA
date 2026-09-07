@@ -3,6 +3,12 @@
 > **MS Thesis — Muhammad Waqas, Air University, Islamabad.**
 > *For academic and educational use only — not a medical device (see [LICENSE](LICENSE)).*
 
+> **Status (experimental freeze).** The training/experiment harness (Phases 1–3)
+> is implemented and tested locally on synthetic data. The real GCP/GPU BraTS
+> experiments — ablations A0–A3 and the final GLO-NCA run — are **pending
+> execution** per [PHASE3_RUNBOOK.md](PHASE3_RUNBOOK.md). **No experimental
+> results (Dice/mIoU/HD95) are claimed until those runs are executed.**
+
 GLO-NCA segments brain tumors from **multi-modal MRI (BraTS)** using a
 lightweight **Neural Cellular Automata** with a **global-context mechanism**.
 A plain NCA only communicates locally; GLO-NCA adds a cheap Squeeze-and-

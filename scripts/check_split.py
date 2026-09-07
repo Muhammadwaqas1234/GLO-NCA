@@ -27,14 +27,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--experiment", default=None, help="experiment dir (uses split/split.json)")
     ap.add_argument("--split-json", default=None, help="path to a split.json directly")
+    ap.add_argument("--split", default=None, help="path to a master_split.json (verifies fingerprint)")
     ap.add_argument("--data-root", default=None, help="optional: verify union == dataset")
     args = ap.parse_args()
 
-    path = args.split_json
+    path = args.split or args.split_json
     if not path and args.experiment:
         path = os.path.join(args.experiment, "split", "split.json")
     if not path or not os.path.exists(path):
-        print(f"FAIL: split.json not found ({path})")
+        print(f"FAIL: split file not found ({path})")
         return 1
 
     with open(path, encoding="utf-8") as fh:
@@ -42,6 +43,16 @@ def main() -> int:
     tr, va, te = set(d["train"]), set(d["validation"]), set(d["test"])
 
     ok = True
+
+    # If this is a master split with a stored fingerprint, re-verify it.
+    if "split_sha256" in d:
+        from src.experiment.datasource import split_fingerprint
+        recomputed = split_fingerprint(d["train"], d["validation"], d["test"])
+        match = recomputed == d["split_sha256"]
+        print(("PASS " if match else "FAIL ")
+              + f"fingerprint {d['split_sha256'][:12]} "
+              + ("matches" if match else f"!= recomputed {recomputed[:12]}"))
+        ok = ok and match
     def check(name, cond):
         nonlocal ok
         print(("PASS " if cond else "FAIL ") + name)

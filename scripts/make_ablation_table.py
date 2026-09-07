@@ -23,7 +23,11 @@ REGIONS = ["WT", "TC", "ET"]
 
 
 def _load(exp_dir):
-    with open(os.path.join(exp_dir, "reports", "results.json"), encoding="utf-8") as fh:
+    rp = os.path.join(exp_dir, "reports", "results.json")
+    if not os.path.exists(rp):
+        raise SystemExit(f"FAIL: results.json not found for {exp_dir}. Has this "
+                         f"experiment finished? (expected {rp})")
+    with open(rp, encoding="utf-8") as fh:
         res = json.load(fh)
     man = {}
     mpath = os.path.join(exp_dir, "experiment_manifest.json")
