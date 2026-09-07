@@ -27,6 +27,7 @@ from . import checkpoint as ckpt_io
 from . import datasource, environment, graphs
 from . import metrics_eval as ME
 from . import reproducibility as repro
+from . import statistics as STATS
 from .config import Config
 from .dataset_validation import validate_dataset, summarize
 from .diagnostics import diagnose
@@ -417,6 +418,15 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         fh.write("-" * 40 + "\nVERDICT: " + diag["verdict"] + "\n")
     _write_thesis_csv(ws, test, test_05, thresholds, info)
 
+    # --- per-case metrics + statistical summary (thesis stats) --------------
+    # Same metric definitions as `score`; purely for reporting mean/median/std/
+    # bootstrap-CI. Uses the FROZEN validation-tuned thresholds on the test set.
+    per_case = ME.score_per_case(test_pairs, thresholds)
+    _write_per_case_csv(ws, per_case)
+    stats = STATS.summarize_per_case(per_case, n_boot=2000, seed=cfg.seed)
+    ws.write_json(os.path.join("reports", "statistical_summary.json"), stats)
+    _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds)
+
     graph_files = graphs.generate(ws)
     logger.info("graphs: %s", [os.path.basename(g) for g in graph_files])
     tb.close()
@@ -468,6 +478,42 @@ def _write_thesis_csv(ws, test, test_05, thresholds, info) -> None:
                     f"{np.mean([test_05[r]['dice'] for r in REGIONS]):.4f}", "", "", ""])
         w.writerow([])
         w.writerow(["total_parameters", info["total_parameters"]])
+
+
+def _write_per_case_csv(ws, per_case) -> None:
+    """One row per (case_index, region) with the per-case dice/iou/hd95 at the
+    frozen tuned thresholds -- the raw material for mean/median/std/CI."""
+    import csv
+    n = len(per_case[REGIONS[0]]["dice"])
+    with open(ws.path("reports", "per_case_test.csv"), "w", newline="",
+              encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["case_index", "region", "dice", "iou", "hd95_vox"])
+        for i in range(n):
+            for r in REGIONS:
+                w.writerow([i, r,
+                            f"{per_case[r]['dice'][i]:.6f}",
+                            f"{per_case[r]['iou'][i]:.6f}",
+                            f"{per_case[r]['hd95'][i]:.4f}"])
+
+
+def _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds) -> None:
+    """threshold_comparison.csv: default(0.5) vs tuned, on val and test. Test
+    uses the FROZEN thresholds (never tuned on test)."""
+    import csv
+    half = {r: 0.5 for r in REGIONS}
+    val_05, val_tuned = ME.score(val_pairs, half), ME.score(val_pairs, thresholds)
+    test_05, test_tuned = ME.score(test_pairs, half), ME.score(test_pairs, thresholds)
+    with open(ws.path("reports", "threshold_comparison.csv"), "w", newline="",
+              encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["region", "threshold_default", "threshold_tuned",
+                    "validation_Dice_default", "validation_Dice_tuned",
+                    "test_Dice_default", "test_Dice_tuned"])
+        for r in REGIONS:
+            w.writerow([r, "0.50", f"{thresholds[r]:.2f}",
+                        f"{val_05[r]['dice']:.4f}", f"{val_tuned[r]['dice']:.4f}",
+                        f"{test_05[r]['dice']:.4f}", f"{test_tuned[r]['dice']:.4f}"])
 
 
 def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,

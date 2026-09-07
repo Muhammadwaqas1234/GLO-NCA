@@ -1,0 +1,63 @@
+# =============================================================================
+# GLO-NCA V2 -- ABLATION A0: plain NCA baseline (NO global context).
+#
+# Identical to configs/gcp_full.yaml in EVERY control variable (dataset, split,
+# seed, epochs, patch, batch, optimizer, LR, scheduler, loss, beta, gamma, EMA,
+# grad-clip, augmentation, channel_n, hidden, steps, fire_rate). The ONLY
+# difference from the full model is:
+#     use_attention: false   (no SE channel global-context)
+#     use_spatial:   false   (no spatial global-context)
+# This isolates what the global-context mechanism contributes.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V2-ablation-baseline
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 0
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+model:
+  channel_n: 24
+  hidden: 128
+  steps: [20, 20]
+  fire_rate: 0.6
+  use_attention: false       # A0: OFF
+  use_spatial: false         # A0: OFF
+  dropout: 0.1
+
+training:
+  epochs: 200
+  batch_size: 1
+  patch_size: 96
+  augmentation: light
+  workers: 4
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10
