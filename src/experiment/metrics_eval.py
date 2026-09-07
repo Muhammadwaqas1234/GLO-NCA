@@ -52,6 +52,26 @@ def score(pairs, thresholds: Dict[str, float]) -> Dict[str, Dict[str, float]]:
     return out
 
 
+def score_per_case(pairs, thresholds: Dict[str, float]):
+    r"""Per-CASE metrics (no averaging), using the SAME metric definitions as
+    ``score``. Returns {region: {"dice": [...], "iou": [...], "hd95": [...]}}
+    with one entry per test case, so downstream code can compute mean / median /
+    std / bootstrap CIs. Purely additive -- does not affect model selection or
+    threshold tuning (those still use ``score``/``tune_thresholds`` unchanged).
+    """
+    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
+    for prob, gt in pairs:
+        for i, r in enumerate(REGIONS):
+            th = thresholds[r]
+            p, t = prob[..., i], gt[..., i]
+            inter = np.logical_and(p >= th, t >= 0.5).sum()
+            denom = (p >= th).sum() + (t >= 0.5).sum() + 1e-6
+            acc[r]["dice"].append(float((2 * inter) / denom))
+            acc[r]["iou"].append(float(iou_score(p, t, threshold=th)))
+            acc[r]["hd95"].append(float(hd95_score(p, t, threshold=th)))
+    return acc
+
+
 def evaluate(agent, dataset, state, thresholds=None):
     if thresholds is None:
         thresholds = {r: 0.5 for r in REGIONS}

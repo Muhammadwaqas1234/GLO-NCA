@@ -12,7 +12,7 @@
 # =============================================================================
 
 experiment:
-  name: GLO-NCA-V2
+  name: GLO-NCA-V2-final
   seed: 42
 
 dataset:
@@ -31,10 +31,10 @@ model:
   dropout: 0.1
 
 training:
-  epochs: 150
+  epochs: 200                # Phase 3 final training budget
   batch_size: 1
   patch_size: 96             # 64 | 96 | 128 (see note above)
-  augmentation: heavy        # light | heavy | none
+  augmentation: light        # Phase 3 final: light aug (see PHASE3_RUNBOOK.md)
   workers: 4
 
 optimizer:
