@@ -12,10 +12,9 @@ EXP_ID="${1:-}"
 [[ -n "${EXP_ID}" ]] || die "usage: resume_training.sh <experiment_id>"
 require_gcloud_auth
 
-LOCK="/tmp/glo-nca-training.lock"
-if [[ -e "${LOCK}" ]] && kill -0 "$(cat "${LOCK}" 2>/dev/null)" 2>/dev/null; then
-  die "training already running (pid $(cat "${LOCK}")). Refusing to start a second."
-fi
+# Concurrency guard backed by systemd (the real job owner), not a launcher pid.
+# Same mechanism as run_training.sh, so new-run and resume behave identically.
+assert_no_training_running
 
 SRC="${GCS_EXPERIMENTS}/${EXP_ID}"
 gcs_exists "${SRC}" || die "experiment not in GCS: ${SRC}"
@@ -56,8 +55,9 @@ GLO_BUCKET=${GCS_BUCKET}
 GLO_EXP_PREFIX=${EXPERIMENT_PREFIX}
 GLO_SYNC_INTERVAL=${SYNC_INTERVAL_SECONDS}
 EOF
-echo $$ > "${LOCK}"
+# Confirm BEFORE writing the lock, so declining leaves no stale lock behind.
 confirm "Resume ${EXP_ID} on this GPU VM (billing continues while running)?"
+write_training_lock "${EXP_ID}"
 sudo systemctl start "${UNIT}"
 pass "resume started under systemd unit '${UNIT}' for ${EXP_ID}."
 log "logs: sudo journalctl -u ${UNIT} -f   |   status: ./cloud/scripts/monitor.sh"

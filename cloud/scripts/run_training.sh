@@ -15,14 +15,16 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-CONFIG="${1:-configs/gcp_full.yaml}"
+# Phase 2: V3 is the production architecture. There is deliberately NO default
+# config -- the old default (configs/gcp_full.yaml) was the V2 baseline, so a
+# bare `run_training.sh` would have launched the WRONG architecture for days.
+CONFIG="${1:-}"
+[[ -n "${CONFIG}" ]] || die "usage: run_training.sh <config>
+       production: ./cloud/scripts/run_training.sh configs/v3_multilevel_ckpt.yaml"
 [[ -f "${REPO_DIR}/${CONFIG}" || -f "${CONFIG}" ]] || die "config not found: ${CONFIG}"
 
-LOCK="/tmp/glo-nca-training.lock"
-if [[ -e "${LOCK}" ]] && kill -0 "$(cat "${LOCK}" 2>/dev/null)" 2>/dev/null; then
-  die "a training process (pid $(cat "${LOCK}")) appears to be running.
-       Refusing to start a second one. Stop it first or remove ${LOCK}."
-fi
+# Concurrency guard backed by systemd (the real job owner), not a launcher pid.
+assert_no_training_running
 
 # --- 1) GPU present? ---
 command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1 \
@@ -54,8 +56,9 @@ GLO_EXP_PREFIX=${EXPERIMENT_PREFIX}
 GLO_SYNC_INTERVAL=${SYNC_INTERVAL_SECONDS}
 EOF
 
-echo $$ > "${LOCK}"
+# Confirm BEFORE writing the lock, so declining leaves no stale lock behind.
 confirm "Start GLO-NCA training with ${CONFIG} on this GPU VM (billing continues while running)?"
+write_training_lock "${CONFIG}"
 sudo systemctl start "${UNIT}"
 pass "training started under systemd unit '${UNIT}'."
 

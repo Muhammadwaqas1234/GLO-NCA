@@ -42,10 +42,20 @@ def _load(path: str):
 
 
 def validate_patient(folder: str, patient: str,
-                     modalities: List[str]) -> Dict[str, Any]:
-    """Validate a single patient folder. Returns a dict with ok/errors/info."""
+                     modalities: List[str],
+                     allowed_seg_labels: Optional[set] = None) -> Dict[str, Any]:
+    """Validate a single patient folder. Returns a dict with ok/errors/info.
+
+    ``allowed_seg_labels`` lets the caller widen the accepted label set for THIS
+    case only, from the explicit operational data-quality policy
+    (``split/data_quality_policy.json``). It defaults to the universal
+    ``ALLOWED_SEG_LABELS``, so the validator stays fail-closed unless a human has
+    listed this exact case with these exact stray labels.
+    """
+    allowed = allowed_seg_labels or ALLOWED_SEG_LABELS
     errors: List[str] = []
     shapes: Dict[str, Tuple[int, ...]] = {}
+    tolerated_labels: List[int] = []   # stray labels accepted by explicit policy
 
     for mod in modalities + [SEG_SUFFIX]:
         path = _find_file(folder, patient, mod)
@@ -63,9 +73,13 @@ def validate_patient(folder: str, patient: str,
         shapes[mod] = tuple(vol.shape)
         if mod == SEG_SUFFIX:
             uniq = set(np.unique(vol).astype(int).tolist())
-            bad = uniq - ALLOWED_SEG_LABELS
+            bad = uniq - allowed
             if bad:
                 errors.append(f"unexpected seg labels: {sorted(bad)}")
+            # Recorded separately (NOT in `shapes`, which feeds the dimension
+            # check) so the report shows exactly which stray labels were
+            # accepted, on which case, under the explicit policy.
+            tolerated_labels.extend(sorted((uniq - ALLOWED_SEG_LABELS) & allowed))
         else:
             if np.isnan(vol).any():
                 errors.append(f"NaN values in {mod}")
@@ -76,31 +90,61 @@ def validate_patient(folder: str, patient: str,
     if len(set(shapes.values())) > 1:
         errors.append(f"inconsistent dimensions: {shapes}")
 
-    return {"patient": patient, "ok": not errors,
-            "errors": errors, "shapes": shapes}
+    out = {"patient": patient, "ok": not errors,
+           "errors": errors, "shapes": shapes}
+    if tolerated_labels:
+        out["tolerated_seg_labels"] = sorted(set(tolerated_labels))
+    return out
 
 
 def validate_dataset(root: str,
                      modalities: Optional[List[str]] = None,
-                     limit: Optional[int] = None) -> Dict[str, Any]:
+                     limit: Optional[int] = None,
+                     policy: Optional[Any] = None) -> Dict[str, Any]:
     """Validate every patient under ``root``. Returns a full report dict with a
-    top-level ``result`` of "PASS" or "FAIL"."""
+    top-level ``result`` of "PASS" or "FAIL".
+
+    ``policy`` is an optional :class:`~src.experiment.data_quality.DataQualityPolicy`.
+    When given, it may widen the accepted label set for SPECIFIC, explicitly
+    listed case ids only (see split/data_quality_policy.json). Without it the
+    validator behaves exactly as before: fail-closed on any label outside
+    ``ALLOWED_SEG_LABELS``.
+    """
     modalities = modalities or DEFAULT_MODALITIES
     if not root or not os.path.isdir(root):
         return {"result": "FAIL", "root": root,
                 "fatal": f"dataset root not found: {root}", "patients": []}
 
-    folders = sorted(d for d in os.listdir(root)
-                     if os.path.isdir(os.path.join(root, d)))
+    # Recursive, files-validated case discovery (shared with the loader/split), so
+    # nested cohorts (e.g. BraTS-MET's 'UCSD - Training/') are found and container
+    # folders are never mistaken for cases. Falls back to a flat top-level scan if
+    # discovery is unavailable, preserving the original behaviour.
+    try:
+        from src.experiment.datasource import discover_cases
+        cases = discover_cases(root)  # [(case_id, rel_path)] sorted by id
+    except Exception:
+        cases = sorted((d, d) for d in os.listdir(root)
+                       if os.path.isdir(os.path.join(root, d)))
     if limit:
-        folders = folders[:limit]
+        cases = cases[:limit]
 
-    # Duplicate patient IDs (case-insensitive) -- a real risk on merged datasets.
-    lowered = [f.lower() for f in folders]
-    dups = sorted({f for f in lowered if lowered.count(f) > 1})
+    top_level = sum(1 for _cid, rel in cases if "/" not in rel)
+    nested = len(cases) - top_level
 
-    results = [validate_patient(os.path.join(root, f), f, modalities)
-               for f in folders]
+    # Duplicate case IDs (case-insensitive) -- a real risk on merged cohorts.
+    lowered = [cid.lower() for cid, _ in cases]
+    dups = sorted({c for c in lowered if lowered.count(c) > 1})
+
+    if policy is not None:
+        policy.assert_known_cases({cid for cid, _ in cases})
+
+    results = [
+        validate_patient(os.path.join(root, rel), cid, modalities,
+                         allowed_seg_labels=(policy.allowed_labels_for(cid)
+                                             if policy is not None else None))
+        for cid, rel in cases
+        if policy is None or not policy.is_excluded(cid)
+    ]
     n_ok = sum(r["ok"] for r in results)
     n_bad = len(results) - n_ok
 
@@ -110,9 +154,14 @@ def validate_dataset(root: str,
         "root": root,
         "modalities": modalities,
         "patient_count": len(results),
+        "top_level_cases": top_level,
+        "nested_cases": nested,
         "passed_patients": n_ok,
         "failed_patients": n_bad,
         "duplicate_ids": dups,
+        "data_quality_policy": (policy.summary() if policy is not None else None),
+        "tolerated_cases": {r["patient"]: r["tolerated_seg_labels"]
+                            for r in results if r.get("tolerated_seg_labels")},
         "patients": results,
     }
 
@@ -125,9 +174,12 @@ def summarize(report: Dict[str, Any]) -> str:
         lines.append(f"  FATAL: {report['fatal']}")
         return "\n".join(lines)
     lines += [
-        f"  patients: {report['patient_count']} "
+        f"  cases: {report['patient_count']} "
         f"(pass {report['passed_patients']}, fail {report['failed_patients']})",
     ]
+    if "top_level_cases" in report:
+        lines.append(f"  cohorts: top-level {report['top_level_cases']}, "
+                     f"nested {report['nested_cases']}")
     if report.get("duplicate_ids"):
         lines.append(f"  duplicate IDs: {report['duplicate_ids']}")
     for r in report["patients"]:

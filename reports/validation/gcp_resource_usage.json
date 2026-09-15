@@ -1,0 +1,15 @@
+{
+  "vm_name": "glo-nca-v3-l4",
+  "zone": "us-central1-a",
+  "machine_type": "g2-standard-8",
+  "gpu": "nvidia-l4",
+  "gpu_count": 1,
+  "gpu_vram_gb": 24,
+  "disk_gb": 200,
+  "disk_type": "pd-ssd",
+  "region": "us-central1",
+  "project": "even-continuity-501915-f9",
+  "vm_create_started_utc": "2026-09-13T23:14:19+00:00",
+  "gpu_hourly_rate_usd_estimated": 0.71,
+  "notes": "L4 pre-flight; download dataset from Drive on VM"
+}

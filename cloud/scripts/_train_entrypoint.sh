@@ -26,17 +26,35 @@ VM_NAME_META="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.inte
 MACHINE_META="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/machine-type 2>/dev/null | sed 's#.*/##' || echo N/A)"
 ZONE_META="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/zone 2>/dev/null | sed 's#.*/##' || echo N/A)"
 
+# --- resolve the experiment id UP FRONT (Phase 2, P1) ------------------------
+# Previously the sync watcher used `ls -t "${OUT}" | head -1`, i.e. the most
+# recently MODIFIED directory in /out. Any other directory touched later (an
+# earlier experiment, a gate smoke run) silently became the sync target and the
+# LIVE experiment was never pushed to GCS. The id is now decided here and passed
+# explicitly to train.py via --experiment-id, so every consumer agrees on it.
+if [[ -n "${GLO_RESUME_DIR:-}" ]]; then
+  EXP_ID="$(basename "${GLO_RESUME_DIR}")"
+else
+  # Read experiment.name from the config on the HOST (the image ENTRYPOINT is
+  # `python train.py`, so it cannot be used as a generic interpreter).
+  EXP_NAME="$(python3 -c "import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))['experiment']['name'])" \
+                "${REPO}/${CONFIG}" 2>/dev/null || true)"
+  [[ -n "${EXP_NAME}" ]] || EXP_NAME="GLO-NCA"
+  EXP_ID="${EXP_NAME}-$(date +%Y%m%d-%H%M%S)"
+fi
+EXP_DIR="${OUT}/${EXP_ID}"
+echo "[entrypoint] experiment id: ${EXP_ID}"
+
 # --- background GCS sync watcher (runs during training) ---------------------
-# Periodically pushes the whole experiment dir to GCS (excluding *.tmp), so a
-# VM failure loses at most one sync interval of progress.
+# Pushes THIS experiment dir to GCS (excluding *.tmp), so a VM failure loses at
+# most one sync interval of progress. No directory guessing.
 (
   while true; do
     sleep "${INTERVAL}"
-    latest="$(ls -t "${OUT}" 2>/dev/null | head -1 || true)"
-    [[ -n "${latest}" && -d "${OUT}/${latest}" ]] || continue
-    gcs rsync -r -x '.*\.tmp$' "${OUT}/${latest}" \
-      "gs://${BUCKET}/${EXP_PREFIX}/${latest}" \
-      >/dev/null 2>&1 && echo "[sync] pushed ${latest}" \
+    [[ -d "${EXP_DIR}" ]] || continue
+    gcs rsync -r -x '.*\.tmp$' "${EXP_DIR}" \
+      "gs://${BUCKET}/${EXP_PREFIX}/${EXP_ID}" \
+      >/dev/null 2>&1 && echo "[sync] pushed ${EXP_ID}" \
       || echo "[sync] WARNING: sync failed; will retry (local data kept)."
   done
 ) &
@@ -46,33 +64,21 @@ trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 # --- run training in Docker; container writes into $OUT (mounted) -----------
 # Resume mode (GLO_RESUME_DIR set) reuses the existing experiment dir and the
 # Phase 1 --resume path; otherwise a fresh --config run.
-before="$(ls "${OUT}" 2>/dev/null || true)"
 set +e
 if [[ -n "${GLO_RESUME_DIR:-}" ]]; then
-  RES_ID="$(basename "${GLO_RESUME_DIR}")"
-  echo "[entrypoint] RESUME mode for experiment ${RES_ID}"
+  echo "[entrypoint] RESUME mode for experiment ${EXP_ID}"
   docker run --rm --gpus all \
     -v "${DATA}:/data:ro" -v "${OUT}:/out" -e DATA_ROOT=/data \
-    glo-nca:latest --resume "/out/${RES_ID}"
+    glo-nca:latest --resume "/out/${EXP_ID}"
 else
   docker run --rm --gpus all \
     -v "${DATA}:/data:ro" -v "${OUT}:/out" -e DATA_ROOT=/data \
-    glo-nca:latest --config "${CONFIG}" --output /out
+    glo-nca:latest --config "${CONFIG}" --output /out \
+    --experiment-id "${EXP_ID}"
 fi
 TRAIN_RC=$?
 set -e
-after="$(ls "${OUT}" 2>/dev/null || true)"
 kill "${SYNC_PID}" 2>/dev/null || true
-
-# Identify the experiment dir. In resume mode it is the restored dir; otherwise
-# the newest directory that did not exist before the run.
-if [[ -n "${GLO_RESUME_DIR:-}" ]]; then
-  EXP_ID="$(basename "${GLO_RESUME_DIR}")"
-else
-  EXP_ID="$(comm -13 <(echo "${before}" | sort) <(echo "${after}" | sort) | tail -1)"
-  [[ -z "${EXP_ID}" ]] && EXP_ID="$(ls -t "${OUT}" | head -1)"
-fi
-EXP_DIR="${OUT}/${EXP_ID}"
 
 # --- write cloud metadata into the experiment dir (extends manifest) --------
 if [[ -d "${EXP_DIR}" ]]; then
@@ -89,11 +95,26 @@ if [[ -d "${EXP_DIR}" ]]; then
   "training_exit_code": ${TRAIN_RC}
 }
 JSON
-  # --- final sync to GCS (exclude in-progress *.tmp) ---
-  gcs rsync -r -x '.*\.tmp$' "${EXP_DIR}" "gs://${BUCKET}/${EXP_PREFIX}/${EXP_ID}" || \
-    echo "[entrypoint] WARNING: final GCS sync failed; local data preserved."
+else
+  echo "[entrypoint] WARNING: experiment dir ${EXP_DIR} not found; skipping metadata."
 fi
 
+# --- final sync to GCS (ALWAYS attempted; Phase 2, P0-E) ---------------------
+# Previously both the metadata write AND the final sync sat inside
+# `if [[ -d "${EXP_DIR}" ]]`, so a training crash that left the directory
+# unresolved skipped the final sync entirely -- losing up to a full sync
+# interval of GPU progress at exactly the moment it mattered most. The sync is
+# now attempted on EVERY exit path, success or failure, and only its own result
+# is allowed to fail softly (local data is always preserved on the VM disk).
+if [[ -d "${EXP_DIR}" ]]; then
+  echo "[entrypoint] final GCS sync (rc=${TRAIN_RC}) -> ${EXP_PREFIX}/${EXP_ID}"
+  gcs rsync -r -x '.*\.tmp$' "${EXP_DIR}" "gs://${BUCKET}/${EXP_PREFIX}/${EXP_ID}" || \
+    echo "[entrypoint] WARNING: final GCS sync failed; local data preserved at ${EXP_DIR}."
+else
+  echo "[entrypoint] WARNING: nothing to sync (no ${EXP_DIR}); local disk unchanged."
+fi
+
+# Release the training lock (see run_training.sh) regardless of outcome.
 rm -f /tmp/glo-nca-training.lock
 echo "[entrypoint] training finished rc=${TRAIN_RC}, experiment=${EXP_ID}"
 exit "${TRAIN_RC}"

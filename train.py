@@ -1,6 +1,6 @@
 r"""
 ================================================================================
-GLO-NCA V2 -- training entry point (config-driven, reproducible, resumable)
+GLO-NCA V3 -- training entry point (config-driven, reproducible, resumable)
 ================================================================================
 Global Context-Aware Neural Cellular Automata for multi-modal (BraTS) brain
 tumour segmentation. This CLI is a thin wrapper: all training logic lives in
@@ -15,9 +15,9 @@ patient split, the environment capture, a status file and a manifest.
 
 Usage:
     python train.py --config configs/smoke_test.yaml
-    python train.py --config configs/gcp_full.yaml
+    python train.py --config configs/v3_multilevel_ckpt.yaml   # production V3
     python train.py --resume experiments/GLO-NCA-V2-YYYYMMDD-HHMMSS
-    python train.py --config configs/gcp_full.yaml --device cpu
+    python train.py --config configs/v3_multilevel_ckpt.yaml --device cpu
 
 Legacy note: the old env-variable interface (EPOCHS/PATCH/AUG_LEVEL/...) is
 replaced by YAML configs so every run has an exact, saved record. The kaggle_v*
@@ -37,8 +37,12 @@ if _HERE not in sys.path:
 def _parse_args():
     ap = argparse.ArgumentParser(
         description="GLO-NCA V2 training (config-driven, reproducible).")
-    ap.add_argument("--config", default=os.path.join("configs", "gcp_full.yaml"),
-                    help="path to a YAML config (default: configs/gcp_full.yaml)")
+    # Phase 2: no default config. V3 is the production architecture, and the old
+    # default (configs/gcp_full.yaml) was the V2 baseline -- a bare
+    # `python train.py` silently trained the wrong model. Be explicit.
+    ap.add_argument("--config", default=None,
+                    help="path to a YAML config, e.g. configs/v3_multilevel_ckpt.yaml "
+                         "(required unless --resume is given)")
     ap.add_argument("--resume", metavar="EXPERIMENT_DIR", default=None,
                     help="resume an existing experiment directory")
     ap.add_argument("--output", default=os.path.join(_HERE, "experiments"),
@@ -47,6 +51,11 @@ def _parse_args():
                     help="override the experiment name (else from config)")
     ap.add_argument("--device", default=None,
                     help="force a device, e.g. 'cpu' or 'cuda:0' (else auto)")
+    ap.add_argument("--experiment-id", default=None,
+                    help="use this EXACT experiment directory name instead of "
+                         "generating '<name>-<timestamp>'. The cloud entrypoint "
+                         "passes it so the GCS sync watcher knows the experiment "
+                         "id up front instead of guessing the newest directory.")
     return ap.parse_args()
 
 
@@ -61,13 +70,25 @@ def main() -> int:
         ws = Workspace.open_existing(args.resume)
         cfg_path = ws.path("config", "config.yaml")
         if not os.path.exists(cfg_path):
-            cfg_path = args.config  # fall back to the given config
+            # Phase 2 (P0): NEVER fall back to --config here. Its default is the
+            # V2 baseline (configs/gcp_full.yaml), so the old fallback could
+            # resume a V3 experiment under a V2 configuration. A resume without
+            # its own saved config is unreproducible -- fail loudly instead.
+            print(f"FAILED: cannot resume {args.resume}: missing {cfg_path}.\n"
+                  "The experiment's own config is required to resume "
+                  "reproducibly; refusing to substitute a different config.")
+            return 2
         cfg = load_config(cfg_path)
         resume = True
     else:
+        if not args.config:
+            print("FAILED: --config is required (or use --resume <dir>).\n"
+                  "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+            return 2
         cfg = load_config(args.config)
         name = args.experiment or cfg.name
-        ws = Workspace.create(args.output, name)
+        ws = Workspace.create(args.output, name,
+                              experiment_id=args.experiment_id)
         resume = False
 
     try:

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint  # opt-in gradient checkpointing (memory-only)
 
 
 class SEBlock3D(nn.Module):
@@ -94,6 +95,13 @@ class BasicNCA3D(nn.Module):
         self.channel_n = channel_n
         self.input_channels = input_channels
         self.use_attention = use_attention
+        # Opt-in, memory-only gradient checkpointing of the unrolled NCA steps.
+        # Default False -> forward() is byte-identical to the original behaviour
+        # (V2 and V3-without-the-flag are completely unchanged). When True, each
+        # step's activations are recomputed in backward instead of being stored,
+        # trading compute for VRAM. The RNG state is preserved so the stochastic
+        # fire-rate mask is identical on recompute -> same math, same outputs.
+        self.use_checkpoint = False
 
         # One Input
         self.fc0 = nn.Linear(channel_n*2, hidden_size)
@@ -178,7 +186,20 @@ class BasicNCA3D(nn.Module):
                 steps: number of steps to run update
                 fire_rate: random activation rate of each cell
         """
+        # Checkpoint whenever gradients are being computed (i.e. a backward will
+        # follow). Not gated on self.training: it is valid in any grad-enabled
+        # forward and stays OFF under torch.no_grad() inference (no backward to
+        # save memory for). Purely memory-only; outputs are unchanged.
+        use_ckpt = getattr(self, "use_checkpoint", False) and torch.is_grad_enabled()
         for step in range(steps):
-            x2 = self.update(x, fire_rate).clone() #[...,3:][...,3:]
+            if use_ckpt:
+                # Recompute this step's activations in backward instead of storing
+                # them (memory-only). preserve_rng_state keeps the stochastic
+                # fire-rate mask identical on recompute, so outputs are unchanged.
+                x2 = torch.utils.checkpoint.checkpoint(
+                    self.update, x, fire_rate,
+                    use_reentrant=False, preserve_rng_state=True).clone()
+            else:
+                x2 = self.update(x, fire_rate).clone() #[...,3:][...,3:]
             x = torch.concat((x[...,0:self.input_channels], x2[...,self.input_channels:]), 4)
         return x

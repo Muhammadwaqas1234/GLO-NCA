@@ -70,3 +70,38 @@ confirm() { # confirm "message" -- interactive guard for anything spendy
   read -r -p "${msg} [y/N] " ans
   [[ "${ans}" == "y" || "${ans}" == "Y" ]] || die "aborted by user."
 }
+
+# --- training concurrency guard (Phase 2, P1) --------------------------------
+# The previous guard wrote `$$` -- the LAUNCHER shell's pid -- into a lock file,
+# but training actually runs under systemd. The launcher exits immediately, so
+# that pid was always dead and the guard reported "not running" while training
+# was live, allowing a SECOND run to start on the same GPU. It could also leave
+# a stale lock behind when the operator declined the confirmation prompt.
+#
+# systemd already tracks the real job, so it is the single source of truth.
+# The lock file is kept only as a human-readable breadcrumb.
+TRAIN_UNIT="glo-nca-training"
+TRAIN_LOCK="/tmp/glo-nca-training.lock"
+
+training_is_active() { # 0 = a training job is genuinely running
+  systemctl is-active --quiet "${TRAIN_UNIT}" 2>/dev/null
+}
+
+assert_no_training_running() {
+  if training_is_active; then
+    die "systemd unit '${TRAIN_UNIT}' is ACTIVE -- training is already running.
+       Refusing to start a second job on this GPU.
+       Inspect:  systemctl status ${TRAIN_UNIT}
+       Stop it:  sudo systemctl stop ${TRAIN_UNIT}"
+  fi
+  # Not active: any lock file left by a crashed/declined launch is stale.
+  if [[ -e "${TRAIN_LOCK}" ]]; then
+    warn "removing stale lock ${TRAIN_LOCK} (unit '${TRAIN_UNIT}' is not active)"
+    rm -f "${TRAIN_LOCK}"
+  fi
+}
+
+write_training_lock() { # call ONLY after confirm(), just before systemctl start
+  printf 'unit=%s\nstarted=%s\nexperiment=%s\n' \
+    "${TRAIN_UNIT}" "$(date -Is)" "${1:-unknown}" > "${TRAIN_LOCK}"
+}

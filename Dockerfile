@@ -48,6 +48,13 @@ RUN python -m pip install -r requirements-docker.txt
 COPY src/ ./src/
 COPY configs/ ./configs/
 COPY scripts/ ./scripts/
+# The canonical subject-disjoint split MUST be in the image: every V3 config
+# sets data.split_file=split/master_split.json, and the runner fails hard rather
+# than regenerating it. Without this COPY the production container cannot start.
+# (.dockerignore re-includes this one file from its broad `*.json` rule.)
+COPY split/master_split.json ./split/master_split.json
+# Operational data-quality policy (per-case tolerated stray labels).
+COPY split/data_quality_policy.json ./split/data_quality_policy.json
 COPY train.py ./
 
 # Experiments are written here by default (override with --output / a mount).
@@ -58,8 +65,16 @@ ENV OUT_DIR=/out
 # Fail fast if the stack is broken before starting a long training run.
 RUN python -c "import torch, torchio, nibabel, scipy, cv2, yaml; print('deps OK, torch', torch.__version__)"
 
-# Default: run the full config. Override the config at run time, e.g.:
-#   docker run ... glo-nca --config configs/smoke_test.yaml
-#   docker run ... glo-nca --resume experiments/<id>
+# Fail the BUILD (not a 300-epoch run) if the canonical split is missing or its
+# recorded fingerprint does not match its contents.
+RUN python -c "import json,hashlib,sys; d=json.load(open('split/master_split.json')); \
+print('split OK', d['split_version'], d['split_sha256'][:12], \
+d['train_count'], d['val_count'], d['test_count'])"
+
+# V3 is the production architecture. There is deliberately NO default config:
+# a bare `docker run glo-nca:latest` must fail with argparse usage rather than
+# silently training the V2 baseline (configs/gcp_full.yaml), which is what the
+# previous `CMD ["--config", "configs/gcp_full.yaml"]` did.
+#   docker run ... glo-nca:latest --config configs/v3_multilevel_ckpt.yaml
+#   docker run ... glo-nca:latest --resume /out/<experiment-id>
 ENTRYPOINT ["python", "train.py"]
-CMD ["--config", "configs/gcp_full.yaml"]

@@ -71,8 +71,22 @@ def restore_into(ckpt: Dict[str, Any], *, models: List[torch.nn.Module],
         m.load_state_dict(sd)
     for o, sd in zip(optimizers, ckpt.get("optimizer", [])):
         o.load_state_dict(sd)
-    for s, sd in zip(schedulers, ckpt.get("scheduler", [])):
+    # Phase 2 (P1): this was a bare `except: pass` with NO logging. If scheduler
+    # restore failed, the run silently continued with a freshly-built
+    # CosineAnnealingLR at step 0 -- i.e. the learning rate jumped back to its
+    # initial value in the middle of a 300-epoch campaign, corrupting the run
+    # with no warning anywhere. The failure is now surfaced loudly (and is
+    # visible afterwards in metrics/train.csv's `lr` column).
+    failures = []
+    for i, (s, sd) in enumerate(zip(schedulers, ckpt.get("scheduler", []))):
         try:
             s.load_state_dict(sd)
-        except Exception:
-            pass  # scheduler shape can shift if epochs changed; keep going
+        except Exception as exc:
+            failures.append(f"scheduler[{i}]: {type(exc).__name__}: {exc}")
+    if failures:
+        raise RuntimeError(
+            "checkpoint restore FAILED for: " + "; ".join(failures) + ".\n"
+            "Refusing to continue: the LR schedule would silently restart from "
+            "step 0 mid-campaign. This normally means the checkpoint was written "
+            "by a config with different `training.epochs` (T_max). Resume with "
+            "the ORIGINAL config, or start a new experiment deliberately.")

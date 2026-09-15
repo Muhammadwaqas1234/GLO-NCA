@@ -13,7 +13,10 @@ if gcloud compute instances describe "${VM_NAME}" $(vm_flags) >/dev/null 2>&1; t
   if [[ "${state}" == "RUNNING" ]]; then
     pass "VM ${VM_NAME} already RUNNING"
   else
-    log "starting existing VM ${VM_NAME} (was ${state})"
+    # Phase 2 (cost safety): restarting a stopped GPU VM resumes billing
+    # immediately. Creation was already guarded by confirm(); restart was not.
+    log "VM ${VM_NAME} is ${state}; starting it resumes GPU billing"
+    confirm "Start existing GPU VM ${VM_NAME} (${MACHINE_TYPE}, ${GPU_TYPE}) -- billing resumes?"
     gcloud compute instances start "${VM_NAME}" $(vm_flags)
     pass "VM ${VM_NAME} started"
   fi

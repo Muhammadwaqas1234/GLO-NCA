@@ -64,6 +64,18 @@ def main() -> int:
     print(f"counts -> train {len(tr)} | val {len(va)} | test {len(te)} | "
           f"total {len(tr | va | te)}")
 
+    # SUBJECT-disjointness (temporal-leakage gate): all timepoints of a subject
+    # must live in one partition. Uses the canonical subject_of() rule.
+    from src.experiment.datasource import subject_of
+    s_tr = {subject_of(x) for x in tr}
+    s_va = {subject_of(x) for x in va}
+    s_te = {subject_of(x) for x in te}
+    leak = (s_tr & s_va) | (s_tr & s_te) | (s_va & s_te)
+    check(f"subject-disjoint (no temporal leakage; {len(leak)} straddling subjects)",
+          not leak)
+    print(f"subjects -> train {len(s_tr)} | val {len(s_va)} | test {len(s_te)} | "
+          f"total {len(s_tr | s_va | s_te)}")
+
     if args.data_root:
         from src.experiment.datasource import list_patients
         pop = set(list_patients(args.data_root))

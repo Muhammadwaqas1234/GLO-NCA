@@ -39,8 +39,25 @@ class Workspace:
 
     # --------------------------------------------------------------- creation
     @classmethod
-    def create(cls, base: str, name: str) -> "Workspace":
-        """Create a fresh experiment directory: base/<name>-<timestamp>/."""
+    def create(cls, base: str, name: str,
+               experiment_id: Optional[str] = None) -> "Workspace":
+        """Create a fresh experiment directory: base/<name>-<timestamp>/.
+
+        ``experiment_id`` pins the directory name exactly (used by the cloud
+        entrypoint, which generates the id BEFORE launching so the GCS sync
+        watcher never has to guess which directory is the live experiment).
+        An existing directory is still refused rather than overwritten.
+        """
+        if experiment_id:
+            root = os.path.join(base, experiment_id)
+            if os.path.exists(root):
+                raise FileExistsError(
+                    f"experiment directory already exists: {root}. Refusing to "
+                    "overwrite a previous run; pass a different --experiment-id.")
+            for sub in SUBDIRS:
+                os.makedirs(os.path.join(root, sub), exist_ok=True)
+            return cls(root=root, experiment_id=experiment_id)
+
         experiment_id = f"{name}-{_timestamp()}"
         root = os.path.join(base, experiment_id)
         # Extremely unlikely, but guarantee uniqueness rather than overwrite.

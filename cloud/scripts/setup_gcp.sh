@@ -26,16 +26,28 @@ else
 fi
 
 # --- repo checkout ---
+# Phase 2 (P1): the branch was hard-coded to 'v2', so a VM provisioned for the
+# V3 campaign silently received the V2 baseline WITHOUT the V3 model, agent or
+# configs. Default to the V3 branch; override with GLO_BRANCH for a V2 run.
+GLO_BRANCH="${GLO_BRANCH:-v3-multilevel}"
 if [[ -d "${VM_WORKSPACE}/.git" ]]; then
   pass "repo already at ${VM_WORKSPACE}"
-  git -C "${VM_WORKSPACE}" fetch --quiet origin v2 && \
-    git -C "${VM_WORKSPACE}" checkout --quiet v2 && \
-    git -C "${VM_WORKSPACE}" pull --quiet origin v2 || warn "git update skipped"
+  git -C "${VM_WORKSPACE}" fetch --quiet origin "${GLO_BRANCH}" && \
+    git -C "${VM_WORKSPACE}" checkout --quiet "${GLO_BRANCH}" && \
+    git -C "${VM_WORKSPACE}" pull --quiet origin "${GLO_BRANCH}" \
+    || die "git update to branch '${GLO_BRANCH}' FAILED. Refusing to build an
+       image from an unknown checkout -- fix the repo state and re-run."
 else
-  log "cloning repo (branch v2) into ${VM_WORKSPACE}"
+  log "cloning repo (branch ${GLO_BRANCH}) into ${VM_WORKSPACE}"
   sudo mkdir -p "${VM_WORKSPACE}"; sudo chown "$USER" "${VM_WORKSPACE}"
-  git clone -b v2 https://github.com/Muhammadwaqas1234/GLO-NCA.git "${VM_WORKSPACE}"
+  git clone -b "${GLO_BRANCH}" https://github.com/Muhammadwaqas1234/GLO-NCA.git "${VM_WORKSPACE}"
 fi
+# Prove the checkout actually contains V3 before building an image from it.
+[[ -f "${VM_WORKSPACE}/src/models/Model_GLO_NCA_V3.py" \
+   && -f "${VM_WORKSPACE}/split/master_split.json" ]] \
+  || die "checkout at ${VM_WORKSPACE} (branch ${GLO_BRANCH}) is missing the V3
+       model and/or the canonical split. Refusing to build a broken image."
+pass "checkout verified: V3 model + canonical split present (branch ${GLO_BRANCH})"
 
 # --- data / out dirs ---
 sudo mkdir -p "${VM_DATA_DIR}" "${VM_OUT_DIR}"

@@ -1,0 +1,63 @@
+{
+  "policy_version": "GLO-NCA-V3-dq-v1",
+  "created_utc": "2026-09-16T00:00:00Z",
+  "title": "Operational data-quality policy; canonical scientific split preserved",
+  "canonical_split_file": "split/master_split.json",
+  "canonical_split_sha256": "d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d",
+  "canonical_split_unchanged": true,
+  "summary": "Two TRAIN cases carry stray segmentation labels outside the BraTS value set {0,1,2,3,4}. Evidence (measured, see rationale) shows the production label conversion already maps ONLY {1,2,3,4} into WT/TC/ET, so the stray voxels become background and the resulting targets are valid and correctly nested. The cases are therefore validator-strict, NOT training-invalid. They are KEPT in training under an explicit, per-case, per-label tolerance. No case is excluded and the canonical split is byte-for-byte unchanged.",
+
+  "tolerated_seg_labels": [
+    {
+      "case_id": "BraTS-MET-01094-002",
+      "split": "train",
+      "stray_labels": [6],
+      "voxel_counts": {"6": 129},
+      "connected_components": 1,
+      "neighbouring_labels": {"0": 174},
+      "maps_to_WT_TC_ET": "none (becomes background)",
+      "resulting_targets": {"WT": 19847, "TC": 19847, "ET": 19847, "nesting_ok": true, "binary": true},
+      "reason": "Isolated annotation artifact surrounded by background. Production _labels_to_regions maps only {1,2,3,4}; label 6 contributes to no region. Targets remain valid and correctly nested."
+    },
+    {
+      "case_id": "BraTS-MET-01184-002",
+      "split": "train",
+      "stray_labels": [8],
+      "voxel_counts": {"8": 28},
+      "connected_components": 1,
+      "neighbouring_labels": {"0": 56, "3": 11},
+      "maps_to_WT_TC_ET": "none (becomes background)",
+      "resulting_targets": {"WT": 21991, "TC": 15377, "ET": 14974, "nesting_ok": true, "binary": true},
+      "reason": "Isolated annotation artifact, almost entirely background-adjacent. Production _labels_to_regions maps only {1,2,3,4}; label 8 contributes to no region. Targets remain valid and correctly nested."
+    }
+  ],
+
+  "excluded_cases": [],
+
+  "counts": {
+    "dataset_case_count": 1296,
+    "canonical_train": 898,
+    "canonical_validation": 200,
+    "canonical_test": 198,
+    "operational_exclusions": 0,
+    "final_operational_train": 898,
+    "final_operational_validation": 200,
+    "final_operational_test": 198
+  },
+
+  "guarantees": [
+    "The canonical split file and its SHA256 are unchanged.",
+    "Validation and test splits are untouched; no tolerance applies to them.",
+    "Tolerance is per-case AND per-label: only the exact listed labels on the exact listed case IDs are accepted.",
+    "Any other unexpected label, on any case, still FAILS the validator (fail-closed).",
+    "Nothing is auto-discovered: a case is tolerated only if listed here explicitly.",
+    "A missing, malformed, or unknown-ID policy file fails loudly.",
+    "No segmentation file on disk is modified; no label is remapped."
+  ],
+
+  "rejected_alternatives": [
+    "Excluding the two cases from training: unnecessary, since their targets are valid; it would also reduce the train set below the canonical 898 and create a second de-facto split.",
+    "Rewriting the two seg files to remove the stray labels: modifies the dataset on disk and changes its content fingerprint.",
+    "Globally widening ALLOWED_SEG_LABELS: would silently accept genuinely corrupt annotations anywhere in the dataset."
+  ]
+}
