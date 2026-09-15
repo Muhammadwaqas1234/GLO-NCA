@@ -183,6 +183,25 @@ class Experiment():
                 m.eval()
 
         
+    # ------------------------------------------------------------- pickling
+    # The dataset holds a reference to this Experiment, and PyTorch pickles the
+    # dataset when it SPAWNS DataLoader workers (the default on Windows). A
+    # SummaryWriter owns a thread lock and is not picklable, so spawning any
+    # worker raised "TypeError: cannot pickle '_thread.lock' object" before this
+    # was added -- a latent defect independent of profiling.
+    #
+    # The writer is only ever used from the parent process (write_scalar /
+    # write_text / write_image are called by the runner, never by a worker), so
+    # dropping it from the pickled state is behaviour-preserving: the parent
+    # keeps its live writer, and a worker simply has none.
+    def __getstate__(self):
+        st = self.__dict__.copy()
+        st["writer"] = None
+        return st
+
+    def __setstate__(self, st):
+        self.__dict__.update(st)
+
     def get_from_config(self, tag):
         r"""Get from config
             #Args

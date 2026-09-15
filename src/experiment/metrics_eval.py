@@ -16,15 +16,29 @@ REGIONS = ["WT", "TC", "ET"]
 
 
 def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """One clean forward pass over ``state``; returns per-case (prob, gt)."""
+    """One clean forward pass over ``state``; returns per-case (prob, gt).
+
+    Phase 2: the validation path is profiled SEPARATELY from training, because a
+    slow "epoch" may be dominated by full-volume validation inference rather
+    than by the training iterations. Observational only -- one forward pass per
+    case, unchanged.
+    """
+    from src.profiling import get_profiler
+    prof = get_profiler()
+
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
     pairs = []
     with torch.no_grad():
         for data in loader:
-            data = agent.prepare_data(data, eval=True)
-            out, targets = agent.get_outputs(data, full_img=True)
-            prob = torch.sigmoid(out).detach().cpu().numpy()
+            with prof.section(f"validation/{state}_prepare", cuda=True):
+                data = agent.prepare_data(data, eval=True)
+            with prof.section(f"validation/{state}_inference", cuda=True):
+                out, targets = agent.get_outputs(data, full_img=True)
+            # sigmoid + device->host copy: a real synchronisation point, timed
+            # so probability generation is not hidden inside "inference".
+            with prof.section(f"validation/{state}_probabilities", cuda=True):
+                prob = torch.sigmoid(out).detach().cpu().numpy()
             # Phase 2 (memory, EXACT): the ground truth is strictly binary {0,1}
             # (Nii_Gz_Dataset_3D._labels_to_regions stacks boolean masks), and
             # every metric below uses it only via `gt >= 0.5`. Storing it as
@@ -34,7 +48,8 @@ def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
             # *after* a 300-epoch run. Probabilities stay float32: float16 was
             # measured to flip ~2.3k threshold decisions per 4M voxels, so it is
             # NOT equivalent and is deliberately not used.
-            gt = (targets.detach().cpu().numpy() >= 0.5).astype(np.uint8)
+            with prof.section(f"validation/{state}_gt_to_host", cuda=True):
+                gt = (targets.detach().cpu().numpy() >= 0.5).astype(np.uint8)
             pairs.append((prob, gt))
     agent.exp.set_model_state("train")
     return pairs
@@ -42,16 +57,21 @@ def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
 
 def score(pairs, thresholds: Dict[str, float]) -> Dict[str, Dict[str, float]]:
     """Per-region Dice/mIoU/HD95 at the given per-region thresholds."""
+    from src.profiling import get_profiler
+    prof = get_profiler()
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     for prob, gt in pairs:
         for i, r in enumerate(REGIONS):
             th = thresholds[r]
             p, t = prob[..., i], gt[..., i]
-            inter = np.logical_and(p >= th, t >= 0.5).sum()
-            denom = (p >= th).sum() + (t >= 0.5).sum() + 1e-6
-            acc[r]["dice"].append((2 * inter) / denom)
-            acc[r]["iou"].append(iou_score(p, t, threshold=th))
-            acc[r]["hd95"].append(hd95_score(p, t, threshold=th))
+            with prof.section("validation/threshold_dice"):
+                inter = np.logical_and(p >= th, t >= 0.5).sum()
+                denom = (p >= th).sum() + (t >= 0.5).sum() + 1e-6
+                acc[r]["dice"].append((2 * inter) / denom)
+            with prof.section("validation/iou"):
+                acc[r]["iou"].append(iou_score(p, t, threshold=th))
+            with prof.section("validation/hd95"):
+                acc[r]["hd95"].append(hd95_score(p, t, threshold=th))
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]

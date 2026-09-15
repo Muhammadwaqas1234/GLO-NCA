@@ -25,6 +25,9 @@ Tutorial/Data/
 
 # --- Experiment outputs / checkpoints / logs (generated) ---
 experiments/
+# Phase 2 profiling artifacts (traces can be large; never commit them)
+experiments/phase2_profiling/
+**/profiler/*.pt.trace.json
 runs/
 compare_runs/
 out/
