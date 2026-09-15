@@ -37,11 +37,11 @@
     "process_rss_gb": 1.23,
     "target_vm_ram_gb": 32.0,
     "local_host_total_gb": 15.6,
-    "local_host_available_gb": 1.1,
+    "local_host_available_gb": 1.7,
     "target_headroom_gb": 20.3
   },
   "timings": {
-    "dataset_getitem_s": 5.16
+    "dataset_getitem_s": 3.11
   },
   "results": [
     {
@@ -66,7 +66,7 @@
       "section": "B. V3 model on the local GPU",
       "name": "forward + loss + backward (GPU)",
       "status": "PASS",
-      "detail": "loss=4.0746 finite, 53 grad tensors, out=(1, 3, 32, 32, 32)"
+      "detail": "loss=4.0468 finite, 53 grad tensors, out=(1, 3, 32, 32, 32)"
     },
     {
       "section": "B. V3 model on the local GPU",
@@ -114,7 +114,7 @@
       "section": "D. real data + real patchify",
       "name": "REAL dataset preprocessing on REAL BraTS-MET case",
       "status": "PASS",
-      "detail": "BraTS-MET-00001-000: img(64, 64, 64, 4) label(64, 64, 64, 3) binary, ET<=TC<=WT, 5.2s"
+      "detail": "BraTS-MET-00001-000: img(64, 64, 64, 4) label(64, 64, 64, 3) binary, ET<=TC<=WT, 3.1s"
     },
     {
       "section": "D. real data + real patchify",

@@ -176,39 +176,48 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
                 logits: (B, output_channels, X, Y, Z) channels-first (matches the
                 repository's [B,3,D,H,W] convention for the loss/metrics).
         """
+        # Phase 2 profiling: OBSERVATIONAL ONLY. `prof` is a NullProfiler unless
+        # profiling is explicitly enabled, in which case `section()` returns a
+        # shared no-op context -- no CUDA sync, no behaviour change. The maths,
+        # ordering, resolutions and NCA step counts below are untouched.
+        from src.profiling import get_profiler
+        prof = get_profiler()
+
         prev_state: Optional[torch.Tensor] = None
         level_states: List[torch.Tensor] = []
 
         for i, (lv, nca) in enumerate(zip(self.levels, self.ncas)):
-            res = lv.resolution
-            # modalities at this level's resolution (down/upsampled view)
-            mod_i = self._resize_cl(modalities_cl, res, mode="trilinear")
-            seed = self._seed(mod_i, lv.channels)
+            with prof.section(f"model/level{i + 1}", cuda=True):
+                res = lv.resolution
+                # modalities at this level's resolution (down/upsampled view)
+                mod_i = self._resize_cl(modalities_cl, res, mode="trilinear")
+                seed = self._seed(mod_i, lv.channels)
 
-            # inject the previous level's (projected, upsampled) state into this
-            # level's state channels (everything after the input modalities).
-            if prev_state is not None:
-                proj = self.projections[i - 1](prev_state)         # -> nxt_state width
-                proj = self._resize_cl(proj, res, mode="nearest")  # -> this resolution
-                seed = seed.clone()
-                seed[..., self.input_channels:] = seed[..., self.input_channels:] + proj
+                # inject the previous level's (projected, upsampled) state into this
+                # level's state channels (everything after the input modalities).
+                if prev_state is not None:
+                    proj = self.projections[i - 1](prev_state)         # -> nxt_state width
+                    proj = self._resize_cl(proj, res, mode="nearest")  # -> this resolution
+                    seed = seed.clone()
+                    seed[..., self.input_channels:] = seed[..., self.input_channels:] + proj
 
-            out = nca(seed, steps=lv.nca_steps, fire_rate=self.fire_rate)
-            prev_state = out
-            level_states.append(out)
+                out = nca(seed, steps=lv.nca_steps, fire_rate=self.fire_rate)
+                prev_state = out
+                level_states.append(out)
 
         # ---- learnable multi-level fusion at the finest resolution ----
-        fine_res = self.levels[-1].resolution
-        fused = []
-        for state, to_fine in zip(level_states, self.level_to_fine):
-            s = to_fine(state)                                   # width -> fine_ch
-            s = self._resize_cl(s, fine_res, mode="nearest")     # res -> fine
-            fused.append(_to_cf(s))
-        if self.fusion_type == "concat":
-            fused_cf = self.fuse(torch.cat(fused, dim=1))
-        else:
-            fused_cf = torch.stack(fused, dim=0).sum(dim=0)
-        logits = self.seg_head(fused_cf)                         # (B,3,X,Y,Z)
+        with prof.section("model/fusion", cuda=True):
+            fine_res = self.levels[-1].resolution
+            fused = []
+            for state, to_fine in zip(level_states, self.level_to_fine):
+                s = to_fine(state)                                   # width -> fine_ch
+                s = self._resize_cl(s, fine_res, mode="nearest")     # res -> fine
+                fused.append(_to_cf(s))
+            if self.fusion_type == "concat":
+                fused_cf = self.fuse(torch.cat(fused, dim=1))
+            else:
+                fused_cf = torch.stack(fused, dim=0).sum(dim=0)
+            logits = self.seg_head(fused_cf)                         # (B,3,X,Y,Z)
         return logits
 
     # ------------------------------------------------------------ introspection

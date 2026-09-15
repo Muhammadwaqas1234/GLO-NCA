@@ -1,0 +1,112 @@
+# =============================================================================
+# GLO-NCA V3 -- LOCAL PROFILING config (Phase 2). NOT A PRODUCTION CONFIG.
+#
+# PURPOSE: validate the profiling instrumentation end-to-end on hardware that
+# cannot hold the production 128^3 workload. It exists to prove the MEASUREMENT
+# SYSTEM works -- it is NOT a performance result for the thesis.
+#
+# The production 128^3 numbers remain: GCP REQUIRED - NOT EXECUTED LOCALLY.
+# Never quote timings from this config as production performance.
+#
+# Resolutions/steps/channels below are the repository's existing local smoke
+# sizes (see configs/smoke_test_v3.yaml); no new architecture was invented.
+# Loss, optimizer, scheduler, EMA, clipping, seed and evaluation discipline are
+# IDENTICAL to production so the instrumented code path is the real one.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V3-profile-local
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 20         # tiny, but enough that the 0.7/0.15/0.15
+                                 # split yields non-empty val AND test sets
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+data:
+  # Synthetic/seeded split: this is a profiling harness, not a scientific run,
+  # so it must NOT consume the canonical master split.
+  allow_seeded_split: true
+  # No data-quality policy here. The production policy names two specific case
+  # ids and is (correctly) fail-closed if they are absent -- and this harness
+  # limits discovery to a handful of cases, so those ids are not present. The
+  # production config keeps the policy; this one simply does not load it.
+  quality_policy_file: null
+
+model:
+  version: v3
+  name: GLO-NCA-V3-MultiLevel-profile
+  level1: {enabled: true, resolution: 16, channels: 16, nca_steps: 4, kernel_size: 3}
+  level2: {enabled: true, resolution: 24, channels: 16, nca_steps: 4, kernel_size: 3}
+  level3: {enabled: true, resolution: 32, channels: 12, nca_steps: 3, kernel_size: 3}
+  feature_fusion: {enabled: true, type: concat}
+  fire_rate: 0.6
+  use_attention: true
+  use_spatial: true
+  hidden: 64
+  dropout: 0.1
+
+training:
+  epochs: 1                      # bounded further by profiling.iterations
+  batch_size: 1
+  patch_size: 32
+  augmentation: light
+  # workers: 0 is REQUIRED for input-pipeline attribution. With workers > 0 the
+  # dataset runs in SPAWNED processes whose profiler copy is discarded, so
+  # per-stage timings (NIfTI, crop, resample, patchify, augment) would be lost
+  # and only `data/dataloader_wait` would remain. Production keeps workers: 4;
+  # this harness trades that for visibility, and the report says so.
+  workers: 0
+
+optimizer:                       # identical semantics to production
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:                            # identical to production
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+  ce_weight: 0.5
+  empty_region_bce_weight: 0.1
+
+sampling:                        # identical to production
+  prioritize_probability: 0.7
+  prioritize_region: 2
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 1
+
+logging:
+  tensorboard: false
+  checkpoint_frequency: 1
+
+memory:
+  gradient_checkpointing: true   # production setting; backward recompute is
+                                 # exactly what we want to measure
+
+# ---------------------------------------------------------------------------
+# Phase 2 profiling. `enabled: true` ONLY here -- production configs leave this
+# absent, so profiling is off and every hook is a no-op with no CUDA sync.
+profiling:
+  enabled: true
+  warmup_iterations: 2           # first iterations include CUDA/cuDNN warmup
+  iterations: 4                  # bounded: cannot drift into a training run
+  profile_data_pipeline: true
+  profile_model: true
+  profile_training_step: true
+  profile_validation: true
+  cuda: true                     # synchronise around GPU sections (async CUDA)
+  memory: true
+  pytorch_profiler: true          # bounded Chrome trace into <run>/profiler/

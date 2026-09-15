@@ -92,8 +92,27 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         raise FileNotFoundError(f"Could not find '{suffix}' volume for patient '{patient}' in {folder}")
 
     def load_item(self, path):
-        r"""Load a single nii/nii.gz volume as a float numpy array."""
-        return nib.load(path).get_fdata()
+        r"""Load a single nii/nii.gz volume as a float numpy array.
+
+        Phase 2 note: ``nib.load`` only reads the HEADER (it is lazy); the actual
+        gzip decompression + voxel materialisation happens in ``get_fdata()``.
+        The two are timed separately so a profiling report can distinguish
+        "opening files" from "decompressing volumes" -- they differ by orders of
+        magnitude for .nii.gz. Behaviour is identical either way.
+        """
+        from src.profiling import get_profiler
+        prof = get_profiler()
+        if not prof.enabled:
+            return nib.load(path).get_fdata()
+
+        with prof.section("data/nifti_header"):
+            handle = nib.load(path)
+        try:
+            prof.record("data/file_size_mb", os.path.getsize(path) / 1024 ** 2)
+        except OSError:
+            pass
+        with prof.section("data/nifti_materialize"):
+            return handle.get_fdata()
 
     @staticmethod
     def _foreground_bbox(vol_stack):
@@ -169,6 +188,10 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             random.seed(s)
             np.random.seed(s)
 
+        # Phase 2: observational profiler (NullProfiler unless explicitly on).
+        from src.profiling import get_profiler
+        _prof = get_profiler()
+
         crop_fg = self.exp.get_from_config('foreground_crop') is True
 
         key = self.images_list[idx]
@@ -184,20 +207,23 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
 
             # --- Foreground crop to the brain bounding box (Swin-UNETR) ------
-            if crop_fg:
-                bbox = self._foreground_bbox(raw)
-                if bbox is not None:
-                    x0, x1, y0, y1, z0, z1 = bbox
-                    raw = raw[x0:x1, y0:y1, z0:z1, :]
-                    seg = seg[x0:x1, y0:y1, z0:z1]
+            with _prof.section("data/foreground_crop"):
+                if crop_fg:
+                    bbox = self._foreground_bbox(raw)
+                    if bbox is not None:
+                        x0, x1, y0, y1, z0, z1 = bbox
+                        raw = raw[x0:x1, y0:y1, z0:z1, :]
+                        seg = seg[x0:x1, y0:y1, z0:z1]
 
             # --- Resize to training size -----------------------------------
-            if self.exp.get_from_config('rescale') is not False:
-                img = np.stack([self.rescale3d(raw[..., c]) for c in range(raw.shape[-1])], axis=-1)
-                seg = self.rescale3d(seg, isLabel=True)
-            else:
-                img = raw
-            label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
+            with _prof.section("data/resample"):
+                if self.exp.get_from_config('rescale') is not False:
+                    img = np.stack([self.rescale3d(raw[..., c]) for c in range(raw.shape[-1])], axis=-1)
+                    seg = self.rescale3d(seg, isLabel=True)
+                else:
+                    img = raw
+            with _prof.section("data/labels_to_regions"):
+                label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
 
             img_id = "_" + str(p_id) + "_0"
             self.data.set_data(key=key, data=(img_id, img, label))
@@ -208,7 +234,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         # Patchify on the fly for training (global info comes from the
         # coarse NCA level, so a patch is enough at full resolution).
         if self.exp.get_from_config('patchify') is True and self.state == "train":
-            img, label = self.patchify_multimodal(img, label)
+            with _prof.section("data/patchify"):
+                img, label = self.patchify_multimodal(img, label)
 
         # Light on-the-fly augmentation (train only). Gated by the 'augment'
         # config flag -- default off, so single-modality / older configs are
@@ -216,7 +243,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         # regularise without distorting tumour shape: axis flips, 90-deg
         # in-plane rotations and a small per-modality intensity scale/shift.
         if self.exp.get_from_config('augment') is True and self.state == "train":
-            img, label = self._augment(img, label)
+            with _prof.section("data/augment"):
+                img, label = self._augment(img, label)
 
         # Per-modality intensity normalisation.
         if self.exp.get_from_config('nonzero_norm') is True:

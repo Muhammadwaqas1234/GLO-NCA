@@ -40,6 +40,8 @@ from .dataset_validation import (validate_dataset, summarize,
 from .data_quality import (load_policy as dq_load_policy,
                            DataQualityPolicyError)
 from .diagnostics import diagnose
+from src.profiling import configure as _configure_profiler
+from src.profiling.memory import MemorySampler
 from .logutil import CSVLogger, TensorBoard, get_logger
 from .workspace import Workspace
 
@@ -53,36 +55,99 @@ VAL_CSV_FIELDS = ["epoch", "dice_mean", "smooth",
                   "hd95_WT", "hd95_TC", "hd95_ET"]
 
 
+
+# --------------------------------------------------------------------------- #
+# DataLoader worker plumbing -- MODULE LEVEL for Windows `spawn` compatibility.
+#
+# These were previously nested inside `run()`. A closure and a locally-defined
+# class cannot be pickled, so on Windows (where DataLoader workers are SPAWNED,
+# not forked) any `workers > 0` run failed with:
+#     AttributeError: Can't get local object 'run.<locals>._worker_init'
+# Hoisting them to module scope makes them picklable. The seeding formula, the
+# shuffling behaviour and the yielded (epoch, index) contract are UNCHANGED.
+# --------------------------------------------------------------------------- #
+class _WorkerInit:
+    """Picklable replacement for the former `_worker_init` closure."""
+
+    def __init__(self, base_seed: int):
+        self.base_seed = int(base_seed)
+
+    def __call__(self, worker_id: int) -> None:
+        s = (self.base_seed + worker_id) % (2 ** 32)
+        np.random.seed(s)
+        import random as _r
+        _r.seed(s)
+
+
+class _EpochSampler(torch.utils.data.Sampler):
+    """Shuffles like `shuffle=True`, but yields (epoch, index) so the dataset
+    can derive a deterministic per-(epoch, case) augmentation seed. The
+    generator is seeded from (base_seed, epoch), so the ORDER is deterministic
+    and differs per epoch -- reproducible, not repetitive."""
+
+    def __init__(self, n, base_seed):
+        self.n, self.base_seed, self.epoch = n, base_seed, 0
+
+    def set_epoch(self, ep):
+        self.epoch = ep
+
+    def __len__(self):
+        return self.n
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed((self.base_seed * 1_000_003 + self.epoch) % (2 ** 63))
+        for i in torch.randperm(self.n, generator=g).tolist():
+            yield (self.epoch, i)
+
+
 # --------------------------------------------------------------------------- #
 # Training step (verbatim methodology from train.py, incl. the empty-region fix)
 # --------------------------------------------------------------------------- #
 def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
                         empty_weight: float = 0.1) -> Dict[int, float]:
-    data = agent.prepare_data(data)
-    outputs, targets = agent.get_outputs(data)
-    for opt in agent.optimizer:
-        opt.zero_grad(set_to_none=True)
+    # Phase 2 profiling is OBSERVATIONAL: `prof` is a NullProfiler unless
+    # explicitly enabled, and then every section is a no-op context with no CUDA
+    # synchronisation. The order of operations, the maths and every
+    # hyperparameter below are unchanged.
+    from src.profiling import get_profiler
+    prof = get_profiler()
+
+    with prof.section("train/h2d_transfer", cuda=True):
+        data = agent.prepare_data(data)
+    with prof.section("train/forward", cuda=True):
+        outputs, targets = agent.get_outputs(data)
+    with prof.section("train/zero_grad"):
+        for opt in agent.optimizer:
+            opt.zero_grad(set_to_none=True)
     loss = 0
     loss_ret: Dict[int, float] = {}
     # empty_weight: small BCE on absent regions (prevents Tversky collapse).
     # Now supplied by the caller from config (default = the historical 0.1).
-    for m in range(outputs.shape[-1]):
-        if 1 in targets[..., m]:
-            loss_loc = loss_f(outputs[..., m], targets[..., m])
-        else:
-            prob = torch.sigmoid(outputs[..., m]).clamp(1e-6, 1. - 1e-6)
-            loss_loc = empty_weight * torch.nn.functional.binary_cross_entropy(
-                prob, targets[..., m], reduction="mean")
-        loss = loss + loss_loc
-        loss_ret[m] = loss_loc.item()
+    with prof.section("train/loss", cuda=True):
+        for m in range(outputs.shape[-1]):
+            if 1 in targets[..., m]:
+                loss_loc = loss_f(outputs[..., m], targets[..., m])
+            else:
+                prob = torch.sigmoid(outputs[..., m]).clamp(1e-6, 1. - 1e-6)
+                loss_loc = empty_weight * torch.nn.functional.binary_cross_entropy(
+                    prob, targets[..., m], reduction="mean")
+            loss = loss + loss_loc
+            loss_ret[m] = loss_loc.item()
     if loss != 0:
-        loss.backward()
-        if grad_clip and grad_clip > 0:
-            for net in agent.model:
-                torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
-        for opt, sch in zip(agent.optimizer, agent.scheduler):
-            opt.step()
-            sch.step()
+        # Backward is timed separately from forward on purpose: with gradient
+        # checkpointing ON, each NCA step is RECOMPUTED here, so backward is
+        # expected to carry recompute cost that forward does not.
+        with prof.section("train/backward", cuda=True):
+            loss.backward()
+        with prof.section("train/grad_clip", cuda=True):
+            if grad_clip and grad_clip > 0:
+                for net in agent.model:
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
+        with prof.section("train/optimizer_step", cuda=True):
+            for opt, sch in zip(agent.optimizer, agent.scheduler):
+                opt.step()
+                sch.step()
     return loss_ret
 
 
@@ -268,6 +333,15 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         logger.warning("CUDA not used (device=%s). GPU is expected for the full "
                        "run; CPU is intended only for smoke tests.", device)
 
+    # --- Phase 2 profiling (OBSERVATIONAL, disabled unless `profiling.enabled`)
+    # Returns a NullProfiler by default, so production runs are unaffected.
+    _prof = _configure_profiler(cfg, out_dir=ws.root)
+    _mem = MemorySampler(enabled=getattr(_prof, "memory_enabled", False))         if _prof.enabled else None
+    if _prof.enabled:
+        logger.info("PROFILING ENABLED (observational): warmup=%d profiled=%d "
+                    "-- this run is bounded and is NOT a training campaign",
+                    _prof.warmup, _prof.iterations)
+
     # --- seed + config snapshot ---
     repro.set_all_seeds(cfg.seed)
     _copy_config_into(ws, cfg)
@@ -286,9 +360,17 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # tolerances (validator stays fail-closed exactly as before). A file that
     # exists but is malformed, or names unknown case ids, fails LOUDLY -- a
     # broken policy must never silently degrade to "no policy".
-    dq_path = cfg.get("data", "quality_policy_file") if cfg.section("data") else None
+    _dq_section = cfg.section("data") if cfg.section("data") else {}
+    dq_path = _dq_section.get("quality_policy_file", "__unset__")
     try:
-        dq_policy = dq_load_policy(dq_path)
+        if dq_path is None:
+            # Explicit opt-out (`quality_policy_file: null`): no tolerances, so
+            # the validator stays fail-closed on ANY label outside {0,1,2,3,4}.
+            # Used by harness configs that discover only a subset of cases and
+            # therefore cannot satisfy a policy naming specific case ids.
+            dq_policy = None
+        else:
+            dq_policy = dq_load_policy(None if dq_path == "__unset__" else dq_path)
     except DataQualityPolicyError as exc:
         return _fail(ws, logger, "data-quality policy is invalid", str(exc))
     if dq_policy is not None:
@@ -542,32 +624,7 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # indices genuinely travel from parent to worker every epoch: the dataset
     # reseeds its per-item augmentation RNG from (base_seed, epoch, index),
     # which works identically with or without persistent workers.
-    def _worker_init(worker_id):
-        s = (cfg.seed + worker_id) % (2 ** 32)
-        np.random.seed(s)
-        import random as _r
-        _r.seed(s)
-
-    class _EpochSampler(torch.utils.data.Sampler):
-        """Shuffles like `shuffle=True`, but yields (epoch, index) so the
-        dataset can derive a deterministic per-(epoch, case) augmentation seed.
-        The generator is seeded from (cfg.seed, epoch), so the ORDER is also
-        deterministic and differs per epoch -- reproducible, not repetitive."""
-
-        def __init__(self, n, base_seed):
-            self.n, self.base_seed, self.epoch = n, base_seed, 0
-
-        def set_epoch(self, ep):
-            self.epoch = ep
-
-        def __len__(self):
-            return self.n
-
-        def __iter__(self):
-            g = torch.Generator()
-            g.manual_seed((self.base_seed * 1_000_003 + self.epoch) % (2 ** 63))
-            for i in torch.randperm(self.n, generator=g).tolist():
-                yield (self.epoch, i)
+    _worker_init = _WorkerInit(cfg.seed)
 
     sampler = _EpochSampler(len(ds), cfg.seed)
     ds.set_augmentation_seed(cfg.seed)
@@ -591,14 +648,62 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         sampler.set_epoch(ep)
         if not persistent:  # workers==0: no caching benefit, rebuild per epoch
             loader = torch.utils.data.DataLoader(ds, **loader_kwargs)
-        for data in loader:
-            r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight)
-            ema_update()
+        # Phase 2: measure DataLoader WAIT (time the training loop spends
+        # blocked on the input pipeline) separately from the compute that
+        # follows. Iterating the loader manually is the only way to attribute
+        # that wait; the sequence of batches is byte-identical to `for data in
+        # loader`. All of this is inert when profiling is disabled.
+        # Bounded torch.profiler window (opt-in). Deliberately covers only a
+        # few iterations: an unbounded profiler over a whole epoch produces
+        # multi-GB traces and distorts the very timings being measured.
+        from src.profiling.cuda import torch_profiler as _torch_profiler
+        _tp_on = bool((cfg.section("profiling") or {}).get("pytorch_profiler", False))             and _prof.enabled
+        _tp_ctx = _torch_profiler(ws.root, enabled=_tp_on,
+                                  wait=1, warmup=1, active=3)
+        _it = iter(loader)
+        _batch_idx = 0
+        _tp = _tp_ctx.__enter__() if _tp_on else None
+        while True:
+            with _prof.section("data/dataloader_wait"):
+                try:
+                    data = next(_it)
+                except StopIteration:
+                    break
+            _prof.mark_iteration(_batch_idx)
+            with _prof.section("total/iteration", cuda=True):
+                r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight)
+                with _prof.section("train/ema", cuda=True):
+                    ema_update()
+            if _prof.enabled and _mem is not None and _prof.is_profiled_iteration():
+                for _k, _v in _mem.sample().items():
+                    if _v is not None:
+                        _prof.record(f"memory/{_k}", float(_v))
             if r:
                 losses.append(sum(r.values()))
+            if _tp is not None:
+                _tp.step()
+            _batch_idx += 1
+            # Bounded profiling run: stop after warmup + profiled iterations so a
+            # profiling session can never silently become a training run.
+            if _prof.enabled and _prof.should_stop():
+                logger.info("profiling: iteration budget reached (%d) -- "
+                            "ending profiled epoch early; THIS IS NOT TRAINING",
+                            _batch_idx)
+                break
+
+        if _tp_on:
+            try:
+                _tp_ctx.__exit__(None, None, None)
+                logger.info("pytorch profiler trace -> %s",
+                            os.path.join(ws.root, "profiler"))
+            except Exception as _exc:
+                logger.warning("pytorch profiler export failed: %s", _exc)
 
         cur_lr = agent.optimizer[0].param_groups[0]["lr"]
-        val = ME.evaluate(agent, ds, "val")
+        if _prof.enabled:
+            _prof.flush()
+        with _prof.section("validation/total", cuda=True):
+            val = ME.evaluate(agent, ds, "val")
         vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
         hist["epoch"].append(ep + 1)
         hist["loss"].append(float(np.mean(losses)) if losses else 0.0)
@@ -652,7 +757,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
             schedulers=agent.scheduler, ema=ema, best_score=best,
             best_epoch=best_epoch, history=hist, config=cfg.to_dict(),
             rng_state=repro.capture_rng_state())
-        ckpt_io.save_checkpoint(ws.last_ckpt, full)
+        with _prof.section("train/checkpoint_write"):
+            ckpt_io.save_checkpoint(ws.last_ckpt, full)
         if ckpt_freq and (ep + 1) % ckpt_freq == 0:
             ckpt_io.save_checkpoint(ws.periodic_ckpt(ep + 1), full)
 
@@ -727,6 +833,44 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     _write_per_case_csv(ws, per_case)
     stats = STATS.summarize_per_case(per_case, n_boot=2000, seed=cfg.seed)
     ws.write_json(os.path.join("reports", "statistical_summary.json"), stats)
+
+    # --- Phase 2: emit profiling artifacts (no-op unless profiling enabled) ---
+    if _prof.enabled:
+        try:
+            from src.profiling import write_reports
+            from src.profiling.cuda import device_info
+            _files = _prof.write(ws.root)
+            _rel = _mem.release() if _mem is not None else None
+            if _rel is not None:
+                _rel["peak_classification"] = _mem.classify_peak(
+                    (_rel.get("before") or {}).get("gpu_peak_mb"))
+            _rep = write_reports(
+                _prof, ws.root,
+                environment={**device_info(),
+                             "python": __import__("sys").version.split()[0],
+                             "experiment": ws.experiment_id},
+                configuration={
+                    "config": cfg.path,
+                    "levels": {lv: cfg.get("model", lv) for lv in
+                               ("level1", "level2", "level3")},
+                    "batch_size": batch_size,
+                    "workers": workers,
+                    "persistent_workers": bool(persistent),
+                    "gradient_checkpointing": bool(
+                        (cfg.raw.get("memory", {}) or {}).get(
+                            "gradient_checkpointing", False)),
+                    "augmentation": cfg.get("training", "augmentation"),
+                    "optimizer": "adamw",
+                    "ema_decay": float(cfg.get("ema", "decay")),
+                },
+                memory=_rel,
+                notes=("Observational profiling run. Bounded to "
+                       f"{_prof.warmup} warmup + {_prof.iterations} profiled "
+                       "iterations; it is NOT a training campaign and the "
+                       "resulting model is not a scientific result."))
+            logger.info("profiling artifacts: %s | report=%s", _files, _rep)
+        except Exception as exc:   # never let profiling break a run
+            logger.warning("profiling report generation failed: %s", exc)
 
     graph_files = graphs.generate(ws)
     logger.info("graphs: %s", [os.path.basename(g) for g in graph_files])
@@ -860,7 +1004,25 @@ def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
     }
 
 
+def _dump_profiling_on_exit(ws, logger) -> None:
+    """Persist whatever profiling data exists, even on a failed run.
+
+    A profiling harness that loses its measurements because the run ended early
+    is useless -- the measurements are the deliverable, not the model."""
+    try:
+        from src.profiling import get_profiler
+        prof = get_profiler()
+        if getattr(prof, "enabled", False):
+            prof.flush()
+            files = prof.write(ws.root)
+            if files:
+                logger.info("profiling data preserved: %s", files)
+    except Exception:
+        pass
+
+
 def _fail(ws: Workspace, logger, reason: str, detail: str) -> Dict[str, Any]:
+    _dump_profiling_on_exit(ws, logger)
     logger.error("FAILURE: %s -- %s", reason, detail)
     with open(ws.path("reports", "failure_report.txt"), "w", encoding="utf-8") as fh:
         fh.write("GLO-NCA V2 FAILURE REPORT\n" + "=" * 40 + "\n")
