@@ -66,6 +66,17 @@ python scripts/preflight_gcp.py --data-root "$VM_DATA_DIR" --split split/master_
 # must print PREFLIGHT: PASS (GPU, CUDA, dataset, master split, configs, disk)
 ```
 
+### Step 6b — FINAL PRE-TRAINING GATE (Phase 3.3) — one command, must PASS
+Runs Steps 3–6 plus a REAL-data + **96³** short training smoke (final config,
+~2 epochs / ~12 cases), checkpoint round-trip, and a GCS artifact round-trip —
+then prints the gate. Proves 96³ fits the GCP GPU's VRAM before any 200-epoch run.
+```bash
+./cloud/scripts/pretrain_gate.sh
+# must print: FINAL PRE-TRAINING GATE: PASS / GLO-NCA TRAINING: READY
+```
+If 96³ OOMs here, STOP — the GPU is too small; pick a larger-VRAM GPU (do NOT
+reduce the thesis patch size).
+
 ### Steps 7-11 — ablations A0-A3 then verify each used the master split
 All five configs already point at `split/master_split.json`; each run FAILS if
 that file is missing (no silent regeneration), guaranteeing an identical split.
@@ -130,6 +141,34 @@ checkpoints/{best,last}.pth + periodic/, metrics/*.csv, graphs/*.png,
 tensorboard/, logs/training.log, config/*, split/*, cloud_metadata.json,
 experiment_manifest.json, status.json
 ```
+
+## GLO-NCA V3 (experimental multi-level model) — additive, V2 stays frozen
+V3 is a NEW unified 3-level model (`src/models/Model_GLO_NCA_V3.py`) that plugs
+into the SAME experiment runner as V2. V2 (the thesis baseline) is unchanged.
+
+- **Model selection is config-driven.** `model.version: v3` in a config routes
+  the runner (`_build_dispatch`) to build the V3 model + the `Agent_GLO_NCA_V3`
+  adapter, which presents the single unified model to the runner as a one-element
+  list — so the training loop, loss (Focal-Tversky+BCE), EMA, grad-clip,
+  cosine-LR, checkpoint/resume, evaluation, threshold tuning, manifest and graphs
+  are all **reused unchanged**. No V2 config has `model.version`, so V2 keeps
+  building the two `BasicNCA3D` levels exactly as before.
+- **Configs.** `configs/v3_multilevel.yaml` (thesis config, 40,656 params;
+  level1 32³ → level2 96³ → level3 128³ → learnable concat fusion → WT/TC/ET) and
+  `configs/smoke_test_v3.yaml` (tiny synthetic software test). Levels are
+  toggled with `level{1,2,3}.enabled`; the runner does not assume 3 levels.
+- **Run it (same CLI as V2).**
+  ```bash
+  python train.py --config configs/smoke_test_v3.yaml --device cpu   # software smoke
+  python train.py --config configs/v3_multilevel.yaml                 # full (large-VRAM GPU)
+  python train.py --resume experiments/GLO-NCA-V3-MultiLevel-<stamp>  # resume
+  ```
+- **Local limits (measured).** Largest genuine level-3 fit on a 6 GB RTX 3050 is
+  48³; 96³/128³ OOM locally → the full 128³ V3 config needs a larger-VRAM GPU.
+  A local host-memory spill is NOT counted as a fit.
+- **Recommended V3 ablations (document only, not run):** V3-A global+96,
+  V3-B global+128, V3-C global+96+128 (plain fusion), V3-D full — all expressible
+  via `level*.enabled` + `feature_fusion.type`.
 
 ## Non-negotiables (enforced by the code + these steps)
 - Test set evaluated ONCE, thresholds FROZEN from validation.

@@ -32,6 +32,8 @@ out/
 *.nii.gz
 *.png
 *.json
+!split/master_split.json
+!split/data_quality_policy.json
 *.dt
 events.out.tfevents.*
 

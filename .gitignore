@@ -1,60 +1,66 @@
-# --- Environments ---
-.venv/
-venv/
-env/
+# =============================================================================
+# GLO-NCA — .gitignore
+# Ignore generated output, local data, caches and secrets. Keep all source,
+# configs, scripts, docs, the master split and reproducibility evidence tracked.
+# =============================================================================
+
+# --- Python / environments ---
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
 
-# --- Data (never commit large medical datasets) ---
+# --- Medical data (never commit) ---
 *.nii
 *.nii.gz
 data/
 brats_dl/
+scratch_brats/
 **/BraTS*dataset*/
 Tutorial/Data/
 
-# --- Runs / outputs / checkpoints ---
+# --- Experiment outputs / checkpoints / logs (generated) ---
+experiments/
 runs/
 compare_runs/
-html/
-out/               # train.py default OUT_DIR
-scratch_brats/     # local smoke-test fixtures
-Models/*
-M:/Models/*
-Study/*
+out/
+/Models/
 *.pth
 *.pbz2
 tensorboard/
 *.tfevents.*
+events.out.tfevents.*
 *.log
 
-# --- Notebooks scratch ---
-.ipynb_checkpoints/
+# --- Secrets / machine-specific (never commit) ---
+cloud/config/gcp.env
+*.pem
+*.key
+*-service-account*.json
+gcp-key*.json
+.claude/settings.local.json
+
+# --- Local build/transfer artifacts ---
+*.tar.gz
+*.zip
 
 # --- OS / IDE ---
 .DS_Store
 .vscode/
 .idea/
-*.zip
-*.png
-*.dt
-SUMMARY.txt
-results*.json
-*_results.json
 
-# --- Local tooling / misc ---
-.claude/
-events.out.tfevents.*
-*.json
-extra/
+# --- Notebooks scratch ---
+.ipynb_checkpoints/
 
-# --- Phase 1 experiment outputs ---
-experiments/
-
-# --- Phase 2 cloud secrets/config (never commit) ---
-cloud/config/gcp.env
-
-# --- Phase 3.1: allow the (data-free, patient-IDs-only) master split to be
-# committed for reproducibility, but keep everything else in split/ ignored ---
+# -----------------------------------------------------------------------------
+# Explicitly KEEP (tracked) despite broader patterns above:
+#   - split/master_split.json  (case-IDs only; required for reproducibility)
+#   - configs/*.yaml, src/**, scripts/**, docs/**, reports/**/*.md
+# The master split is data-free (patient/case IDs only) and is committed on
+# purpose so the exact thesis split is archived in git.
+# -----------------------------------------------------------------------------
 !split/master_split.json

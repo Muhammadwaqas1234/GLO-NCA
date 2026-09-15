@@ -26,6 +26,8 @@ from src.models.Model_BasicNCA3D import BasicNCA3D
 from src.losses.LossFunctions import FocalTverskyCELoss
 from src.utils.Experiment import Experiment
 from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
+from src.agents.Agent_GLO_NCA_V3 import Agent_GLO_NCA_V3
+from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 
 from . import checkpoint as ckpt_io
 from . import datasource, environment, graphs
@@ -33,7 +35,10 @@ from . import metrics_eval as ME
 from . import reproducibility as repro
 from . import statistics as STATS
 from .config import Config
-from .dataset_validation import validate_dataset, summarize
+from .dataset_validation import (validate_dataset, summarize,
+                                 ALLOWED_SEG_LABELS as BASE_ALLOWED_SEG_LABELS)
+from .data_quality import (load_policy as dq_load_policy,
+                           DataQualityPolicyError)
 from .diagnostics import diagnose
 from .logutil import CSVLogger, TensorBoard, get_logger
 from .workspace import Workspace
@@ -51,14 +56,16 @@ VAL_CSV_FIELDS = ["epoch", "dice_mean", "smooth",
 # --------------------------------------------------------------------------- #
 # Training step (verbatim methodology from train.py, incl. the empty-region fix)
 # --------------------------------------------------------------------------- #
-def _clipped_batch_step(agent, data, loss_f, grad_clip: float) -> Dict[int, float]:
+def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
+                        empty_weight: float = 0.1) -> Dict[int, float]:
     data = agent.prepare_data(data)
     outputs, targets = agent.get_outputs(data)
     for opt in agent.optimizer:
-        opt.zero_grad()
+        opt.zero_grad(set_to_none=True)
     loss = 0
     loss_ret: Dict[int, float] = {}
-    empty_weight = 0.1  # small BCE on absent regions (prevents Tversky collapse)
+    # empty_weight: small BCE on absent regions (prevents Tversky collapse).
+    # Now supplied by the caller from config (default = the historical 0.1).
     for m in range(outputs.shape[-1]):
         if 1 in targets[..., m]:
             loss_loc = loss_f(outputs[..., m], targets[..., m])
@@ -82,6 +89,74 @@ def _clipped_batch_step(agent, data, loss_f, grad_clip: float) -> Dict[int, floa
 # --------------------------------------------------------------------------- #
 # Model / experiment construction from a Config
 # --------------------------------------------------------------------------- #
+def _is_v3(cfg: Config) -> bool:
+    return str(cfg.get("model", "version", "")).lower() == "v3"
+
+
+def _build_dispatch(cfg: Config, data_root: str, device, epochs: int,
+                    out_model_dir: str):
+    """Version-aware construction. V2 (default) and V3 share the SAME dataset,
+    Experiment, split handling and downstream runner; only the model + agent
+    differ. Returns (ds, ca, agent, exp, flat_cfg)."""
+    if _is_v3(cfg):
+        return _build_v3(cfg, data_root, device, epochs, out_model_dir)
+    return _build(cfg, data_root, device, epochs, out_model_dir)
+
+
+def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: str):
+    """Construct the unified V3 multi-level model + its runner adapter agent.
+
+    Reuses the same Dataset, Experiment and (crucially) the same runner training
+    loop as V2. The V3 model is a single nn.Module presented to the runner as a
+    one-element list via ``Agent_GLO_NCA_V3`` so grad-clip, EMA, checkpoint and
+    param-count code are all unchanged.
+    """
+    fire = float(cfg.get("model", "fire_rate", 0.6))
+    aug = str(cfg.get("training", "augmentation"))
+    patch = int(cfg.get("training", "patch_size"))  # finest = V3 output size
+
+    # Flat config for the Experiment/dataset. V3 does its own seeding/upscaling
+    # inside the model, so NCA-specific keys are given safe, inert values; the V3
+    # agent never reads inference_steps/channel_n/input_size.
+    config = [{
+        "img_path": data_root, "label_path": data_root,
+        "model_path": out_model_dir,
+        "device": str(device), "unlock_CPU": True,
+        "optimizer": "adamw",
+        "lr": float(cfg.get("optimizer", "learning_rate")),
+        "lr_gamma": 0.9999,
+        "betas": (0.9, 0.99),
+        "weight_decay": float(cfg.get("optimizer", "weight_decay")),
+        "save_interval": 10 ** 9, "evaluate_interval": 10 ** 9, "n_epoch": epochs,
+        "batch_size": int(cfg.get("training", "batch_size")), "batch_duplication": 1,
+        "channel_n": 16, "inference_steps": 10, "cell_fire_rate": fire,
+        "input_channels": 4, "output_channels": 3,
+        "hidden_size": int(cfg.get("model", "hidden", 128)),
+        "train_model": 0,  # V3 is a single model (no V2 multi-level cascade in the agent)
+        "use_attention": bool(cfg.get("model", "use_attention", True)),
+        # V3 output volume is a single cube (finest level); no two-level cascade.
+        "input_size": [[patch, patch, patch]], "scale_factor": 2,
+        "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
+        "foreground_crop": True, "nonzero_norm": True,
+        "augment": aug != "none", "augment_level": ("light" if aug == "light" else "heavy"),
+        # Phase 2 (§5): ET-aware patch sampling is a thesis choice; surfaced into
+        # config (defaults = the historical hard-coded 0.7 / region 2 = ET).
+        "patchify": True,
+        "priotize_masks": float(cfg.get("sampling", "prioritize_probability", 0.7)),
+        "prioritize_region": int(cfg.get("sampling", "prioritize_region", 2)),
+    }]
+
+    ds = Dataset_NiiGz_3D_BraTS()
+    ds.MODALITIES = list(cfg.get("dataset", "modalities"))
+    v3_model = build_v3_from_config(cfg, input_channels=4, output_channels=3,
+                                    device=device)
+    ca = [v3_model]  # presented as a one-element list to the shared runner
+    agent = Agent_GLO_NCA_V3(ca)
+    exp = Experiment(config, ds, ca, agent)
+    ds.set_experiment(exp)
+    return ds, ca, agent, exp, config[0]
+
+
 def _build(cfg: Config, data_root: str, device, epochs: int, out_model_dir: str):
     input_size = cfg.input_size
     steps = list(cfg.get("model", "steps"))
@@ -131,7 +206,28 @@ def _build(cfg: Config, data_root: str, device, epochs: int, out_model_dir: str)
 def _model_info(cfg: Config, ca: List[torch.nn.Module]) -> Dict[str, Any]:
     total = sum(p.numel() for m in ca for p in m.parameters())
     trainable = sum(p.numel() for m in ca for p in m.parameters() if p.requires_grad)
+    if _is_v3(cfg):
+        # V3: a single unified multi-level model. Report the per-level structure
+        # from the model itself (measured, not hard-coded).
+        m = ca[0]
+        pr = m.parameter_report() if hasattr(m, "parameter_report") else {}
+        active_levels = [lv for lv in ("level1", "level2", "level3")
+                         if bool((cfg.get("model", lv, {}) or {}).get("enabled", True))]
+        return {
+            "version": "v3",
+            "architecture": "GLO-NCA-V3-MultiLevel",
+            "total_parameters": int(total),        # measured, not hard-coded
+            "trainable_parameters": int(trainable),
+            "nca_levels": len(active_levels),
+            "levels": {lv: cfg.get("model", lv) for lv in active_levels},
+            "by_component": pr.get("by_level", {}),
+            "fusion": (cfg.get("model", "feature_fusion", {}) or {}).get("type", "concat"),
+            "se_enabled": bool(cfg.get("model", "use_attention", True)),
+            "spatial_gc_enabled": bool(cfg.get("model", "use_spatial", True)),
+            "hidden": int(cfg.get("model", "hidden", 128)),
+        }
     return {
+        "version": "v2",
         "total_parameters": int(total),         # measured, not hard-coded
         "trainable_parameters": int(trainable),
         "nca_levels": len(ca),
@@ -151,7 +247,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     logger = get_logger(ws)
     ws.write_status("initializing", progress=0.0)
     logger.info("=" * 70)
-    logger.info("GLO-NCA V2 experiment: %s", ws.experiment_id)
+    logger.info("GLO-NCA %s experiment: %s",
+                "V3" if _is_v3(cfg) else "V2", ws.experiment_id)
     logger.info("config: %s", cfg.path)
 
     # --- environment / git / gpu capture ---
@@ -182,9 +279,31 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
                      "Set dataset.root in the config or $DATA_ROOT.")
     ws.write_status("validating", progress=0.0)
     n_pat = int(cfg.get("dataset", "number_of_patients", 0)) or None
-    report = validate_dataset(data_root,
-                              modalities=list(cfg.get("dataset", "modalities")),
-                              limit=n_pat)
+
+    # --- explicit operational data-quality policy (canonical split preserved) --
+    # Optional file listing, per case id, any stray segmentation labels that are
+    # accepted for THAT case only, with a written reason. Absent file => no
+    # tolerances (validator stays fail-closed exactly as before). A file that
+    # exists but is malformed, or names unknown case ids, fails LOUDLY -- a
+    # broken policy must never silently degrade to "no policy".
+    dq_path = cfg.get("data", "quality_policy_file") if cfg.section("data") else None
+    try:
+        dq_policy = dq_load_policy(dq_path)
+    except DataQualityPolicyError as exc:
+        return _fail(ws, logger, "data-quality policy is invalid", str(exc))
+    if dq_policy is not None:
+        logger.info("data-quality: %s", dq_policy.describe())
+    else:
+        logger.info("data-quality: no policy file; validator fail-closed on "
+                    "any label outside %s", sorted(BASE_ALLOWED_SEG_LABELS))
+
+    try:
+        report = validate_dataset(data_root,
+                                  modalities=list(cfg.get("dataset", "modalities")),
+                                  limit=n_pat, policy=dq_policy)
+    except DataQualityPolicyError as exc:
+        return _fail(ws, logger, "data-quality policy does not match the dataset",
+                     str(exc))
     ws.write_json(os.path.join("reports", "dataset_validation_report.json"), report)
     logger.info(summarize(report))
     if report["result"] != "PASS":
@@ -194,7 +313,7 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
 
     # --- split (reuse saved split on resume; else make + materialise) ---
     epochs = int(cfg.get("training", "epochs"))
-    ds, ca, agent, exp, flat_cfg = _build(
+    ds, ca, agent, exp, flat_cfg = _build_dispatch(
         cfg, data_root, device, epochs, ws.path("checkpoints", "model_internal"))
 
     # Split resolution priority:
@@ -203,6 +322,24 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     #      never silently regenerate -- prevents experimental drift across A0-A3)
     #   3. otherwise      -> deterministic seeded split (synthetic smoke tests)
     split_file = cfg.get("data", "split_file") if cfg.section("data") else None
+
+    # Phase 2 (P1): a config with NO `data:` section fell through to the seeded
+    # synthetic split and trained on it silently. For a real-dataset run that
+    # would quietly abandon the canonical subject-disjoint split -- invalidating
+    # the V2-vs-V3 comparison with nothing but a manifest field to reveal it.
+    # Any V3 run on real data must name its split file explicitly.
+    # A config may opt out ONLY by saying so explicitly (`data.allow_seeded_split:
+    # true`), which the synthetic local-smoke config does.
+    _allow_seeded = bool((cfg.section("data") or {}).get("allow_seeded_split", False)) \
+        if cfg.section("data") else False
+    if not split_file and _is_v3(cfg) and not _allow_seeded:
+        return _fail(ws, logger,
+                     "no data.split_file configured for a V3 run",
+                     "V3 experiments must use the canonical master split. Add:\n"
+                     "  data:\n    split_file: split/master_split.json\n"
+                     "Refusing to silently generate a new split for a V3 run.\n"
+                     "(Synthetic smoke configs may set data.allow_seeded_split: true.)")
+
     split_meta = {"source": None, "split_sha256": None, "split_file": split_file}
     existing = datasource.read_split(ws) if resume else None
     if existing:
@@ -233,19 +370,32 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # Reuses the fingerprint helpers; never modifies the dataset. Stored so the
     # researcher does not need a separate manual command per experiment.
     all_ids = datasource.list_patients(data_root)
+    subject_count = len({datasource.subject_of(c) for c in all_ids})
     dataset_identity = {
         "dataset_root": data_root,
-        "dataset_case_count": len(all_ids),
-        "patient_id_hash": datasource.patient_id_hash(all_ids),
+        "dataset_case_count": len(all_ids),        # case/timepoint dirs (not collapsed)
+        "subject_count": subject_count,            # distinct base subjects
+        "patient_id_hash": datasource.patient_id_hash(all_ids),  # over case ids
+        "id_semantics": "case_id = subject + timepoint; split is subject-disjoint",
         "modalities": list(cfg.get("dataset", "modalities")),
         "split_source": split_meta["source"],
         "split_sha256": split_meta["split_sha256"],
         "split_file": split_meta.get("split_file"),
+        # Operational data-quality policy actually in force for THIS run, plus
+        # the counts an examiner needs: canonical vs final operational.
+        "data_quality_policy": (dq_policy.summary() if dq_policy else None),
+        "tolerated_cases": report.get("tolerated_cases") or {},
+        "operational_exclusions": (list(dq_policy.excluded) if dq_policy else []),
     }
     ws.write_json(os.path.join("config", "dataset_identity.json"), dataset_identity)
 
+    # Resolve each case id to its path RELATIVE to the dataset root so nested
+    # cohorts (e.g. BraTS-MET's 'UCSD - Training/') load correctly. For a flat
+    # dataset rel_path == case id, so the entries are identical to before.
+    path_map = datasource.case_path_map(data_root)
+
     def entry(p):
-        return (p, p, 0)
+        return (path_map.get(p, p), p, 0)
     for sp, ids in (("train", tr), ("val", va), ("test", te)):
         exp.data_split.images[sp] = {p: {0: entry(p)} for p in ids}
         exp.data_split.labels[sp] = {p: {0: entry(p)} for p in ids}
@@ -261,10 +411,17 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         for opt in agent.optimizer
     ]
 
+    # Phase 2 (§5 centralisation): ce_weight and the empty-region BCE weight are
+    # thesis hyperparameters that were previously hard-coded and therefore did
+    # NOT appear in the saved per-run config record. They are now read from the
+    # config, with defaults equal to the historical constants so behaviour is
+    # unchanged for every existing config.
+    ce_weight = float(cfg.get("loss", "ce_weight", 0.5))
+    empty_weight = float(cfg.get("loss", "empty_region_bce_weight", 0.1))
     loss_f = FocalTverskyCELoss(
         alpha=1 - float(cfg.get("loss", "tversky_beta")),
         beta=float(cfg.get("loss", "tversky_beta")),
-        gamma=float(cfg.get("loss", "focal_gamma")), ce_weight=0.5)
+        gamma=float(cfg.get("loss", "focal_gamma")), ce_weight=ce_weight)
 
     # --- EMA ---
     ema_on = bool(cfg.get("ema", "enabled"))
@@ -297,8 +454,44 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         ck = ckpt_io.load_checkpoint(ws.last_ckpt, map_location=device)
         ckpt_io.restore_into(ck, models=ca, optimizers=agent.optimizer,
                              schedulers=agent.scheduler)
-        if ema is not None and ck.get("ema"):
-            ema = [{k: v.to(device) for k, v in e.items()} for e in ck["ema"]]
+        # Phase 2 (P2): verify the checkpoint was written by a compatible config.
+        # A model-shape change raises on load_state_dict, but hyperparameter
+        # drift (e.g. a different `training.epochs`, which changes the cosine
+        # T_max) previously passed silently and produced an LR curve matching
+        # NEITHER config. Compare the fields that define the training schedule.
+        prev_cfg = ck.get("config") or {}
+        if prev_cfg:
+            _crit = [("training", "epochs"), ("training", "batch_size"),
+                     ("training", "patch_size"), ("optimizer", "learning_rate"),
+                     ("optimizer", "minimum_learning_rate"),
+                     ("loss", "tversky_beta"), ("loss", "focal_gamma"),
+                     ("ema", "decay"), ("experiment", "seed")]
+            drift = []
+            for sec, key in _crit:
+                old = (prev_cfg.get(sec) or {}).get(key)
+                new = cfg.get(sec, key, None)
+                if old is not None and new is not None and old != new:
+                    drift.append(f"{sec}.{key}: checkpoint={old!r} -> config={new!r}")
+            if drift:
+                return _fail(ws, logger,
+                             "resume config does not match the checkpoint",
+                             "Resuming with changed training hyperparameters would "
+                             "silently produce a schedule matching neither config:\n  "
+                             + "\n  ".join(drift) +
+                             "\nResume with the original config, or start a new "
+                             "experiment deliberately.")
+            logger.info("resume: config identity verified against checkpoint")
+
+        if ema is not None:
+            if ck.get("ema"):
+                ema = [{k: v.to(device) for k, v in e.items()} for e in ck["ema"]]
+                logger.info("resume: EMA weights restored from checkpoint")
+            else:
+                # Previously silent: the freshly-initialised EMA (a copy of the
+                # restored weights) was kept with no indication in the log.
+                logger.warning("resume: checkpoint contains NO EMA state; "
+                               "re-initialising EMA from the restored weights "
+                               "(it will re-converge over ~1/(1-decay) steps).")
         hist = ck.get("history", hist)
         best = ck.get("best_score", -1.0)
         best_epoch = ck.get("best_epoch", 0)
@@ -325,21 +518,81 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
 
     workers = int(cfg.get("training", "workers"))
 
+    # PHASE 2 (P1, two linked fixes -- see PHASE2_PRODUCTION_HARDENING.md).
+    #
+    # 1) RNG DIVERSITY. The old seed was `cfg.seed + worker_id`, with no epoch
+    #    term. Because a fresh DataLoader was built every epoch, `worker_init_fn`
+    #    re-ran each epoch with the SAME handful of seeds, so the augmentation
+    #    and patch-sampling draw sequence repeated identically for all 300
+    #    epochs. Mixing the epoch in gives each epoch a distinct, still fully
+    #    DETERMINISTIC stream (same seed + same epoch -> same augmentations), so
+    #    the run stays reproducible while actually varying across epochs.
+    #
+    # 2) PREPROCESSING CACHE. With workers>0 each worker holds its own copy of
+    #    the dataset, so `Data_Container.set_data` wrote into a copy that was
+    #    destroyed when the loader was exhausted. `persistent_workers=True` keeps
+    #    the workers (and their caches) alive across epochs, so each case is
+    #    decompressed + resampled once per worker instead of every epoch.
+    #
+    # These interact in a way that needs care. With `persistent_workers=True`
+    # PyTorch calls `worker_init_fn` ONCE per worker (at the first iteration),
+    # and each worker holds its own COPY of the dataset -- so neither an epoch
+    # term inside `worker_init_fn` nor a parent-side `ds.set_epoch()` would ever
+    # reach the workers. The epoch is therefore carried by the SAMPLER, whose
+    # indices genuinely travel from parent to worker every epoch: the dataset
+    # reseeds its per-item augmentation RNG from (base_seed, epoch, index),
+    # which works identically with or without persistent workers.
     def _worker_init(worker_id):
         s = (cfg.seed + worker_id) % (2 ** 32)
         np.random.seed(s)
         import random as _r
         _r.seed(s)
 
+    class _EpochSampler(torch.utils.data.Sampler):
+        """Shuffles like `shuffle=True`, but yields (epoch, index) so the
+        dataset can derive a deterministic per-(epoch, case) augmentation seed.
+        The generator is seeded from (cfg.seed, epoch), so the ORDER is also
+        deterministic and differs per epoch -- reproducible, not repetitive."""
+
+        def __init__(self, n, base_seed):
+            self.n, self.base_seed, self.epoch = n, base_seed, 0
+
+        def set_epoch(self, ep):
+            self.epoch = ep
+
+        def __len__(self):
+            return self.n
+
+        def __iter__(self):
+            g = torch.Generator()
+            g.manual_seed((self.base_seed * 1_000_003 + self.epoch) % (2 ** 63))
+            for i in torch.randperm(self.n, generator=g).tolist():
+                yield (self.epoch, i)
+
+    sampler = _EpochSampler(len(ds), cfg.seed)
+    ds.set_augmentation_seed(cfg.seed)
+
+    persistent = workers > 0
+    loader_kwargs = dict(
+        sampler=sampler, batch_size=batch_size, num_workers=workers,
+        pin_memory=(device.type == "cuda"), worker_init_fn=_worker_init)
+    if persistent:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    # Build once when workers persist (keeps their caches warm across epochs).
+    loader = torch.utils.data.DataLoader(ds, **loader_kwargs) if persistent else None
+
     # ------------------------------------------------------------- epoch loop
     for ep in range(start_epoch, epochs):
         ep_start = time.time()
         losses = []
-        loader = torch.utils.data.DataLoader(
-            ds, shuffle=True, batch_size=batch_size, num_workers=workers,
-            pin_memory=(device.type == "cuda"), worker_init_fn=_worker_init)
+        # Epoch travels to the workers via the sampler's yielded indices, so it
+        # reaches worker dataset copies even when they persist across epochs.
+        sampler.set_epoch(ep)
+        if not persistent:  # workers==0: no caching benefit, rebuild per epoch
+            loader = torch.utils.data.DataLoader(ds, **loader_kwargs)
         for data in loader:
-            r = _clipped_batch_step(agent, data, loss_f, grad_clip)
+            r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight)
             ema_update()
             if r:
                 losses.append(sum(r.values()))
@@ -461,11 +714,19 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # --- per-case metrics + statistical summary (thesis stats) --------------
     # Same metric definitions as `score`; purely for reporting mean/median/std/
     # bootstrap-CI. Uses the FROZEN validation-tuned thresholds on the test set.
+    # Phase 2 (memory): write the threshold comparison FIRST -- it is the last
+    # consumer of val_pairs -- then release val_pairs before the per-case /
+    # bootstrap stage. Identical inputs, identical outputs, identical file
+    # contents; only the peak host RAM drops (val+test were both held live).
+    _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds)
+    del val_pairs
+    import gc as _gc
+    _gc.collect()
+
     per_case = ME.score_per_case(test_pairs, thresholds)
     _write_per_case_csv(ws, per_case)
     stats = STATS.summarize_per_case(per_case, n_boot=2000, seed=cfg.seed)
     ws.write_json(os.path.join("reports", "statistical_summary.json"), stats)
-    _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds)
 
     graph_files = graphs.generate(ws)
     logger.info("graphs: %s", [os.path.basename(g) for g in graph_files])
@@ -568,7 +829,9 @@ def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
         "dataset": {"root": data_root, "modalities": list(cfg.get("dataset", "modalities")),
                     "counts": {"train": len(tr), "val": len(va), "test": len(te)},
                     "case_count": (dataset_identity or {}).get("dataset_case_count"),
+                    "subject_count": (dataset_identity or {}).get("subject_count"),
                     "patient_id_hash": (dataset_identity or {}).get("patient_id_hash")},
+        "data_quality_policy": (dataset_identity or {}).get("data_quality_policy"),
         "split": {"source": (split_meta or {}).get("source"),
                   "split_sha256": (split_meta or {}).get("split_sha256"),
                   "split_file": (split_meta or {}).get("split_file"),
@@ -578,7 +841,7 @@ def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
                      "batch_size": int(cfg.get("training", "batch_size")),
                      "patch_size": int(cfg.get("training", "patch_size")),
                      "augmentation": cfg.get("training", "augmentation"),
-                     "input_size": cfg.input_size},
+                     "input_size": (None if _is_v3(cfg) else cfg.input_size)},
         "optimizer": {"name": "adamw",
                       "learning_rate": float(cfg.get("optimizer", "learning_rate")),
                       "weight_decay": float(cfg.get("optimizer", "weight_decay"))},

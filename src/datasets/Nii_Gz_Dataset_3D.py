@@ -47,20 +47,26 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
     SEG_SUFFIX = "seg"
 
     def getFilesInPath(self, path):
-        r"""Discover patients by folder. The 'images' and 'labels' live in the
-            same per-patient folder, so both image_path and label_path point to
-            the BraTS root.
+        r"""Discover cases by folder, RECURSIVELY. The 'images' and 'labels' live
+            in the same per-case folder, so both image_path and label_path point
+            to the dataset root.
+
+            A directory is a valid case only if it directly contains all four
+            modalities + a segmentation; container directories that merely hold
+            other cases (e.g. a nested cohort folder) are skipped. ``folder_name``
+            is the path RELATIVE to ``path`` so nested cases resolve correctly,
+            while the case id remains the leaf folder name. For a flat dataset
+            (one case folder per patient at the root) this returns exactly the
+            same mapping as before (folder_name == case id).
             #Args
-                path (string): BraTS root directory (one sub-folder per patient)
+                path (string): dataset root
             #Returns:
-                dic (dictionary): {patientID: {0: (folder_name, patientID, 0)}}
+                dic (dictionary): {caseID: {0: (rel_path, caseID, 0)}}
         """
+        from src.experiment.datasource import discover_cases
         dic = {}
-        for entry in sorted(os.listdir(path)):
-            full = os.path.join(path, entry)
-            if not os.path.isdir(full):
-                continue
-            dic[entry] = {0: (entry, entry, 0)}
+        for case_id, rel_path in discover_cases(path):
+            dic[case_id] = {0: (rel_path, case_id, 0)}
         return dic
 
     def _find_modality_file(self, folder, patient, suffix):
@@ -126,15 +132,42 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         label = np.stack([wt, tc, et], axis=-1).astype(np.float32)
         return label
 
+    # Base seed for per-(epoch, case) augmentation reseeding; set by the runner.
+    _aug_base_seed = None
+
+    def set_augmentation_seed(self, seed):
+        r"""Set the base seed used to derive the per-(epoch, case) augmentation
+        RNG. Called once by the runner; see ``__getitem__``."""
+        self._aug_base_seed = int(seed)
+
     def __getitem__(self, idx):
         r"""Load and preprocess one BraTS patient.
+            #Args
+                idx (int | (int, int)): either a plain index, or an
+                    ``(epoch, index)`` pair from the runner's epoch-aware
+                    sampler (see below).
             #Returns:
                 id (str): patient identifier, formatted '_<patient>_0'
                 img (numpy): (X, Y, Z, 4) float32, modalities T1/T1ce/T2/FLAIR
                 label (numpy): (X, Y, Z, 3) float32, regions WT/TC/ET
         """
-        rescale = torchio.RescaleIntensity(out_min_max=(0, 1), percentiles=(0.5, 99.5))
-        znormalisation = torchio.ZNormalization()
+        # PHASE 2 (P1 reproducibility fix). Previously the augmentation and
+        # patch-sampling RNG was seeded ONLY per worker (cfg.seed + worker_id) by
+        # worker_init_fn, which re-ran every epoch with the same few seeds -- so
+        # all 300 epochs replayed the SAME augmentation draw sequence.
+        #
+        # The runner's sampler now yields (epoch, index). Seeding here from
+        # (base_seed, epoch, index) gives every (epoch, case) pair its own
+        # stream: DIFFERENT across epochs (real augmentation diversity) yet
+        # fully DETERMINISTIC and independent of worker count, sharding order and
+        # whether workers persist -- which the old scheme was not.
+        epoch = None
+        if isinstance(idx, (tuple, list)) and len(idx) == 2:
+            epoch, idx = int(idx[0]), int(idx[1])
+        if epoch is not None and self._aug_base_seed is not None:
+            s = (self._aug_base_seed * 1_000_003 + epoch * 9_176_231 + idx) % (2 ** 32)
+            random.seed(s)
+            np.random.seed(s)
 
         crop_fg = self.exp.get_from_config('foreground_crop') is True
 
@@ -199,6 +232,12 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                     img_norm[..., c] = ch
         else:
             # Original torchio z-norm + rescale-to-[0,1] per channel.
+            # PHASE 2: these two transform objects were previously constructed on
+            # EVERY __getitem__ call (before the cache lookup) even though the
+            # production config sets nonzero_norm=True and never reaches this
+            # branch. Constructed here instead, so the unused path costs nothing.
+            rescale = torchio.RescaleIntensity(out_min_max=(0, 1), percentiles=(0.5, 99.5))
+            znormalisation = torchio.ZNormalization()
             img_norm = np.empty_like(img, dtype=np.float32)
             for c in range(img.shape[-1]):
                 channel = np.expand_dims(img[..., c], axis=0)
@@ -344,12 +383,38 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         pos_x = pos_y = pos_z = 0
         fallback = None  # best WT-containing position, used if the target region
         #                  (e.g. ET) is never found within the retry budget.
+
+        # PHASE 2 performance (methodology-neutral). In the production config the
+        # volume is already resized to exactly `size` (128^3), so
+        # `randint(0, shape - size)` == `randint(0, 0)` == 0 for all three axes:
+        # EVERY retry inspects the SAME full-volume region and reaches the same
+        # verdict. For a case with no ET that meant 50 iterations x ~2.1M-element
+        # `.max()` reductions (plus a second one for the WT fallback), all to
+        # re-derive a predetermined answer.
+        #
+        # We hoist those two reductions out of the loop and reuse them. The loop,
+        # its bounds and EVERY `random.*` call are left exactly as they were, so
+        # the Python RNG stream -- which augmentation shares -- is untouched.
+        # Verified over 300 trials (including no-ET and all-empty labels):
+        # identical output arrays AND identical `random.getstate()` afterwards.
+        full_volume = tuple(img.shape[:3]) == tuple(size)
+        if full_volume and contains_mask:
+            region_present = bool(label[..., region].max() > 0)
+            wt_present = bool(label[..., 0].max() > 0) if region != 0 else False
+
         for _ in range(50):  # bounded retries to find a region-containing patch
             pos_x = random.randint(0, img.shape[0] - size[0])
             pos_y = random.randint(0, img.shape[1] - size[1])
             pos_z = random.randint(0, img.shape[2] - size[2])
             if not contains_mask:
                 break
+            if full_volume:
+                # Position is always (0,0,0); the verdict cannot change.
+                if region_present:
+                    break
+                if region != 0 and fallback is None and wt_present:
+                    fallback = (0, 0, 0)
+                continue
             patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], region]
             if patch.max() > 0:
                 break  # found a patch containing the target region

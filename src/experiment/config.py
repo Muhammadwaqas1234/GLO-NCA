@@ -79,11 +79,18 @@ def load_config(path: str) -> Config:
     if missing:
         raise ValueError(f"Config {path!r} is missing sections: {missing}")
 
+    # The PATCH_TABLE gate is a V2 guard (its two-level cascade sizes are derived
+    # from patch_size). V3 (model.version == 'v3') derives per-level resolutions
+    # itself, so its top-level patch_size is not indexed into PATCH_TABLE and any
+    # positive value is allowed.
+    is_v3 = str(raw.get("model", {}).get("version", "")).lower() == "v3"
     patch = int(raw.get("training", {}).get("patch_size", 96))
-    if patch not in PATCH_TABLE:
+    if not is_v3 and patch not in PATCH_TABLE:
         raise ValueError(
             f"training.patch_size={patch} is not one of {sorted(PATCH_TABLE)}. "
             "A different patch size is a new experiment, not an auto-adjustment.")
+    if is_v3 and patch <= 0:
+        raise ValueError(f"V3 training.patch_size must be positive, got {patch}.")
 
     aug = str(raw.get("training", {}).get("augmentation", "heavy"))
     if aug not in ("none", "light", "heavy"):

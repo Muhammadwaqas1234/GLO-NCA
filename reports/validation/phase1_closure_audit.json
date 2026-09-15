@@ -1,0 +1,236 @@
+[
+  {
+    "section": "STEP 4  GLO-NCA naming",
+    "name": "no MedNCA/M3D-NCA branding on the active production path",
+    "status": "PASS",
+    "detail": "no MedNCA/M3D-NCA branding in src/ configs/ cloud/ scripts/ train.py Dockerfile"
+  },
+  {
+    "section": "STEP 4  GLO-NCA naming",
+    "name": "GLO-NCA naming used across active files",
+    "status": "PASS",
+    "detail": "49 active files carry GLO-NCA naming"
+  },
+  {
+    "section": "STEP 4  GLO-NCA naming",
+    "name": "upstream citations preserved (not renamed away)",
+    "status": "PASS",
+    "detail": "upstream Med-NCA / M3D-NCA citations intact in README (correctly retained, not renamed)"
+  },
+  {
+    "section": "STEP 5/6  methodology fingerprint + authoritative config",
+    "name": "production methodology fingerprint frozen",
+    "status": "PASS",
+    "detail": "28 values + levels(32/96/128, 20+20+10=50) + split verified"
+  },
+  {
+    "section": "STEP 5/6  methodology fingerprint + authoritative config",
+    "name": "exactly one config claims to be production",
+    "status": "PASS",
+    "detail": "configs claiming production: ['v3_multilevel_ckpt.yaml']"
+  },
+  {
+    "section": "STEP 5/6  methodology fingerprint + authoritative config",
+    "name": "no doc points the campaign at another config",
+    "status": "PASS",
+    "detail": "no doc names the non-checkpointing config for the campaign"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "F-01 V3 model/agent/config/split tracked in git",
+    "status": "PASS",
+    "detail": "V3 model, agent, production config and split are tracked"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "CL-01 canonical split reaches the container",
+    "status": "PASS",
+    "detail": "split COPY'd into image and re-included in .dockerignore"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "CL-02 gate cannot launch the production run",
+    "status": "PASS",
+    "detail": "no executable gate line runs the production config"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "CL-05 no 'ls -t' experiment-directory guessing",
+    "status": "PASS",
+    "detail": "experiment id is explicit; no 'ls -t' guessing"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "CL-06 systemd-backed training lock",
+    "status": "PASS",
+    "detail": "systemd-backed lock; no launcher-PID lock remains"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "C-01 scheduler restore fails loudly",
+    "status": "PASS",
+    "detail": "scheduler restore failure raises instead of silently resetting the LR"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "F-05 V3 run requires an explicit split",
+    "status": "PASS",
+    "detail": "a V3 run without an explicit split is refused"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "D-01 persistent workers + epoch-aware sampler",
+    "status": "PASS",
+    "detail": "persistent workers + epoch-aware sampler"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "D-02 patchify full-volume hoist",
+    "status": "PASS",
+    "detail": "full-volume reductions hoisted out of the retry loop"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "ME-01 evaluation host-RAM reduction",
+    "status": "PASS",
+    "detail": "uint8 ground truth + val_pairs released after last use"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "V2 fallback impossible on the production path",
+    "status": "PASS",
+    "detail": "no V2 default or fallback on the V3 production path"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "canonical split unchanged + subject-disjoint",
+    "status": "PASS",
+    "detail": "sha d30d71956ee9\u2026, 898/200/198, case- and subject-disjoint"
+  },
+  {
+    "section": "STEP 3  Phase 1 findings re-verified against current source",
+    "name": "invalid labels are fail-closed by default",
+    "status": "PASS",
+    "detail": "invalid labels -> validation FAIL -> runner aborts before training"
+  },
+  {
+    "section": "BLOCKER #1  operational data-quality policy",
+    "name": "policy loads and is explicit (no auto-discovery)",
+    "status": "PASS",
+    "detail": "tolerates {'BraTS-MET-01094-002': [6], 'BraTS-MET-01184-002': [8]}, excludes [] (canonical split untouched)"
+  },
+  {
+    "section": "BLOCKER #1  operational data-quality policy",
+    "name": "tolerance is per-case AND per-label",
+    "status": "PASS",
+    "detail": "6 only on 01094, 8 only on 01184, every other case restricted to {0,1,2,3,4}"
+  },
+  {
+    "section": "BLOCKER #1  operational data-quality policy",
+    "name": "malformed/stale/absent policy handled fail-closed",
+    "status": "PASS",
+    "detail": "malformed raises, unknown id raises, absent => no tolerances (validator stays fail-closed)"
+  },
+  {
+    "section": "BLOCKER #1  operational data-quality policy",
+    "name": "canonical split untouched by the policy",
+    "status": "PASS",
+    "detail": "policy pins the canonical SHA, excludes nothing, train stays 898"
+  },
+  {
+    "section": "STEP 10  resume / fail-loud behaviour (real subprocess)",
+    "name": "resume without saved config exits 2",
+    "status": "PASS",
+    "detail": "rc=2: refuses to resume without its saved config"
+  },
+  {
+    "section": "STEP 10  resume / fail-loud behaviour (real subprocess)",
+    "name": "bare `train.py` exits 2",
+    "status": "PASS",
+    "detail": "rc=2: bare `train.py` cannot silently run V2"
+  },
+  {
+    "section": "STEP 10  resume / fail-loud behaviour (real subprocess)",
+    "name": "resume detects hyperparameter drift",
+    "status": "PASS",
+    "detail": "resume compares epochs/lr/loss/seed against the checkpoint config"
+  },
+  {
+    "section": "STEP 11/12  evaluation discipline + reproducibility",
+    "name": "test frozen: collected once, tuned on validation only",
+    "status": "PASS",
+    "detail": "test collected once; thresholds tuned on validation only"
+  },
+  {
+    "section": "STEP 11/12  evaluation discipline + reproducibility",
+    "name": "HD95 is voxel-space and labelled as such",
+    "status": "PASS",
+    "detail": "HD95 computed in voxels and labelled as voxels; no mm claim"
+  },
+  {
+    "section": "STEP 11/12  evaluation discipline + reproducibility",
+    "name": "evaluation runs under no_grad",
+    "status": "PASS",
+    "detail": "evaluation runs under no_grad"
+  },
+  {
+    "section": "STEP 11/12  evaluation discipline + reproducibility",
+    "name": "patchify/augmentation gated to train split",
+    "status": "PASS",
+    "detail": "patchify and augmentation are gated to the train split only"
+  },
+  {
+    "section": "STEP 11/12  evaluation discipline + reproducibility",
+    "name": "per-(seed,epoch,case) RNG deterministic and varied",
+    "status": "PASS",
+    "detail": "deterministic; 60/60 distinct across epochs, 60/60 across cases"
+  },
+  {
+    "section": "STEP 14/15  container, cloud scripts, security",
+    "name": "no credential-like file tracked",
+    "status": "PASS",
+    "detail": "no credential-like file is tracked by git"
+  },
+  {
+    "section": "STEP 14/15  container, cloud scripts, security",
+    "name": "image excludes data/checkpoints",
+    "status": "PASS",
+    "detail": "image excludes checkpoints, NIfTI data and experiment outputs"
+  },
+  {
+    "section": "STEP 14/15  container, cloud scripts, security",
+    "name": "no personal absolute paths in active code",
+    "status": "PASS",
+    "detail": "no personal absolute path in active code"
+  },
+  {
+    "section": "STEP 14/15  container, cloud scripts, security",
+    "name": "cloud shell scripts parse",
+    "status": "PASS",
+    "detail": "19 cloud scripts parse"
+  },
+  {
+    "section": "STEP 14/15  container, cloud scripts, security",
+    "name": "production docker image built",
+    "status": "PASS",
+    "detail": "image present (16750a3fa7ce)"
+  },
+  {
+    "section": "STEP 15  dead files / references / report integrity",
+    "name": "archived one-off tools unreferenced",
+    "status": "PASS",
+    "detail": "archived one-off tools referenced nowhere in active code"
+  },
+  {
+    "section": "STEP 15  dead files / references / report integrity",
+    "name": "archive/ never imported by active code",
+    "status": "PASS",
+    "detail": "no active module imports archive/ (Kaggle history isolated)"
+  },
+  {
+    "section": "STEP 15  dead files / references / report integrity",
+    "name": "all 15 Phase 1 reports intact",
+    "status": "PASS",
+    "detail": "all 15 Phase 1 reports present"
+  }
+]

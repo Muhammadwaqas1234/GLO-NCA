@@ -1,0 +1,198 @@
+{
+  "environment": {
+    "python": "3.12.9",
+    "torch": "2.5.1+cu121",
+    "cuda_build": "12.1",
+    "cuda_available": true,
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "vram_gb": 6.0,
+    "capability": "8.6"
+  },
+  "vram": {
+    "ladder": [
+      [
+        32,
+        "OK",
+        0.15
+      ],
+      [
+        48,
+        "OK",
+        0.46
+      ],
+      [
+        64,
+        "OK",
+        1.07
+      ]
+    ],
+    "total_gb": 6.0,
+    "note": "Windows CUDA sysmem fallback is active: allocations beyond physical VRAM spill to host RAM instead of raising OOM. SPILL means the configuration would OOM on a Linux GPU of this size and is NOT a true fit."
+  },
+  "eval_ram": {
+    "per_case_pair_gb": 0.0293,
+    "val_total_gb": 5.9,
+    "test_total_gb": 5.8,
+    "val_plus_test_gb": 11.7,
+    "process_rss_gb": 1.23,
+    "target_vm_ram_gb": 32.0,
+    "local_host_total_gb": 15.6,
+    "local_host_available_gb": 1.1,
+    "target_headroom_gb": 20.3
+  },
+  "timings": {
+    "dataset_getitem_s": 5.16
+  },
+  "results": [
+    {
+      "section": "A. environment",
+      "name": "environment captured",
+      "status": "PASS",
+      "detail": "{\"python\": \"3.12.9\", \"torch\": \"2.5.1+cu121\", \"cuda_build\": \"12.1\", \"cuda_available\": true, \"gpu\": \"NVIDIA GeForce RTX 3050 6GB Laptop GPU\", \"vram_gb\": 6.0, \"capability\": \"8.6\"}"
+    },
+    {
+      "section": "B. V3 model on the local GPU",
+      "name": "model builds on GPU, 40,656 params",
+      "status": "PASS",
+      "detail": "40656 params on cuda:0, all_on_gpu=True"
+    },
+    {
+      "section": "B. V3 model on the local GPU",
+      "name": "per-component parameter breakdown",
+      "status": "PASS",
+      "detail": "{'level1': 18861, 'level2': 11277, 'level3': 7811, 'projections': 800, 'fusion+head': 1907}"
+    },
+    {
+      "section": "B. V3 model on the local GPU",
+      "name": "forward + loss + backward (GPU)",
+      "status": "PASS",
+      "detail": "loss=4.0746 finite, 53 grad tensors, out=(1, 3, 32, 32, 32)"
+    },
+    {
+      "section": "B. V3 model on the local GPU",
+      "name": "gradient checkpointing == no checkpointing (outputs AND grads)",
+      "status": "PASS",
+      "detail": "max|dout|=0.000e+00, max|dgrad|=0.000e+00 (both must be 0)"
+    },
+    {
+      "section": "B. V3 model on the local GPU",
+      "name": "optimizer + grad-clip + scheduler + EMA step",
+      "status": "PASS",
+      "detail": "grad_norm=0.134, 50 params updated, lr 0.001600->0.001561, EMA ok"
+    },
+    {
+      "section": "C. checkpoint / resume",
+      "name": "checkpoint save -> load -> restore (model/opt/sched/epoch)",
+      "status": "PASS",
+      "detail": "weights=True lr=True sched_step=True(2) epoch=True optstate=True"
+    },
+    {
+      "section": "C. checkpoint / resume",
+      "name": "scheduler restore failure raises (no silent LR reset)",
+      "status": "PASS",
+      "detail": "raises RuntimeError as required"
+    },
+    {
+      "section": "C. checkpoint / resume",
+      "name": "resume without saved config fails loudly",
+      "status": "PASS",
+      "detail": "rc=2, refuses without the saved config"
+    },
+    {
+      "section": "C. checkpoint / resume",
+      "name": "bare `train.py` cannot silently run V2",
+      "status": "PASS",
+      "detail": "rc=2, bare `train.py` cannot silently run V2"
+    },
+    {
+      "section": "D. real data + real patchify",
+      "name": "REAL patchify: 7 scenarios, output + RNG identical",
+      "status": "PASS",
+      "detail": "300 cases across 12 scenarios (full/non-full x prio on/off x ET present/absent/empty): 0 mismatches"
+    },
+    {
+      "section": "D. real data + real patchify",
+      "name": "REAL dataset preprocessing on REAL BraTS-MET case",
+      "status": "PASS",
+      "detail": "BraTS-MET-00001-000: img(64, 64, 64, 4) label(64, 64, 64, 3) binary, ET<=TC<=WT, 5.2s"
+    },
+    {
+      "section": "D. real data + real patchify",
+      "name": "REAL case -> V3 -> loss -> backward (GPU)",
+      "status": "PASS",
+      "detail": "real case BraTS-MET-00001-000: loss=3.8566, finite grads"
+    },
+    {
+      "section": "E. RNG / reproducibility",
+      "name": "epoch-aware RNG via the REAL dataset",
+      "status": "PASS",
+      "detail": "deterministic; 28 distinct over 40 epochs, 33 over 40 cases"
+    },
+    {
+      "section": "E. RNG / reproducibility",
+      "name": "epoch sampler contract",
+      "status": "PASS",
+      "detail": "deterministic per epoch, order differs across epochs, full permutation"
+    },
+    {
+      "section": "F. memory",
+      "name": "VRAM ladder 32->128 (checkpointing ON)",
+      "status": "PASS",
+      "detail": "total 6.0 GB; 32^3:OK/0.15GB, 48^3:OK/0.46GB, 64^3:OK/1.07GB"
+    },
+    {
+      "section": "F. memory",
+      "name": "evaluation host-RAM requirement",
+      "status": "PASS",
+      "detail": "30.0 MB/case-pair -> val 5.9 GB, test 5.8 GB, both live 11.7 GB; target VM 32 GB -> 20.3 GB headroom"
+    },
+    {
+      "section": "F. memory",
+      "name": "uint8 ground truth == float32 (bit-exact metrics)",
+      "status": "PASS",
+      "detail": "score identical=True, tuned thresholds identical=True, per-case identical=True"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "production baseline frozen",
+      "status": "PASS",
+      "detail": "all 26 production values + levels + split verified"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "no V2 in the V3 production path",
+      "status": "PASS",
+      "detail": "no V2 default reachable from the V3 production path"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "canonical split integrity + subject disjointness",
+      "status": "PASS",
+      "detail": "sha ok, 898/200/198, case- and subject-disjoint"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "invalid-label cases confined to TRAIN",
+      "status": "PASS",
+      "detail": "{'01094-002': ['train'], '01184-002': ['train']} -- val/test unaffected"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "gate cannot launch production",
+      "status": "PASS",
+      "detail": "no path in the gate can launch the production config"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "cloud shell scripts parse",
+      "status": "PASS",
+      "detail": "19 cloud scripts parse"
+    },
+    {
+      "section": "G. config / methodology / cloud statics",
+      "name": "docker production image build",
+      "status": "SKIP",
+      "detail": "build not attempted in this pass (multi-GB download); run `docker build -t glo-nca:latest .` as a pre-flight step"
+    }
+  ]
+}

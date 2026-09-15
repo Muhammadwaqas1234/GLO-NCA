@@ -165,12 +165,25 @@ volumes**, driven by `patch_size` (Phase 1 hardware guide): 64³ ≈ 2.4 GB,
 | **V100** (`nvidia-tesla-v100`) | 16 GB | ✅ | ⚠️ | older; fine but pricier than T4/L4 |
 | **A100 40GB** (A2) | 40 GB | ✅ | ✅ | overkill for this model; most expensive |
 
-**Recommendation:** **T4 for `patch_size: 96`** (the `gcp_full.yaml` default) —
-lowest cost, ample VRAM. Use **L4** only if you switch to `patch_size: 128`.
-A100 is not needed for a 30K-parameter model.
+**V2 recommendation:** **T4 for `patch_size: 96`** (the `gcp_full.yaml` default) —
+lowest cost, ample VRAM.
+
+**V3 recommendation (300-epoch campaign, `configs/v3_multilevel_ckpt.yaml`):** the V3
+model runs its fine level at **128³** and adds cross-level projections + a fusion
+head, so the activation peak is higher than a plain 128³ NCA. **T4 16 GB is tight
+and may not be a genuine TRUE FIT; use L4 24 GB (G2) as the low-cost default with
+headroom.** The decision is not made by this table — it is made by the real gate:
+
+```bash
+python scripts/gpu_memory_gate_v3.py --config configs/v3_multilevel_ckpt.yaml
+# must report:  96^3 TRUE FIT  AND  128^3 TRUE FIT   (host-memory spill != fit)
+```
+If the chosen GPU fails 128³, **stop and pick a larger-VRAM GPU** (L4 → A100) —
+never reduce the V3 architecture. A100 is only needed if L4 fails 128³.
 
 > GPU availability varies by region/zone — if creation fails with a capacity or
-> quota error, try another zone or request quota.
+> quota error, try another zone or request quota. Keep the **GCS bucket in the
+> same region** as the VM to avoid cross-region egress on the 1,296-case dataset.
 
 ---
 
@@ -181,9 +194,24 @@ GPU VM RUNNING  = you are paying (per-second, per-GPU + machine)
 GPU VM STOPPED  = compute cost stops (you still pay a little for disk + GCS)
 ```
 
-Workflow: **start → train → sync → stop.** `stop_vm.sh` halts billing without
-deleting anything. Nothing here ever auto-deletes a VM, disk, or bucket, and
-full training never auto-starts.
+Workflow: **start → train → sync → verify → delete.** Two cleanup levels:
+
+- `stop_vm.sh` — halts **compute** billing but keeps the VM + its disk (you still
+  pay for the disk). Use between sessions if you will resume soon.
+- `delete_vm.sh <exp_id>` — deletes the VM **and its boot disk** (stops all VM
+  billing). It first runs `verify_results.sh <exp_id>`, which confirms the
+  experiment's manifest, checkpoints, metrics and graphs exist and are non-empty
+  **in GCS** and that a downloaded checkpoint reloads — so results are safe before
+  compute is destroyed. Enforced order: **COMPUTE → SAVE → VERIFY → DELETE**
+  (never DELETE before VERIFY). `--force` skips verification only for a run whose
+  results you do not need.
+
+`cost_report.sh` estimates the configured GPU's hourly cost and shows VM state;
+`cost_report.sh --audit` lists potentially-billing resources (VM, disks,
+snapshots, static IPs) so nothing is left on overnight. The **GCS bucket,
+dataset, master split and experiment results are always retained** — only GPU
+compute is deleted. Nothing here ever auto-deletes storage, and full training
+never auto-starts.
 
 ### Cost estimate (reported prices — NOT verified by me)
 

@@ -3,138 +3,176 @@
 > **MS Thesis — Muhammad Waqas, Air University, Islamabad.**
 > *For academic and educational use only — not a medical device (see [LICENSE](LICENSE)).*
 
-> **Status (experimental freeze).** The training/experiment harness (Phases 1–3)
-> is implemented and tested locally on synthetic data. The real GCP/GPU BraTS
-> experiments — ablations A0–A3 and the final GLO-NCA run — are **pending
-> execution** per [PHASE3_RUNBOOK.md](PHASE3_RUNBOOK.md). **No experimental
-> results (Dice/mIoU/HD95) are claimed until those runs are executed.**
-
-GLO-NCA segments brain tumors from **multi-modal MRI (BraTS)** using a
-lightweight **Neural Cellular Automata** with a **global-context mechanism**.
-A plain NCA only communicates locally; GLO-NCA adds a cheap Squeeze-and-
-Excitation (SE) block that injects whole-volume context, so the model captures
-both **local boundaries** and **global tumor location** while staying tiny
-(~30k parameters, fits a 6 GB GPU).
+GLO-NCA is a **lightweight, global-context-aware Neural Cellular Automata (NCA)**
+architecture for **multi-modal 3D brain-tumor segmentation** on BraTS. A plain
+NCA only communicates between neighbouring cells; GLO-NCA augments it with
+**Squeeze-and-Excitation (SE) channel context** and a **spatial global-context**
+block so the model reasons about whole-volume tumor location while remaining
+extremely small (**40,656 parameters** for the V3 model).
 
 ---
 
-## Why GLO-NCA
-- **Lightweight** — ~30k parameters vs millions in U-Net / Transformers; runs on
-  low-resource hardware (laptop GPU, edge devices).
-- **Global-context aware** — a channel Squeeze-and-Excitation block
-  (`use_attention=True`) plus a spatial global-context block (`use_spatial=True`)
-  inject whole-volume context for a negligible parameter cost; this is the
-  thesis novelty.
-- **Multi-modal** — fuses the four BraTS modalities (T1, T1ce, T2, FLAIR).
-- **Multi-class** — predicts the three standard nested tumor regions
-  **WT** (Whole Tumor), **TC** (Tumor Core), **ET** (Enhancing Tumor).
-- **Built-in quality control** — variance over stochastic inferences (NQM).
-
-## Method (coarse-to-fine)
-1. Downscale the volume and run an NCA on the **full low-res** image → global context.
-2. Upscale its features, concatenate with the higher-res image, run a second NCA
-   on a **random patch** (keeps VRAM low during training; full volume at inference).
-3. Read out 3 channels → sigmoid → WT / TC / ET.
-
-Loss: **Focal-Tversky + BCE** (`FocalTverskyCELoss`), tuned for the small,
-imbalanced ET/TC regions. Optimizer: **AdamW** with cosine LR decay, EMA
-weights and gradient-norm clipping. Metrics: **Dice**, **mIoU**, **HD95**
-per region.
+## Status
+```
+Repository:            READY FOR SUPERVISOR REVIEW
+Final architecture:    GLO-NCA V3 (multi-level, 32³ → 96³ → 128³)
+Final config:          configs/v3_multilevel_ckpt.yaml   (300 epochs)
+V3 parameters:         40,656   (measured)
+V2 baseline:           30,138   (frozen, preserved)
+Master split:          subject-disjoint, frozen (SHA256 d30d7195…09559d)
+GPU validated:         NVIDIA L4 24 GB — 128³ TRUE FIT with gradient checkpointing
+3-epoch smoke test:    PENDING (blocked on dataset transfer to the training node)
+Final 300-epoch run:   NOT STARTED
+```
+No scientific segmentation results (Dice/mIoU/HD95 on the test set) are claimed
+until the final 300-epoch run defined in
+[`docs/thesis/FINAL_TRAINING_PROTOCOL.md`](docs/thesis/FINAL_TRAINING_PROTOCOL.md)
+is executed. Engineering/operational validation to date is recorded under
+[`reports/validation/`](reports/validation/).
 
 ---
 
-## Repository layout
-```
-.
-├── src/                       # GLO-NCA pipeline (all code needed to run it)
-│   ├── agents/                #   Agent, Agent_NCA, Agent_Multi_NCA, Agent_GLO_NCA
-│   ├── datasets/              #   BraTS loader (Nii_Gz_Dataset_3D: Dataset_NiiGz_3D_BraTS)
-│   ├── models/                #   Model_BasicNCA3D (+ SE & spatial global-context blocks)
-│   ├── losses/                #   FocalTverskyCELoss, TverskyCELoss, DiceCELoss
-│   └── utils/                 #   Experiment, helper
-├── train.py                   # canonical training entry point (env-driven)
-├── Dockerfile                 # GPU training image for GCP
-├── .dockerignore
-├── requirements-docker.txt    # pinned runtime dependencies
-├── kaggle_v4..v7.py           # experiment history (v4 = proven best, v7 = final recipe)
-└── LICENSE
-```
+## Research objective
+Deep 3D segmentation networks (U-Net, nnU-Net, Swin-UNETR, UNETR) achieve strong
+BraTS accuracy but carry millions of parameters and heavy compute, limiting use
+on low-resource hardware. **GLO-NCA investigates whether a tiny NCA, given an
+inexpensive global-context mechanism and a hierarchical multi-scale refinement,
+can produce competitive multi-region tumor segmentation at a fraction of the
+parameter budget.**
 
-## Installation (Python 3.12)
-```bash
-py -3.12 -m venv .venv
-.venv\Scripts\activate
-pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu121   # GPU build
-pip install -r requirements-docker.txt
-```
+## Scientific contribution
+- A **global-context-aware NCA cell** — SE channel attention (`use_attention`)
+  plus a spatial global-context block (`use_spatial`) injecting whole-volume
+  context at negligible parameter cost.
+- **GLO-NCA V3**, a *single unified* model with **three nested NCA levels**
+  (global → regional → fine) connected by **learnable feature projections** and a
+  **learnable concatenation fusion** head — not an ensemble.
+- A reproducible, thesis-grade experiment harness (fixed subject-disjoint split,
+  validation-only threshold tuning, single-pass frozen-test evaluation).
 
 ## Dataset
-Uses the **BraTS** dataset (one folder per patient with the modality + seg
-volumes). Tested on **BraTS 2024** (`*-t1n / -t1c / -t2w / -t2f / -seg .nii`);
-the loader also handles the older `t1 / t1ce / t2 / flair` naming.
+**BraTS-MET 2025 (MICCAI-LH BraTS-MET Challenge, Training set).** Enumerated by
+recursive, files-validated case discovery (`src/experiment/datasource.py`):
+- **1,296 valid cases** across **810 subjects** (287 subjects have >1 timepoint).
+- Two cohorts: 650 top-level cases + 646 in a nested `UCSD - Training/` sub-cohort.
+- **Subject-disjoint** master split (no timepoint of a subject leaks across
+  partitions): **train 898 / val 200 / test 198 cases** (567 / 121 / 122 subjects).
+- Split fingerprint (SHA256): `d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d`.
 
-## Run (canonical: `train.py`)
-`train.py` is the professional entry point (the full v7 recipe, single clean
-inference — no ensemble/TTA). Paths come from the environment, so the same code
-runs on a laptop, Kaggle or a GCP VM without edits:
+Input modalities (BraTS-MET naming): **t1n (T1), t1c (T1ce), t2w (T2), t2f (FLAIR)**.
+Output regions (nested, multi-label sigmoid): **WT** (Whole Tumor),
+**TC** (Tumor Core), **ET** (Enhancing Tumor).
 
-```bash
-DATA_ROOT=/path/to/BraTS OUT_DIR=./out python train.py
+## GLO-NCA V3 architecture
+```
+Multi-modal MRI (T1, T1ce, T2, FLAIR)
+        │
+        ▼
+Level 1 — Global      (low-resolution full-volume context; GLO-NCA + SE + spatial GC)
+        │  learnable projection + upsample
+        ▼
+Level 2 — Regional    (96³; GLO-NCA context refinement)
+        │  learnable projection + upsample
+        ▼
+Level 3 — Fine        (128³; GLO-NCA boundary refinement)
+        │
+        ▼
+Learnable feature fusion (per-level projection → concat → 1×1×1 fuse conv)
+        │
+        ▼
+WT / TC / ET
+```
+Full detail: [`docs/architecture/GLO_NCA_V3_ARCHITECTURE.md`](docs/architecture/GLO_NCA_V3_ARCHITECTURE.md).
+**Measured parameter count: 40,656.**
+
+## Memory optimization (implementation-level, not architectural)
+The 128³ level's backward pass is activation-heavy. GLO-NCA V3 supports **opt-in
+gradient checkpointing** (`memory.gradient_checkpointing`, default **OFF**) that
+recomputes each NCA step's activations during backprop instead of storing them.
+
+> Gradient checkpointing is **not** an architectural contribution. The model,
+> layers, channels, NCA steps, resolutions, inputs, outputs, loss and optimizer
+> are **unchanged**; only backward-pass activation memory is reduced. Verified
+> **bit-identical** outputs/gradients OFF vs ON, ~22.5× activation-memory
+> reduction, and a measured **128³ TRUE FIT at 9.07 GB on an NVIDIA L4 24 GB**
+> (see [`reports/validation/V3_GRADIENT_CHECKPOINTING_GPU_GATE.md`](reports/validation/V3_GRADIENT_CHECKPOINTING_GPU_GATE.md)).
+
+## Training configuration
+- **Final training target: 300 epochs** — `configs/v3_multilevel_ckpt.yaml`
+  (batch 1, seed 42, light augmentation, checkpointing ON).
+- **3-epoch smoke test: operational validation only** —
+  `configs/v3_smoke_3epoch.yaml` (derived from the final config, `epochs: 3`).
+  Its metrics are **not** scientific results and do not indicate convergence.
+
+Loss **Focal-Tversky + BCE** (β=0.75, γ=1.33); optimizer **AdamW**; **cosine LR**;
+**EMA**; **gradient-norm clipping**. Values in
+[`docs/thesis/FINAL_TRAINING_PROTOCOL.md`](docs/thesis/FINAL_TRAINING_PROTOCOL.md).
+
+## Evaluation
+Per-region **Dice**, **mIoU**, **HD95**. **HD95 is reported in voxels on the
+resampled grid** (no physical-space/mm conversion is implemented). Multi-label
+sigmoid (WT/TC/ET), single clean inference — **no ensemble, no TTA**.
+
+## Experimental discipline
+Fixed subject-disjoint master split (never regenerated); **validation-only**
+threshold tuning; **frozen test set** evaluated **once** after thresholds are
+frozen; no test leakage; smoothed best-epoch model selection; EMA; full
+checkpoint/resume (model, optimizer, scheduler, EMA, epoch, best score, RNG).
+
+## Hardware (validated)
+- Local **RTX 3050 6 GB**: sufficient for CPU-level software validation only;
+  cannot fit the production 96³/128³ backward pass (expected).
+- **NVIDIA L4 24 GB (GCP)**: directly validated. Unchanged V3 at 128³ needs
+  ~87–101 GB (OOM on L4); **with gradient checkpointing the 128³ training step
+  fits at ~9.07 GB peak** — no A100/H100/H200 required. This is a measured
+  result, not an estimate.
+
+## Documentation map
+```
+README.md                                   ← you are here
+CODE_GUIDE.md                               ← code walkthrough
+docs/thesis/PROJECT_OVERVIEW.md             ← academic overview
+docs/thesis/FINAL_TRAINING_PROTOCOL.md      ← exact final experiment
+docs/architecture/GLO_NCA_V3_ARCHITECTURE.md← architecture detail
+docs/reproducibility/                       ← runbook & reproducibility notes
+reports/validation/                         ← development/pre-flight records (historical)
+cloud/README.md                             ← GCP operations
+split/README.md                             ← master-split policy
+archive/                                    ← historical experiment scripts (not used)
 ```
 
-Optional overrides (env vars):
-
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `EPOCHS` | 150 | training epochs |
-| `N_PATIENTS` | 0 (=all) | cap patients (use a small value for a cheap Kaggle test) |
-| `PATCH` | 96 | high-res patch: **64** (laptop/Kaggle), **96** (balanced), **128** (max context, GCP-class GPU only — can OOM 6 GB) |
-| `AUG_LEVEL` | heavy | `light` (flips/rot/intensity) or `heavy` (+ elastic/gamma/noise/blur) |
-| `SEED`, `BATCH_SIZE`, `NUM_WORKERS` | 42 / 1 / 4 | reproducibility & loader |
-
-It writes `best.pth`, `results.json` and `curves.png` to `OUT_DIR`, prints
-**Dice / mIoU / HD95** per region (at 0.5 and at val-tuned thresholds), and ends
-with a **diagnostic report** — one GOOD/OK/WATCH verdict per signal (overfitting,
-threshold gain, convergence, weakest region, best-epoch position, VRAM headroom)
-so a cheap run tells you what to change before a full GCP run.
-
-**Cheap Kaggle test first:** `N_PATIENTS=40 EPOCHS=20 PATCH=64 python train.py`
-— confirms it trains and reads the diagnostics, then scale up on GCP.
-
-The `kaggle_v4..v7.py` scripts are kept as the experiment history that led to
-this recipe; `train.py` supersedes them.
-
-## Run on GCP (Docker)
+## Reproducibility (quick start)
 ```bash
-docker build -t glo-nca .
+# Python 3.12
+python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements-docker.txt
 
-docker run --gpus all \
-    -e DATA_ROOT=/data -e OUT_DIR=/out -e EPOCHS=150 \
-    -v /mnt/brats:/data:ro \
-    -v /mnt/checkpoints:/out \
-    glo-nca
+# software validation (synthetic; no dataset needed)
+python scripts/validate_v3_local.py --device cpu
+
+# with the real dataset available, verify the frozen split:
+python scripts/check_split.py --split split/master_split.json --data-root /path/to/BraTS-MET
 ```
-Mount the BraTS dataset at `/data` (read-only) and a writable checkpoint dir at
-`/out` — on GCP these can be a persistent disk or a GCS bucket via `gcsfuse`.
-Nothing about the data is baked into the image.
+Full protocol and GCP workflow: `docs/thesis/FINAL_TRAINING_PROTOCOL.md` and
+`cloud/README.md`.
 
-## Ablation (baseline vs GLO-NCA)
-Set `use_attention: False` to get the plain multi-level NCA baseline, and
-`True` for the global-context model — same code, one flag — to measure exactly
-what the global-context block contributes.
+## Limitations (honest)
+- No final segmentation accuracy is available yet — the 300-epoch run has not been
+  executed; do not read development/pre-flight reports as scientific results.
+- HD95 is in voxels on the resampled grid, not millimeters.
+- Real-data training requires a ≥~10 GB GPU with checkpointing (validated on L4);
+  the local 6 GB GPU is for software checks only.
+- GLO-NCA targets parameter/compute efficiency; it is not claimed to beat large
+  U-Net/Transformer models on absolute accuracy.
 
----
-
-## Acknowledgements
+## Acknowledgements & references
 Built on the open-source **Med-NCA / M3D-NCA** framework by John Kalkhof et al.
-(MIT-licensed). The global-context design, BraTS multi-modal/multi-class
-pipeline, and evaluation are the thesis contributions.
-
+(MIT-licensed). The global-context design, the V3 multi-level architecture, the
+BraTS multi-modal/multi-label pipeline, and the evaluation are the thesis
+contributions.
 - Kalkhof et al., *Med-NCA: Robust and Lightweight Segmentation with Neural Cellular Automata*, IPMI 2023.
 - Kalkhof & Mukhopadhyay, *M3D-NCA: Robust 3D Segmentation with Built-In Quality Control*, MICCAI 2023.
 
 ## License
-MIT, for **academic/educational use only** — see [LICENSE](LICENSE). Not for
-clinical use.
-
+MIT, for **academic/educational use only** — see [LICENSE](LICENSE). Not for clinical use.

@@ -25,7 +25,16 @@ def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
             data = agent.prepare_data(data, eval=True)
             out, targets = agent.get_outputs(data, full_img=True)
             prob = torch.sigmoid(out).detach().cpu().numpy()
-            gt = targets.detach().cpu().numpy()
+            # Phase 2 (memory, EXACT): the ground truth is strictly binary {0,1}
+            # (Nii_Gz_Dataset_3D._labels_to_regions stacks boolean masks), and
+            # every metric below uses it only via `gt >= 0.5`. Storing it as
+            # uint8 instead of float32 is therefore BIT-EXACT for every metric
+            # while cutting the accumulated host RAM for val+test from ~20 GB to
+            # ~12.5 GB at 128^3 -- the difference between finishing and an OOM
+            # *after* a 300-epoch run. Probabilities stay float32: float16 was
+            # measured to flip ~2.3k threshold decisions per 4M voxels, so it is
+            # NOT equivalent and is deliberately not used.
+            gt = (targets.detach().cpu().numpy() >= 0.5).astype(np.uint8)
             pairs.append((prob, gt))
     agent.exp.set_model_state("train")
     return pairs

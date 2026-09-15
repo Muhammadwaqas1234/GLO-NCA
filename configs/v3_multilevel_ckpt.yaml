@@ -1,0 +1,119 @@
+# =============================================================================
+# GLO-NCA V3 -- Multi-Level architecture (thesis training config).
+#
+# NEW architecture; V2 (configs/gcp_full.yaml + ablation_*.yaml) is the frozen
+# baseline and is NOT modified. V3 shares the SAME master split, dataset, seed,
+# loss, optimizer, scheduler, EMA and evaluation discipline as V2 so a valid
+# V2-vs-V3 comparison is possible; only the MODEL changes.
+#
+# Levels are nested multi-scale views of the same region:
+#   level1 = global/low-res context -> level2 = 96^3 regional -> level3 = 128^3
+#   fine -> learnable multi-level fusion -> WT/TC/ET.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V3-MultiLevel
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 0
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+data:
+  split_file: split/master_split.json     # SAME master split as V2 (required)
+  # Explicit OPERATIONAL data-quality policy. The canonical scientific split
+  # above is NEVER modified by it. The policy accepts, per named case only, the
+  # two stray segmentation labels that the production label conversion already
+  # maps to background (see the file for the measured evidence). Any other
+  # unexpected label, on any case, still fails the validator.
+  quality_policy_file: split/data_quality_policy.json
+
+model:
+  version: v3
+  name: GLO-NCA-V3-MultiLevel
+  # per-level GLO-NCA (each level is the existing BasicNCA3D: SE + spatial GC)
+  level1:
+    enabled: true
+    resolution: 32          # global/low-res context
+    channels: 24
+    nca_steps: 20
+    kernel_size: 7
+  level2:
+    enabled: true
+    resolution: 96          # regional
+    channels: 24
+    nca_steps: 20
+    kernel_size: 3
+  level3:
+    enabled: true
+    resolution: 128         # fine / boundary detail (narrower to save memory)
+    channels: 16
+    nca_steps: 10
+    kernel_size: 3
+  feature_fusion:
+    enabled: true
+    type: concat            # learnable concat + 1x1x1 fuse conv
+  fire_rate: 0.6
+  use_attention: true       # SE channel global-context (as V2)
+  use_spatial: true         # spatial global-context (as V2)
+  hidden: 128
+  dropout: 0.1
+
+training:
+  epochs: 300               # FINAL thesis campaign length (locked)
+  batch_size: 1
+  patch_size: 128           # finest level; lower levels derived by downsampling
+  augmentation: light
+  workers: 4
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:                       # SAME as V2 (do not change)
+  tversky_beta: 0.75        # alpha is derived as (1 - tversky_beta) = 0.25
+  focal_gamma: 1.33
+  # Phase 2 (§5): these were hard-coded in runner.py and so were NOT part of the
+  # saved per-run record. Values are IDENTICAL to the previous constants -- they
+  # are surfaced here only so the thesis config fully describes the methodology.
+  ce_weight: 0.5                   # auxiliary BCE weight inside FocalTverskyCELoss
+  empty_region_bce_weight: 0.1     # BCE weight for regions absent in a sample
+
+sampling:                   # ET-aware patch sampling (values unchanged)
+  prioritize_probability: 0.7      # P(bias the patch toward the target region)
+  prioritize_region: 2             # 0=WT, 1=TC, 2=ET (ET is the rarest region)
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10
+
+# ---------------------------------------------------------------------------
+# MEMORY-ONLY optimization. Identical model / architecture / outputs / gradients
+# to configs/v3_multilevel.yaml -- it only trades activation VRAM for recompute,
+# so the UNCHANGED 128^3 training step fits the target GPU. Verified in Phase 1
+# (use_reentrant=False, preserve_rng_state=True: same outputs, same gradients,
+# same RNG stream) and re-checked by scripts/phase2_regression.py.
+#
+# THIS IS THE PRODUCTION CONFIG for the 300-epoch V3 thesis campaign.
+# (A stale comment here previously said "Not the production config", which
+# contradicted README.md and docs/thesis/FINAL_TRAINING_PROTOCOL.md. Corrected
+# in Phase 2; configs/v3_multilevel.yaml is the no-checkpointing variant kept
+# only for large-VRAM comparison, and is NOT the campaign config.)
+memory:
+  gradient_checkpointing: true

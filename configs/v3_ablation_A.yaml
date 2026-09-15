@@ -1,0 +1,65 @@
+# =============================================================================
+# GLO-NCA V3 ablation A -- Global + 96 (two levels, no 128 fine level).
+# Documents the ablation matrix; run on GCP only. Same master split / seed /
+# loss / evaluation as the full V3 config -- only the level structure changes.
+# level3 disabled -> finest enabled level is level2 (96^3) -> patch_size 96.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-V3-ablation-A-global96
+  seed: 42
+
+dataset:
+  root: null
+  number_of_patients: 0
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+data:
+  split_file: split/master_split.json
+
+model:
+  version: v3
+  name: GLO-NCA-V3-ablation-A
+  level1: {enabled: true,  resolution: 32,  channels: 24, nca_steps: 20, kernel_size: 7}
+  level2: {enabled: true,  resolution: 96,  channels: 24, nca_steps: 20, kernel_size: 3}
+  level3: {enabled: false, resolution: 128, channels: 16, nca_steps: 10, kernel_size: 3}
+  feature_fusion: {enabled: true, type: concat}
+  fire_rate: 0.6
+  use_attention: true
+  use_spatial: true
+  hidden: 128
+  dropout: 0.1
+
+training:
+  epochs: 300
+  batch_size: 1
+  patch_size: 96            # finest enabled level (level2)
+  augmentation: light
+  workers: 4
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10
