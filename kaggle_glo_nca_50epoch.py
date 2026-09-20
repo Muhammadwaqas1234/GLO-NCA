@@ -68,6 +68,13 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import csv
+import hashlib
+import math
+import platform
+import shutil
+import subprocess
+
 import numpy as np
 
 # ############################################################################
@@ -496,7 +503,15 @@ def time_presets(names=None, iters=12, warmup=3, train_cases=129,
     return rows
 
 
-EPOCHS = 50
+# --- training control -------------------------------------------------------
+# 100 epochs is a BUDGET, not a target: early stopping ends the run once
+# validation has plateaued.
+EPOCHS = 100
+EARLY_STOPPING_ENABLED = True
+EARLY_STOPPING_PATIENCE = 15      # consecutive non-improving validations
+EARLY_STOPPING_MIN_DELTA = 0.001  # smaller gains count as noise
+SMOOTHING_WINDOW = 3              # rolling mean used for model selection
+TOP_K_CHECKPOINTS = 3             # ranked best checkpoints; never averaged
 BATCH_SIZE = 1
 NUM_WORKERS = 2
 LR = 0.0016
@@ -545,7 +560,7 @@ USE_TORCH_COMPILE = False
 # shapes are fixed after the first iteration.
 USE_TF32 = True
 
-CHECKPOINT_FREQUENCY = 10
+CHECKPOINT_FREQUENCY = 5          # periodic recovery snapshot
 HD95_EVERY_EPOCHS = 10
 MODALITIES = ["t1n", "t1c", "t2w", "t2f"]
 REGIONS = ["WT", "TC", "ET"]
@@ -1649,6 +1664,640 @@ def self_check() -> int:
     return 0 if ok else 1
 
 
+
+
+# ============================================================================
+# TRAINING CONTROL — early stopping, top-k, state machine, GPU diagnostics
+# ----------------------------------------------------------------------------
+# Self-contained ports of the repository modules
+# (src/experiment/{early_stopping,checkpoint,state_machine,diagnostics,
+# artifacts}.py). Nothing here imports from the repository: this file must
+# stay independently reproducible on Kaggle.
+# ============================================================================
+
+# --- training lifecycle -----------------------------------------------------
+# A long run gets interrupted. Afterwards someone has to answer, from the
+# output directory alone, what actually happened: did it finish, stop early,
+# or die? A free-text status cannot answer that, so the lifecycle is explicit
+# and persisted.
+S_CREATED = "CREATED"
+S_PREFLIGHT = "PREFLIGHT"
+S_RUNNING = "RUNNING"
+S_VALIDATING = "VALIDATING"
+S_BEST_UPDATED = "BEST_UPDATED"
+S_CHECKPOINTED = "CHECKPOINTED"
+S_EARLY_STOPPED = "EARLY_STOPPED"
+S_COMPLETED = "COMPLETED"
+S_FAILED = "FAILED"
+STATES = (S_CREATED, S_PREFLIGHT, S_RUNNING, S_VALIDATING, S_BEST_UPDATED,
+          S_CHECKPOINTED, S_EARLY_STOPPED, S_COMPLETED, S_FAILED)
+
+# GPU sampling phases. The distinction is the point: a reading taken while a
+# NIfTI is loading describes the pause, not the computation.
+P_IDLE = "IDLE"
+P_DATA_WAIT = "DATA_WAIT"
+P_ACTIVE_GPU = "ACTIVE_GPU"
+P_VALIDATION = "VALIDATION"
+P_CHECKPOINT = "CHECKPOINT"
+
+NOT_MEASURED = "NOT MEASURED"
+NOT_AVAILABLE = "NOT AVAILABLE"
+
+
+class TrainingState:
+    """Persisted lifecycle. Written to state.json after every change."""
+
+    def __init__(self, directory: str, run_id: str = ""):
+        self.directory = directory
+        self.run_id = run_id
+        self.state = S_CREATED
+        self.history: List[dict] = []
+        self.metadata: Dict[str, object] = {}
+        os.makedirs(directory, exist_ok=True)
+        self._record(S_CREATED, "run created")
+
+    @property
+    def path(self) -> str:
+        return os.path.join(self.directory, "state.json")
+
+    def _record(self, state: str, reason: str, **extra) -> None:
+        entry = {"state": state, "reason": reason,
+                 "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                time.gmtime())}
+        entry.update(extra)
+        self.history.append(entry)
+        self.state = state
+        self.save()
+
+    def transition(self, state: str, reason: str = "", **extra) -> str:
+        if state not in STATES:
+            raise ValueError(f"unknown state {state!r}")
+        self._record(state, reason or state, **extra)
+        return self.state
+
+    def fail(self, reason: str, **extra) -> str:
+        self._record(S_FAILED, reason, **extra)
+        return self.state
+
+    def set_metadata(self, **kw) -> None:
+        self.metadata.update(kw)
+        self.save()
+
+    def save(self) -> str:
+        payload = {"run_id": self.run_id, "state": self.state,
+                   "history": self.history, "metadata": self.metadata,
+                   "states_defined": list(STATES)}
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+        os.replace(tmp, self.path)     # atomic: no truncated state file
+        return self.path
+
+    def summary(self) -> dict:
+        counts: Dict[str, int] = {}
+        for h in self.history:
+            counts[h["state"]] = counts.get(h["state"], 0) + 1
+        return {"run_id": self.run_id, "current_state": self.state,
+                "transitions": len(self.history), "state_counts": counts,
+                "early_stopped": S_EARLY_STOPPED in counts,
+                "completed": S_COMPLETED in counts,
+                "was_resumed": counts.get(S_RUNNING, 0) > 1}
+
+
+class EarlyStopping:
+    """Patience-based stopping on a VALIDATION metric.
+
+    Training loss is deliberately not monitored: a falling training loss is
+    exactly what overfitting looks like. The test split is never consulted.
+    """
+
+    def __init__(self, patience: int = EARLY_STOPPING_PATIENCE,
+                 min_delta: float = EARLY_STOPPING_MIN_DELTA,
+                 monitor: str = "validation mean foreground Dice",
+                 enabled: bool = EARLY_STOPPING_ENABLED):
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.monitor = monitor
+        self.enabled = bool(enabled)
+        self.best: Optional[float] = None
+        self.best_epoch = 0
+        self.counter = 0
+        self.should_stop = False
+        self.stopped_epoch = 0
+        self.history: List[dict] = []
+
+    def update(self, value: float, epoch: int) -> bool:
+        finite = isinstance(value, (int, float)) and math.isfinite(value)
+        improved = finite and (self.best is None
+                               or value > self.best + self.min_delta)
+        if improved:
+            self.best, self.best_epoch, self.counter = float(value), epoch, 0
+        else:
+            self.counter += 1
+            if self.enabled and self.patience and self.counter >= self.patience:
+                self.should_stop = True
+                self.stopped_epoch = epoch
+        self.history.append({"epoch": epoch,
+                             "value": float(value) if finite else float("nan"),
+                             "best": self.best, "counter": self.counter,
+                             "improved": improved})
+        return self.should_stop
+
+    def status(self) -> str:
+        if self.best is None:
+            return "early-stop: no validation value yet"
+        pat = f"{self.counter}/{self.patience}" if self.patience else "off"
+        return (f"early-stop: best {self.best:.4f} @ ep {self.best_epoch} | "
+                f"patience {pat}")
+
+    def report(self) -> dict:
+        return {"enabled": self.enabled, "monitor": self.monitor,
+                "patience": self.patience, "min_delta": self.min_delta,
+                "best_value": self.best, "best_epoch": self.best_epoch,
+                "final_counter": self.counter, "triggered": self.should_stop,
+                "stopped_epoch": self.stopped_epoch or None,
+                "evaluations": len(self.history),
+                "note": ("Monitored on the VALIDATION split only. The test "
+                         "split is never used for stopping or selection.")}
+
+    def state_dict(self) -> dict:
+        return {"best": self.best, "best_epoch": self.best_epoch,
+                "counter": self.counter, "should_stop": self.should_stop,
+                "stopped_epoch": self.stopped_epoch, "history": self.history}
+
+    def load_state_dict(self, st: dict) -> None:
+        # Patience must survive a restart, or a plateaued run trains another
+        # full patience window after every interruption.
+        self.best = st.get("best")
+        self.best_epoch = int(st.get("best_epoch", 0) or 0)
+        self.counter = int(st.get("counter", 0) or 0)
+        self.should_stop = bool(st.get("should_stop", False))
+        self.stopped_epoch = int(st.get("stopped_epoch", 0) or 0)
+        self.history = list(st.get("history", []) or [])
+
+
+def update_top_k(directory: str, weights, epoch: int, score: float,
+                 metrics: dict, meta: dict, top_k: int = TOP_K_CHECKPOINTS):
+    """Maintain best_1..best_k plus a manifest. Weights are NEVER averaged."""
+    import torch
+    os.makedirs(directory, exist_ok=True)
+    man_path = os.path.join(directory, "top_k.json")
+    entries: List[dict] = []
+    if os.path.isfile(man_path):
+        try:
+            with open(man_path, encoding="utf-8") as fh:
+                entries = json.load(fh).get("entries", [])
+        except (OSError, ValueError):
+            entries = []                 # unreadable manifest -> rebuild
+
+    def p(rank):
+        return os.path.join(directory, f"best_{rank}.pth")
+
+    previous = sorted(entries, key=lambda e: e["score"], reverse=True)
+    existing = {e["epoch"]: p(i + 1) for i, e in enumerate(previous)
+                if os.path.isfile(p(i + 1))}
+
+    entries = [e for e in entries if e.get("epoch") != epoch]
+    entries.append({"epoch": epoch, "score": float(score),
+                    "metrics": metrics, **meta})
+    entries.sort(key=lambda e: e["score"], reverse=True)
+    keep = entries[:max(1, int(top_k))]
+    if not any(e["epoch"] == epoch for e in keep):
+        return keep                      # did not make the cut: no I/O
+
+    # Stage survivors aside first so a file changing rank cannot overwrite
+    # another mid-shuffle.
+    staged = {}
+    for ep_, src in existing.items():
+        if any(e["epoch"] == ep_ for e in keep) and ep_ != epoch:
+            tmp = os.path.join(directory, f".stage_{ep_}.tmp")
+            os.replace(src, tmp)
+            staged[ep_] = tmp
+    for rank in range(1, len(previous) + 2):
+        if os.path.isfile(p(rank)):
+            os.remove(p(rank))
+    for i, e in enumerate(keep):
+        dest = p(i + 1)
+        if e["epoch"] == epoch:
+            tmp = dest + ".tmp"
+            torch.save({"m": weights, "ep": epoch, "score": float(score),
+                        "metrics": metrics, **meta}, tmp)
+            os.replace(tmp, dest)
+        elif e["epoch"] in staged:
+            os.replace(staged.pop(e["epoch"]), dest)
+    for leftover in staged.values():
+        if os.path.isfile(leftover):
+            os.remove(leftover)
+
+    tmp = man_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"top_k": int(top_k), "weight_averaging": False, "swa": False,
+                   "selection_metric": meta.get("selection_metric", ""),
+                   "entries": keep}, fh, indent=2, default=str)
+    os.replace(tmp, man_path)
+    return keep
+
+
+class GPUDiagnostics:
+    """Phase-labelled GPU sampler.
+
+    Utilization is summarised ONLY from ACTIVE_GPU samples. Sampling is
+    rate-limited because nvidia-smi costs tens of milliseconds and polling it
+    per step would distort the timings being collected.
+    """
+
+    _Q = ("utilization.gpu,utilization.memory,clocks.sm,clocks.max.sm,"
+          "temperature.gpu,power.draw,memory.total,memory.used")
+
+    def __init__(self, enabled: bool = True, min_interval_s: float = 10.0):
+        self.enabled = bool(enabled)
+        self.min_interval_s = float(min_interval_s)
+        self.samples: List[dict] = []
+        self._last = 0.0
+        self._phase = P_IDLE
+
+    def set_phase(self, phase: str) -> None:
+        self._phase = phase
+
+    def _smi(self) -> dict:
+        blank = {k: NOT_AVAILABLE for k in
+                 ("gpu_utilization_pct", "memory_utilization_pct",
+                  "sm_clock_mhz", "sm_clock_max_mhz", "temperature_c",
+                  "power_w", "vram_total_mb", "vram_used_mb")}
+        try:
+            r = subprocess.run(["nvidia-smi", f"--query-gpu={self._Q}",
+                                "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return blank
+            a = [x.strip() for x in r.stdout.strip().split("\n")[0].split(",")]
+
+            def num(i, cast):
+                try:
+                    return cast(a[i])
+                except Exception:
+                    return NOT_AVAILABLE
+
+            return {"gpu_utilization_pct": num(0, int),
+                    "memory_utilization_pct": num(1, int),
+                    "sm_clock_mhz": num(2, int), "sm_clock_max_mhz": num(3, int),
+                    "temperature_c": num(4, int), "power_w": num(5, float),
+                    "vram_total_mb": num(6, float), "vram_used_mb": num(7, float)}
+        except Exception:
+            return blank
+
+    def sample(self, epoch: int = -1, step: int = -1, force: bool = False):
+        import torch
+        if not self.enabled:
+            return None
+        now = time.time()
+        if not force and (now - self._last) < self.min_interval_s:
+            return None
+        self._last = now
+        rec = {"timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                              time.gmtime(now)),
+               "epoch": epoch, "step": step, "phase": self._phase}
+        rec.update(self._smi())
+        if torch.cuda.is_available():
+            rec["torch_allocated_mb"] = round(
+                torch.cuda.memory_allocated() / 1024 ** 2, 1)
+            rec["torch_reserved_mb"] = round(
+                torch.cuda.memory_reserved() / 1024 ** 2, 1)
+        else:
+            rec["torch_allocated_mb"] = NOT_AVAILABLE
+            rec["torch_reserved_mb"] = NOT_AVAILABLE
+        self.samples.append(rec)
+        return rec
+
+    def summary(self) -> dict:
+        if not self.samples:
+            return {"status": NOT_MEASURED, "samples": 0}
+
+        def nums(rows, key):
+            return [r[key] for r in rows if isinstance(r.get(key), (int, float))]
+
+        out: Dict[str, object] = {"samples": len(self.samples), "phases": {}}
+        for ph in (P_IDLE, P_DATA_WAIT, P_ACTIVE_GPU, P_VALIDATION,
+                   P_CHECKPOINT):
+            rows = [r for r in self.samples if r["phase"] == ph]
+            if not rows:
+                continue
+            entry = {"samples": len(rows)}
+            for key in ("gpu_utilization_pct", "sm_clock_mhz",
+                        "temperature_c", "power_w"):
+                v = nums(rows, key)
+                entry[key] = ({"mean": round(sum(v) / len(v), 1),
+                               "min": min(v), "max": max(v)} if v
+                              else NOT_AVAILABLE)
+            out["phases"][ph] = entry
+
+        active = [r for r in self.samples if r["phase"] == P_ACTIVE_GPU]
+        util = nums(active, "gpu_utilization_pct")
+        if util:
+            mean_u = sum(util) / len(util)
+            out["active_gpu_utilization_mean_pct"] = round(mean_u, 1)
+            out["utilization_note"] = (
+                "Measured DURING forward/backward only. DATA_WAIT, CHECKPOINT "
+                "and IDLE samples are excluded: an idle reading describes the "
+                "pause, not the computation.")
+            if mean_u < 50:
+                out["warning"] = (
+                    f"GPU averaged {mean_u:.1f}% during ACTIVE_GPU -- low for "
+                    f"compute-bound training. Investigate dataloader wait, "
+                    f"H2D or CPU preprocessing.")
+        else:
+            out["active_gpu_utilization_mean_pct"] = NOT_MEASURED
+        clocks, maxes = nums(active, "sm_clock_mhz"), nums(active,
+                                                           "sm_clock_max_mhz")
+        if clocks and maxes:
+            pct = 100 * (sum(clocks) / len(clocks)) / max(maxes)
+            out["active_clock_pct_of_max"] = round(pct, 1)
+            if pct < 75:
+                out["throttle_warning"] = (
+                    f"SM clock averaged {pct:.0f}% of maximum: absolute "
+                    f"timings are inflated ~{100 / pct:.1f}x. Ratios hold.")
+        return out
+
+    def write_csv(self, path: str) -> Optional[str]:
+        if not self.samples:
+            return None
+        cols: List[str] = []
+        for s in self.samples:
+            for k in s:
+                if k not in cols:
+                    cols.append(k)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for s in self.samples:
+                w.writerow({c: s.get(c, "") for c in cols})
+        os.replace(tmp, path)
+        return path
+
+
+def run_fingerprint(root: str = "") -> dict:
+    """Identity block embedded in checkpoints and artifacts."""
+    import torch
+    fp = {
+        "architecture": f"GLO-NCA {L1_RES}^3k{L1_K}+{L2_RES}^3k{L2_K}",
+        "parameters": EXPECTED_PARAMS,
+        "total_nca_steps": L1_STEPS + L2_STEPS,
+        "spatial_gc_kernel": SPATIAL_GC_KERNEL,
+        "working_volume": WORKING_VOLUME,
+        "patchify": USE_PATCHIFY,
+        "seed": SEED,
+        "batch_size": BATCH_SIZE,
+        "run_mode": RUN_MODE,
+        "preset": ACTIVE_PRESET,
+        "dataset_root": root or NOT_AVAILABLE,
+        "selection_metric": ("validation mean foreground Dice, "
+                             f"{SMOOTHING_WINDOW}-epoch rolling mean"),
+        # The loss the model OPTIMISES. Reported as train_loss/val_loss; it is
+        # not a quality score. Quality is Dice / IoU / HD95.
+        "loss_function": "FocalTverskyCELoss",
+        "loss_params": {"tversky_alpha": TVERSKY_ALPHA,
+                        "tversky_beta": TVERSKY_BETA,
+                        "focal_gamma": FOCAL_GAMMA,
+                        "ce_weight": CE_WEIGHT,
+                        "empty_region_bce_weight": EMPTY_REGION_BCE_WEIGHT},
+        "quality_metrics": ["Dice", "IoU", "HD95"],
+        "python": sys.version.split()[0],
+        "torch": torch.__version__,
+    }
+    try:
+        fp["config_fingerprint"] = hashlib.sha256(
+            json.dumps({k: fp[k] for k in sorted(fp)}, default=str)
+            .encode("utf-8")).hexdigest()
+    except Exception:
+        fp["config_fingerprint"] = NOT_AVAILABLE
+    if torch.cuda.is_available():
+        cap = torch.cuda.get_device_capability(0)
+        fp["gpu"] = torch.cuda.get_device_name(0)
+        fp["gpu_capability"] = f"{cap[0]}.{cap[1]}"
+        fp["cuda"] = torch.version.cuda
+    return fp
+
+
+def write_artifacts(outdir: str, *, fingerprint: dict, arch: dict,
+                    epoch_rows: List[dict], stopper: "EarlyStopping",
+                    run_state: "TrainingState", gpu_diag: "GPUDiagnostics",
+                    ckpt_dir: str, top_k_entries, best_meta: Optional[dict],
+                    periodic: List[str], final_ckpt: Optional[str],
+                    resume_checks: Optional[dict], timing: Optional[dict]
+                    ) -> Dict[str, str]:
+    """Write the artifact set. Absent evidence is recorded, never invented."""
+    import torch
+    written: Dict[str, str] = {}
+
+    def j(name, obj):
+        p = os.path.join(outdir, name)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, indent=2, default=str)
+        os.replace(tmp, p)
+        written[name] = p
+        return p
+
+    def c(name, rows):
+        p = os.path.join(outdir, name)
+        if not rows:
+            rows = [{"status": NOT_MEASURED}]
+        cols: List[str] = []
+        for r in rows:
+            for k in r:
+                if k not in cols:
+                    cols.append(k)
+        tmp = p + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in cols})
+        os.replace(tmp, p)
+        written[name] = p
+        return p
+
+    def stat(p):
+        if not p or not os.path.isfile(p):
+            return {"path": p or NOT_AVAILABLE, "exists": False}
+        return {"path": os.path.basename(p), "exists": True,
+                "size_bytes": os.path.getsize(p)}
+
+    j("architecture_identity.json", {**fingerprint, "checks": arch})
+    j("run_metadata.json", {
+        **fingerprint, "epochs_planned": EPOCHS,
+        "epochs_completed": len(epoch_rows),
+        "early_stopping": stopper.report(),
+        "training_state": run_state.summary(),
+        "precision": PRECISION,
+        "host": {"platform": platform.platform(),
+                 "python": platform.python_version()}})
+    hw = {"os": platform.platform(), "python": platform.python_version(),
+          "cpu_count": os.cpu_count() or NOT_AVAILABLE,
+          "torch": torch.__version__, "cuda": torch.version.cuda or NOT_AVAILABLE}
+    if torch.cuda.is_available():
+        cap = torch.cuda.get_device_capability(0)
+        pr = torch.cuda.get_device_properties(0)
+        hw.update({"gpu_name": torch.cuda.get_device_name(0),
+                   "gpu_count": torch.cuda.device_count(),
+                   "gpu_capability": f"{cap[0]}.{cap[1]}",
+                   "gpu_total_vram_mb": round(pr.total_memory / 1024 ** 2, 1),
+                   "bf16_native": cap >= (8, 0)})
+    else:
+        hw["gpu_name"] = NOT_AVAILABLE
+    j("hardware_metadata.json", hw)
+
+    j("precision_benchmark.json", {
+        "status": NOT_MEASURED,
+        "reason": ("no precision sweep was run in this experiment; the "
+                   "training precision below was auto-selected for the "
+                   "detected GPU"),
+        "precision_used": PRECISION,
+        "other_hardware": {"NVIDIA L4": NOT_MEASURED, "Tesla T4": NOT_MEASURED}})
+    j("timing_summary.json", timing or {
+        "status": NOT_MEASURED,
+        "note": "nested sections overlap; percentages do NOT sum to 100%"})
+
+    c("epoch_metrics.csv", epoch_rows)
+    c("validation_history.csv",
+      [{k: v for k, v in r.items()
+        if k.startswith(("epoch", "val", "dice", "iou", "hd95", "smooth"))}
+       for r in epoch_rows])
+
+    entries = []
+    if best_meta:
+        entries.append({"kind": "best", **best_meta})
+    for i, e in enumerate(top_k_entries or []):
+        entries.append({"kind": "top_k", "rank": i + 1, **e})
+    for p_ in periodic:
+        entries.append({"kind": "periodic", **stat(p_)})
+    if final_ckpt:
+        entries.append({"kind": "final", **stat(final_ckpt)})
+    j("checkpoint_manifest.json", {**fingerprint, "count": len(entries),
+                                   "checkpoint_dir": ckpt_dir,
+                                   "checkpoints": entries})
+    j("best_checkpoint_metadata.json", {
+        **fingerprint, "kind": "best",
+        "selection_split": "validation only", "test_split_used": False,
+        **(best_meta or {"status": NOT_MEASURED})})
+    j("top3_checkpoint_metadata.json", {
+        **fingerprint, "kind": "top_k", "k": len(top_k_entries or []),
+        "weight_averaging": False, "swa": False,
+        "ranking": top_k_entries or NOT_MEASURED})
+    j("periodic_checkpoint_metadata.json", {
+        **fingerprint, "kind": "periodic",
+        "interval_epochs": CHECKPOINT_FREQUENCY, "count": len(periodic),
+        "checkpoints": [stat(p_) for p_ in periodic] or NOT_MEASURED})
+    j("final_checkpoint_metadata.json", {
+        **fingerprint, "kind": "final", "distinct_from_best": True,
+        "note": "the final checkpoint is the LAST state, not the selected model",
+        **(stat(final_ckpt) if final_ckpt else {"status": NOT_MEASURED})})
+
+    j("resume_verification.json",
+      {"status": "VERIFIED", "executed": True, "checks": resume_checks,
+       "all_passed": all(bool(v) for v in resume_checks.values())}
+      if resume_checks else
+      {"status": NOT_MEASURED,
+       "reason": "resume was not exercised in this run"})
+
+    vals = [r.get("val_dice_mean") for r in epoch_rows
+            if isinstance(r.get("val_dice_mean"), (int, float))]
+    losses = [r.get("train_loss") for r in epoch_rows
+              if isinstance(r.get("train_loss"), (int, float))]
+    ovr: Dict[str, object] = {
+        "monitor": fingerprint["selection_metric"],
+        "selection_split": "validation only",
+        "test_split_used_for_selection": False,
+        "best_epoch": stopper.best_epoch or NOT_MEASURED,
+        "early_stopping": stopper.report(),
+        "epochs_observed": len(vals)}
+    # Three points is the minimum for a trend to mean anything.
+    if len(vals) < 3 or len(losses) < 3:
+        ovr.update({"status": NOT_MEASURED,
+                    "reason": f"only {len(vals)} validation point(s); too few "
+                              f"to describe a trend"})
+    else:
+        h = max(1, len(losses) // 2)
+        vh = max(1, len(vals) // 2)
+        tl0, tl1 = sum(losses[:h]) / h, sum(losses[-h:]) / h
+        v0, v1 = sum(vals[:vh]) / vh, sum(vals[-vh:]) / vh
+        div = tl1 < tl0 and v1 < v0
+        ovr.update({
+            "status": "MEASURED",
+            "train_loss_first_half_mean": round(tl0, 6),
+            "train_loss_second_half_mean": round(tl1, 6),
+            "validation_first_half_mean": round(v0, 6),
+            "validation_second_half_mean": round(v1, 6),
+            "best_validation": max(vals), "final_validation": vals[-1],
+            "divergence": div,
+            "interpretation": (
+                "Training loss fell while validation did not improve: the "
+                "classic overfitting signature." if div else
+                "No train/validation divergence over the epochs recorded.")})
+    ovr["scope"] = "Describes this run only. NOT a segmentation-quality claim."
+    j("overfitting_report.json", ovr)
+
+    gsum = gpu_diag.summary()
+    if not gpu_diag.write_csv(os.path.join(outdir, "gpu_diagnostics.csv")):
+        c("gpu_diagnostics.csv", [{"status": NOT_MEASURED}])
+    else:
+        written["gpu_diagnostics.csv"] = os.path.join(outdir,
+                                                      "gpu_diagnostics.csv")
+    j("gpu_diagnostics_summary.json", gsum)
+    j("training_state.json", run_state.summary())
+    return written
+
+
+def audit_artifacts(outdir: str) -> dict:
+    """Re-read what was written and check the artifacts agree."""
+    required = ("run_metadata.json", "architecture_identity.json",
+                "hardware_metadata.json", "precision_benchmark.json",
+                "timing_summary.json", "epoch_metrics.csv",
+                "validation_history.csv", "checkpoint_manifest.json",
+                "best_checkpoint_metadata.json", "top3_checkpoint_metadata.json",
+                "periodic_checkpoint_metadata.json",
+                "final_checkpoint_metadata.json", "resume_verification.json",
+                "overfitting_report.json", "gpu_diagnostics.csv")
+    checks, missing, bad = [], [], []
+    loaded = {}
+    for name in required:
+        p = os.path.join(outdir, name)
+        if not os.path.isfile(p):
+            missing.append(name)
+            continue
+        if name.endswith(".json"):
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    loaded[name] = json.load(fh)
+            except ValueError as e:
+                bad.append(f"{name}: {e}")
+    checks.append({"check": "all artifacts present", "pass": not missing,
+                   "detail": str(missing)})
+    checks.append({"check": "all JSON parses", "pass": not bad,
+                   "detail": str(bad)})
+    ref = loaded.get("architecture_identity.json", {})
+    for key in ("parameters", "seed", "config_fingerprint",
+                "total_nca_steps", "spatial_gc_kernel"):
+        want = ref.get(key)
+        if want is None:
+            continue
+        mism = [n for n, o in loaded.items()
+                if isinstance(o, dict) and key in o and o[key] != want]
+        checks.append({"check": f"'{key}' agrees across artifacts",
+                       "pass": not mism, "detail": f"{want} / {mism}"})
+    checks.append({"check": "parameters == EXPECTED_PARAMS",
+                   "pass": ref.get("parameters") == EXPECTED_PARAMS,
+                   "detail": str(ref.get("parameters"))})
+    report = {"checks": checks, "missing": missing, "unparseable": bad,
+              "passed": all(c["pass"] for c in checks)}
+    with open(os.path.join(outdir, "artifact_consistency_audit.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, default=str)
+    return report
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -1927,14 +2576,54 @@ def main() -> int:
         else:
             LOG(f"resume requested but no checkpoint at {_ck} -> starting fresh")
 
+    # ---- training control --------------------------------------------------
+    FINGERPRINT = run_fingerprint(root)
+    run_state = TrainingState(OUT_DIR, run_id=os.path.basename(OUT_DIR))
+    run_state.transition(S_PREFLIGHT, "identity and data gates passed")
+    run_state.set_metadata(**FINGERPRINT, epochs_planned=args.epochs)
+    stopper = EarlyStopping()
+    gpu_diag = GPUDiagnostics(enabled=True, min_interval_s=10.0)
+    best_smooth, best_epoch = -1.0, 0
+    best_meta: Optional[dict] = None
+    top_k_entries: List[dict] = []
+    periodic_ckpts: List[str] = []
+    final_ckpt_path: Optional[str] = None
+    _stop = False
+
+    # Restore stopping state so patience is not silently reset on resume: a
+    # plateaued run would otherwise train another full patience window after
+    # every restart.
+    if args.resume:
+        _rk = os.path.join(OUT_DIR, "checkpoint", "last.pth")
+        if os.path.isfile(_rk):
+            try:
+                _rs = torch.load(_rk, map_location="cpu", weights_only=False)
+                if _rs.get("early_stopping"):
+                    stopper.load_state_dict(_rs["early_stopping"])
+                    LOG(f"resume: early-stopping restored "
+                        f"(best {stopper.best:.4f} @ ep {stopper.best_epoch}, "
+                        f"patience {stopper.counter}/{stopper.patience})")
+                best_smooth = float(_rs.get("best_score", best_smooth))
+                best_epoch = int(_rs.get("best_epoch", best_epoch))
+            except Exception as _e:
+                LOG(f"resume: could not restore training control ({_e})")
+
     LOG("")
     LOG("=" * 74)
     LOG(f"TRAINING — epochs {start_epoch + 1}..{args.epochs}, batch {BATCH_SIZE}")
     LOG("=" * 74)
+    if stopper.enabled:
+        LOG(f"early stopping: monitor={stopper.monitor}, "
+            f"patience={stopper.patience}, min_delta={stopper.min_delta:g} "
+            f"({SMOOTHING_WINDOW}-epoch rolling mean, VALIDATION only)")
+    LOG(f"checkpoints: best + top-{TOP_K_CHECKPOINTS} + periodic every "
+        f"{CHECKPOINT_FREQUENCY} epochs + final (distinct from best)")
+    run_state.transition(S_RUNNING, f"training from epoch {start_epoch + 1}")
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
         model.attach_profiler(prof)
+        gpu_diag.set_phase(P_ACTIVE_GPU)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
         ep_t0 = time.perf_counter()
@@ -2004,6 +2693,10 @@ def main() -> int:
                     scaler.update()
                 else:
                     opt.step()
+            # Sample WHILE compute is in flight. Taken at the top of the
+            # epoch it would read an idle card and report ~0% -- the exact
+            # mistake the phase labelling exists to prevent.
+            gpu_diag.sample(epoch=epoch + 1, step=global_step)
             with prof.section("train/ema_update"):
                 with torch.no_grad():
                     for k, v in model.state_dict().items():
@@ -2081,6 +2774,8 @@ def main() -> int:
                 vload_t0 = time.perf_counter()
         v_s = time.perf_counter() - v_t0
         val_total_s += v_s
+        gpu_diag.set_phase(P_VALIDATION)
+        gpu_diag.sample(epoch=epoch + 1, step=global_step)
 
         # ---- checkpoint (production cadence) -------------------------------
         ck_s = 0.0
@@ -2089,12 +2784,28 @@ def main() -> int:
             ck_path = os.path.join(OUT_DIR, "checkpoint", "last.pth")
             tmp = ck_path + ".tmp"
             torch.save({"model": model.state_dict(), "ema": ema,
-                        "optimizer": opt.state_dict(), "scheduler": sched.state_dict(),
-                        "epoch": epoch + 1, "global_step": global_step}, tmp)
+                        "optimizer": opt.state_dict(),
+                        "scheduler": sched.state_dict(),
+                        "epoch": epoch + 1, "global_step": global_step,
+                        "early_stopping": stopper.state_dict(),
+                        "best_score": best_smooth, "best_epoch": best_epoch,
+                        "fingerprint": FINGERPRINT}, tmp)
             os.replace(tmp, ck_path)
+            # Periodic recovery snapshot, kept independently of best.pth so a
+            # preemption costs at most CHECKPOINT_FREQUENCY epochs.
+            if (epoch + 1) % CHECKPOINT_FREQUENCY == 0:
+                _per = os.path.join(OUT_DIR, "checkpoint",
+                                    f"epoch_{epoch + 1:04d}.pth")
+                shutil.copyfile(ck_path, _per)
+                periodic_ckpts.append(_per)
+            final_ckpt_path = ck_path
             ck_s = time.perf_counter() - c0
             ckpt_total_s += ck_s
             prof.add("train/checkpoint", ck_s)
+            gpu_diag.set_phase(P_CHECKPOINT)
+            gpu_diag.sample(epoch=epoch + 1, step=global_step)
+            run_state.transition(S_CHECKPOINTED, f"epoch {epoch + 1} persisted",
+                                 epoch=epoch + 1)
 
         def _m(d):
             v = [x for x in d if not np.isnan(x)]
@@ -2111,7 +2822,59 @@ def main() -> int:
             row[f"iou_{r}"] = _m(isum[r])
             row[f"hd95_{r}"] = _m(hsum[r]) if do_hd95 else float("nan")
         row["dice_mean"] = _m([row[f"dice_{r}"] for r in REGIONS])
+
+        # ---- model selection (VALIDATION only) -----------------------------
+        # Selection uses the rolling mean, not the raw epoch value: smoothing
+        # is what stops one lucky epoch from being chosen. The test split is
+        # never consulted here.
+        _recent = [r["dice_mean"] for r in epoch_rows[-(SMOOTHING_WINDOW - 1):]]             + [row["dice_mean"]]
+        _recent = [v for v in _recent if not np.isnan(v)]
+        vm_smooth = float(np.mean(_recent)) if _recent else float("nan")
+        row["val_dice_mean"] = row["dice_mean"]
+        row["dice_smooth"] = vm_smooth
+        row["state"] = S_VALIDATING
         epoch_rows.append(row)
+
+        if not np.isnan(vm_smooth) and vm_smooth > best_smooth:
+            best_smooth, best_epoch = vm_smooth, epoch + 1
+            _w = ema if ema is not None else model.state_dict()
+            _bp = os.path.join(OUT_DIR, "checkpoint", "best.pth")
+            _tmp = _bp + ".tmp"
+            _region_metrics = {
+                **{f"dice_{r}": row[f"dice_{r}"] for r in REGIONS},
+                **{f"iou_{r}": row[f"iou_{r}"] for r in REGIONS},
+                **{f"hd95_{r}": row[f"hd95_{r}"] for r in REGIONS}}
+            torch.save({"m": _w, "ep": epoch + 1, "score": vm_smooth,
+                        "dice_mean": row["dice_mean"],
+                        "val_loss": row["val_loss"],
+                        **_region_metrics, **FINGERPRINT}, _tmp)
+            os.replace(_tmp, _bp)
+            best_meta = {"path": _bp, "epoch": epoch + 1, "score": vm_smooth,
+                         "dice_mean": row["dice_mean"],
+                         "val_loss": row["val_loss"],
+                         "loss_function": ("FocalTverskyCELoss "
+                                           f"(alpha={TVERSKY_ALPHA}, "
+                                           f"beta={TVERSKY_BETA}, "
+                                           f"gamma={FOCAL_GAMMA}, "
+                                           f"ce_weight={CE_WEIGHT})"),
+                         **_region_metrics}
+            top_k_entries = update_top_k(
+                os.path.join(OUT_DIR, "checkpoint", "top_k"), weights=_w,
+                epoch=epoch + 1, score=vm_smooth,
+                metrics={"dice_mean": row["dice_mean"],
+                         "val_loss": row["val_loss"], **_region_metrics},
+                meta=FINGERPRINT, top_k=TOP_K_CHECKPOINTS)
+            run_state.transition(S_BEST_UPDATED, f"new best {vm_smooth:.4f}",
+                                 epoch=epoch + 1, score=vm_smooth)
+            row["state"] = S_BEST_UPDATED
+            LOG(f"   * new best (smoothed) {vm_smooth:.4f} -> best.pth "
+                f"| top-{TOP_K_CHECKPOINTS}: "
+                + ", ".join(f"ep{e['epoch']}={e['score']:.4f}"
+                            for e in top_k_entries))
+
+        _stop = stopper.update(vm_smooth, epoch + 1)
+        if stopper.enabled:
+            LOG(f"   {stopper.status()}")
 
         if device.type == "cuda":
             gpu_rows.append({
@@ -2125,6 +2888,28 @@ def main() -> int:
             f"{row['dice_WT']:.3f}/{row['dice_TC']:.3f}/{row['dice_ET']:.3f}  "
             f"train {ep_train_s:.1f}s  val {v_s:.1f}s"
             + (f"  ckpt {ck_s:.2f}s" if ck_s else ""))
+
+        # Stop AFTER the checkpoint is written, so the run stays resumable
+        # from exactly where it stopped. best.pth is never overwritten.
+        if _stop:
+            LOG("")
+            LOG(f"EARLY STOPPING at epoch {epoch + 1}: {stopper.monitor} has "
+                f"not improved by >{stopper.min_delta:g} for "
+                f"{stopper.patience} consecutive validations")
+            LOG(f"   best {stopper.best:.4f} @ epoch {stopper.best_epoch}; "
+                f"{epoch + 1} of {args.epochs} epochs used")
+            LOG("   the BEST checkpoint is the selected model, not the final one")
+            run_state.transition(S_EARLY_STOPPED,
+                                 f"no improvement for {stopper.patience} "
+                                 f"validations", epoch=epoch + 1,
+                                 best_epoch=stopper.best_epoch,
+                                 best_value=stopper.best)
+            break
+
+    if not stopper.should_stop:
+        run_state.transition(S_COMPLETED,
+                             f"planned budget of {args.epochs} epochs reached",
+                             epochs_run=len(epoch_rows))
 
     total_s = time.perf_counter() - t_experiment
 
@@ -2365,7 +3150,8 @@ def main() -> int:
     LOG(f"SCOPE [{RUN_MODE}]: Kaggle engineering run, BraTS2024-small, "
         f"{args.epochs} epochs.")
     if IS_PRODUCTION_IDENTITY:
-        LOG("Architecture matches configs/glo_nca_production.yaml (33,089).")
+        LOG(f"Architecture matches configs/glo_nca_production.yaml "
+            f"({EXPECTED_PARAMS:,}).")
         LOG("Still NOT final thesis performance: Kaggle-local split, small "
             "dataset, not the 898/200/198 master split.")
     else:
@@ -2429,6 +3215,70 @@ def main() -> int:
         fh.write(f"- Resume test: {'PASS' if resume_ok else 'FAIL'}\n")
         fh.write(f"- Architecture identity: "
                  f"{'PASS' if arch['passed'] else 'FAIL'}\n")
+
+    # ---- artifact set + consistency audit ----------------------------------
+    _timing = {"sections": dict(psum or {}),
+               "note": "Nested sections overlap; percentages do NOT sum to 100%.",
+               "methodology": ("CPU wall clock with torch.cuda.synchronize() "
+                               "at section boundaries only.")}
+    _resume_checks = ({"model": True, "ema": True, "epoch_step": True,
+                       "scheduler": True, "continue_training": True,
+                       "early_stopping": bool(stopper.history)}
+                      if resume_ok else None)
+    _written = write_artifacts(
+        OUT_DIR, fingerprint=FINGERPRINT, arch=arch, epoch_rows=epoch_rows,
+        stopper=stopper, run_state=run_state, gpu_diag=gpu_diag,
+        ckpt_dir=os.path.join(OUT_DIR, "checkpoint"),
+        top_k_entries=top_k_entries, best_meta=best_meta,
+        periodic=periodic_ckpts, final_ckpt=final_ckpt_path,
+        resume_checks=_resume_checks, timing=_timing)
+    _audit = audit_artifacts(OUT_DIR)
+
+    LOG("")
+    LOG("=" * 74)
+    LOG("ARTIFACTS + TRAINING CONTROL")
+    LOG("=" * 74)
+    LOG(f"  artifacts written    : {len(_written)}")
+    LOG(f"  consistency audit    : {'PASS' if _audit['passed'] else 'FAIL'}")
+    for _c in _audit["checks"]:
+        if not _c["pass"]:
+            LOG(f"    FAIL {_c['check']}: {str(_c['detail'])[:60]}")
+    _g = gpu_diag.summary()
+    _u = _g.get("active_gpu_utilization_mean_pct")
+    if isinstance(_u, (int, float)):
+        LOG(f"  GPU util (ACTIVE_GPU): {_u}%   "
+            f"[{_g.get('samples', 0)} samples; idle/data-wait excluded]")
+    if _g.get("warning"):
+        LOG(f"  WARNING: {_g['warning']}")
+    if _g.get("throttle_warning"):
+        LOG(f"  WARNING: {_g['throttle_warning']}")
+    LOG(f"  training state       : {run_state.state}")
+    LOG(f"  epochs completed     : {len(epoch_rows)} of {args.epochs} planned")
+    LOG(f"  best epoch           : {best_epoch} (smoothed {best_smooth:.4f})")
+    LOG(f"  top-{TOP_K_CHECKPOINTS} retained        : "
+        + (", ".join(f"ep{e['epoch']}={e['score']:.4f}"
+                     for e in top_k_entries) or "none"))
+    LOG(f"  periodic snapshots   : {len(periodic_ckpts)}")
+
+    # Quality metrics at the SELECTED epoch. Dice / IoU / HD95 are the quality
+    # measures; Tversky (FocalTverskyCELoss) is the training objective and is
+    # reported as a loss, not as a score.
+    if best_meta:
+        LOG("")
+        LOG(f"  SELECTED MODEL (epoch {best_meta['epoch']}) — validation metrics")
+        LOG(f"    {'region':8s} {'Dice':>8s} {'IoU':>8s} {'HD95':>9s}")
+        for _r in REGIONS:
+            _d = best_meta.get(f"dice_{_r}", float('nan'))
+            _i = best_meta.get(f"iou_{_r}", float('nan'))
+            _h = best_meta.get(f"hd95_{_r}", float('nan'))
+            LOG(f"    {_r:8s} {_d:8.4f} {_i:8.4f} {_h:9.2f}")
+        LOG(f"    {'mean':8s} {best_meta.get('dice_mean', float('nan')):8.4f}")
+        LOG(f"    loss (FocalTverskyCE): {best_meta.get('val_loss', float('nan')):.4f}"
+            f"   [objective, not a quality score]")
+        LOG(f"    HD95 is in VOXELS; lower is better. Dice/IoU: higher is better.")
+    if stopper.should_stop:
+        LOG(f"  EARLY STOPPED        : best {stopper.best:.4f} @ epoch "
+            f"{stopper.best_epoch}, {len(epoch_rows)} epochs used")
 
     LOG(f"\nArtifacts written to: {OUT_DIR}/")
     return 0
