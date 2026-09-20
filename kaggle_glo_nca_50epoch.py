@@ -3228,14 +3228,11 @@ def main() -> int:
         f"(got {USE_PATCHIFY!r})")
     LOG("  Patchify: OFF  [asserted at runtime]")
 
-    # ITEM 7 -- sampling policy, stated explicitly.
-    # This standalone uses its OWN dataset (BraTSDataset) with a uniform
-    # shuffle. The ET-prioritised sampler in src/experiment/runner.py
-    # (priotize_masks / prioritize_region) is NOT on this path -- it belongs
-    # to the patchify code, and patchify is OFF. Nothing is being silently
-    # overridden: there is no region-prioritised sampling here to honour.
-    LOG("  Sampling: uniform random shuffle over the training split "
-        "(no region prioritisation on this path; patchify OFF)")
+    # Sampling policy is logged where the loader is built (search for
+    # "ET oversampling"), so it reports what was ACTUALLY constructed --
+    # including the fallback to a uniform shuffle if the labels could not be
+    # read. This line used to claim "uniform random shuffle" unconditionally,
+    # which contradicted the ET-oversampling line a few rows above it.
 
     # ITEM 9 -- threshold policy.
     # There is no threshold tuning in this standalone: every Dice/IoU/HD95
@@ -3932,7 +3929,17 @@ def main() -> int:
         # ITEM 12 -- the LR itself must match, not just the step counter: a
         # scheduler can restore last_epoch and still produce a different rate
         # if it was rebuilt with different bounds.
-        lr_ok = abs(o2.param_groups[0]["lr"] - opt.param_groups[0]["lr"]) < 1e-12
+        #
+        # Compare get_last_lr(), NOT param_groups[0]["lr"]. Constructing a
+        # SequentialLR immediately writes the warmup start factor into the
+        # optimizer, and load_state_dict restores the scheduler's counters
+        # without re-applying the rate, so param_groups still reads LR/20
+        # while the restored SCHEDULE is correct. Reading param_groups made
+        # this report lr=False on a run whose schedule had restored exactly
+        # (verified: get_last_lr 1.600000e-03 on both sides).
+        _lr_new = s2.get_last_lr()[0]
+        _lr_old = sched.get_last_lr()[0]
+        lr_ok = abs(_lr_new - _lr_old) < 1e-12
         # fp16 runs carry a GradScaler; its scale must survive the round trip.
         scaler_ok = (sd.get("scaler") is not None) if scaler is not None else True
         # EMA compared by VALUE, not just key count.
