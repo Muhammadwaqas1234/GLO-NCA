@@ -508,21 +508,104 @@ def time_presets(names=None, iters=12, warmup=3, train_cases=129,
 # validation has plateaued.
 EPOCHS = 100
 EARLY_STOPPING_ENABLED = True
-EARLY_STOPPING_PATIENCE = 15      # consecutive non-improving validations
-EARLY_STOPPING_MIN_DELTA = 0.001  # smaller gains count as noise
+EARLY_STOPPING_PATIENCE = 20      # consecutive non-improving validations
+EARLY_STOPPING_MIN_DELTA = 0.01   # smaller gains count as noise
+# STABILITY FIX 2 -- min_delta 0.001 -> 0.01, patience 15 -> 20.
+#
+# Measured on the 50-epoch T4 run: over epochs 25-44 the validation mean
+# foreground Dice had sd 0.036-0.044 and an average epoch-to-epoch jump of
+# 0.040. The old min_delta of 0.001 was ~40x SMALLER than that noise floor,
+# so essentially any upward fluctuation counted as "improvement" and the
+# patience counter reset on noise. 0.01 sits above the fluctuations but well
+# below the real epoch-to-epoch gains seen while the model was still
+# learning (0.03-0.05), so genuine progress still registers.
+#
+# Patience rises 15 -> 20 to compensate: a stricter threshold means fewer
+# resets, so the run needs a longer window before concluding it has plateaued.
 SMOOTHING_WINDOW = 3              # rolling mean used for model selection
 TOP_K_CHECKPOINTS = 3             # ranked best checkpoints; never averaged
 BATCH_SIZE = 1
 NUM_WORKERS = 2
 LR = 0.0016
 MIN_LR = 0.00001
+# STABILITY FIX 3 -- linear LR warmup before the cosine decay.
+# The 50-epoch T4 run collapsed at epoch 3 (TC 0.499->0.316) and recovered:
+# the signature of a full-rate LR before the batch-1 normalisation statistics
+# have settled. Set WARMUP_EPOCHS = 0 to restore the previous schedule.
+WARMUP_EPOCHS = 4                 # epochs of linear ramp; 0 disables
+WARMUP_START_DIV = 20.0           # start at LR/20, ramp linearly to LR
 WEIGHT_DECAY = 0.0001
 BETAS = (0.9, 0.99)
 TVERSKY_ALPHA, TVERSKY_BETA = 0.25, 0.75
 FOCAL_GAMMA = 1.33
 CE_WEIGHT = 0.5
 EMPTY_REGION_BCE_WEIGHT = 0.1
-EMA_DECAY = 0.999
+# STABILITY FIX 4 -- EMA decay derived from steps/epoch, not copied blindly.
+#
+# At batch 1, steps per epoch == number of training cases, so a FIXED decay
+# means a completely different amount of smoothing on different splits:
+#
+#     decay 0.999 -> ~1000-step window
+#       Kaggle  (129 train cases): 7.8 epochs of lag, 12% weight on the
+#                                  current epoch -- the EMA is a stale model
+#       thesis  (898 train cases): 1.1 epochs, 59% weight -- almost no
+#                                  smoothing at all
+#
+# Neither is what was intended. EMA_EPOCH_WINDOW fixes the window in EPOCHS
+# and derives the decay at runtime once the split size is known, so the
+# smoothing behaves identically on both splits.
+#
+# Set EMA_DECAY to a float to pin it explicitly and skip the derivation.
+EMA_EPOCH_WINDOW = 3.0            # smooth over ~3 epochs of updates
+EMA_DECAY = None                  # None -> derived from steps/epoch
+
+
+def derive_ema_decay(steps_per_epoch: int) -> float:
+    """Decay giving an EMA window of EMA_EPOCH_WINDOW epochs.
+
+    A decay d has an effective window of 1/(1-d) steps, so for a window of
+    N epochs at S steps/epoch: d = 1 - 1/(N*S). Clamped to [0.9, 0.9999] --
+    below 0.9 the EMA barely smooths, above 0.9999 it never catches up.
+    """
+    if EMA_DECAY is not None:
+        return float(EMA_DECAY)
+    window = max(1.0, EMA_EPOCH_WINDOW * max(1, int(steps_per_epoch)))
+    return float(min(0.9999, max(0.9, 1.0 - 1.0 / window)))
+
+
+# STABILITY FIX 1 -- validate on the EMA weights (see the training loop).
+# best.pth always stored EMA weights while validation scored the RAW ones,
+# so the metric that selected a checkpoint was not the metric of the
+# checkpoint selected. Set False to reproduce the old behaviour for an A/B.
+VALIDATE_WITH_EMA = True
+
+# STABILITY EXPERIMENT 6 -- normalisation kind.
+#
+#   "batch"  (default) ChannelsLastBatchNorm, track_running_stats=False.
+#            THE CERTIFIED PRODUCTION BEHAVIOUR. At batch 1 it normalises each
+#            volume by its own statistics.
+#   "group"  GroupNorm over NORM_GROUPS channel groups. Batch-size independent
+#            and identical in train and eval.
+#
+# Parameter count is IDENTICAL either way (one weight + one bias per channel),
+# so switching does not break the 29,337 identity gate and is not a
+# Category-C architecture change. It IS a change of training mathematics, so
+# it must be run as its own controlled experiment -- change nothing else.
+NORM_KIND = "batch"               # "batch" | "group"
+NORM_GROUPS = 8                   # groups for NORM_KIND="group"
+
+
+def _norm_groups(channels: int) -> int:
+    """Largest divisor of `channels` that is <= NORM_GROUPS.
+
+    GroupNorm requires channels % groups == 0. The NCA cell runs 24 hidden
+    channels (8 divides it), but the hidden MLP width is configurable, so fall
+    back to the nearest valid divisor instead of raising mid-forward.
+    """
+    g = min(NORM_GROUPS, channels)
+    while g > 1 and channels % g:
+        g -= 1
+    return max(1, g)
 GRAD_CLIP = 1.0
 # PRECISION: applies to the MODEL FORWARD ONLY; the loss always runs in FP32
 # (PyTorch refuses to autocast binary_cross_entropy).
@@ -738,12 +821,49 @@ def build_model_classes():
             self.num_features = num_features
 
         def forward(self, x):                  # x: (B, X, Y, Z, C)
-            # One fused autograd node instead of the six the manual form
-            # (mean, var, sub, rsqrt, mul, add) would build, and no transpose.
             b, X, Y, Z, c = x.shape
             flat = x.reshape(-1, c)
-            flat = F.batch_norm(flat, None, None, self.weight, self.bias,
-                                True, 0.0, self.eps)
+
+            if NORM_KIND == "group":
+                # STABILITY EXPERIMENT 6 -- GroupNorm instead of batch stats.
+                #
+                # BatchNorm here runs with track_running_stats=False, so it
+                # normalises by BATCH statistics. At batch_size 1 that means
+                # each volume is normalised by ITS OWN mean/variance, at train
+                # AND validation time. A case's prediction therefore depends on
+                # that case's intensity histogram rather than on a learned
+                # population statistic -- which is exactly the per-case,
+                # high-variance validation behaviour measured on the T4 run
+                # (TC/ET sd 0.052 vs WT 0.018, and TC/ET moving together with
+                # mean |TC-ET| = 0.013).
+                #
+                # GroupNorm normalises over (channel-group x spatial) within a
+                # SINGLE sample, so it is batch-size independent and behaves
+                # identically in train and eval. Parameter count is unchanged:
+                # both carry exactly one weight and one bias per channel, which
+                # is why this stays at 29,337 and needs no Category-C decision.
+                #
+                # Applied over the flattened (N, C) view the spatial extent is
+                # folded into N, so this normalises per group over the whole
+                # volume -- the same reduction axes BatchNorm used, minus the
+                # cross-sample coupling.
+                # Reduce over (group-channels x spatial) WITHIN each sample.
+                # Reshaping the flattened (N, C) view straight to (1, g, -1)
+                # would fold the batch dimension into the reduction and
+                # reintroduce exactly the cross-sample coupling this change
+                # exists to remove, so go back through (b, spatial, C) first.
+                grp = _norm_groups(c)
+                v = x.reshape(b, X * Y * Z, grp, c // grp)
+                v = v.permute(0, 2, 1, 3).reshape(b, grp, -1)
+                v = F.layer_norm(v, (v.shape[-1],), None, None, self.eps)
+                v = v.reshape(b, grp, X * Y * Z, c // grp).permute(0, 2, 1, 3)
+                flat = v.reshape(-1, c) * self.weight + self.bias
+            else:
+                # One fused autograd node instead of the six the manual form
+                # (mean, var, sub, rsqrt, mul, add) would build, and no
+                # transpose.
+                flat = F.batch_norm(flat, None, None, self.weight, self.bias,
+                                    True, 0.0, self.eps)
             return flat.reshape(b, X, Y, Z, c)
 
     class BasicNCA3D(nn.Module):
@@ -2626,7 +2746,14 @@ def main() -> int:
         "gradient_checkpointing": GRADIENT_CHECKPOINTING,
         "optimizer": "AdamW", "lr": LR, "min_lr": MIN_LR,
         "weight_decay": WEIGHT_DECAY, "betas": list(BETAS),
-        "scheduler": "CosineAnnealingLR", "ema_decay": EMA_DECAY,
+        "scheduler": ("LinearLR+CosineAnnealingLR" if WARMUP_EPOCHS > 0
+                      else "CosineAnnealingLR"),
+        "warmup_epochs": WARMUP_EPOCHS,
+        # batch 1 -> steps/epoch == len(train split); train_loader is not
+        # built yet at this point, so use the split length directly.
+        "ema_decay": derive_ema_decay(max(1, len(split["train"]))),
+        "ema_epoch_window": EMA_EPOCH_WINDOW,
+        "validate_with_ema": VALIDATE_WITH_EMA,
         "grad_clip": GRAD_CLIP, "precision": _prec,
         "precision_requested": PRECISION,
         "compute_capability": f"{_cap[0]}.{_cap[1]}",
@@ -2692,8 +2819,47 @@ def main() -> int:
                                       FOCAL_GAMMA, CE_WEIGHT)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, betas=BETAS,
                             weight_decay=WEIGHT_DECAY)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs,
-                                                       eta_min=MIN_LR)
+    # STABILITY FIX 3 -- linear LR warmup before the cosine decay.
+    #
+    # The 50-epoch T4 run collapsed at epoch 3 (TC 0.499 -> 0.316, ET 0.483 ->
+    # 0.279) and then recovered -- the signature of a full-rate LR applied
+    # before the normalisation statistics have settled. At batch 1 the
+    # BatchNorm statistics come from ONE volume, so early updates are
+    # especially noisy and a full 0.0016 step can undo several epochs.
+    #
+    # Warmup scales the LR linearly from LR/WARMUP_START_DIV to LR over the
+    # first WARMUP_EPOCHS epochs, then hands over to the SAME cosine curve as
+    # before. SequentialLR keeps the cosine's own T_max intact, so the decay
+    # past warmup is unchanged from the certified schedule.
+    #
+    # WARMUP_EPOCHS = 0 restores the previous no-warmup behaviour exactly.
+    if WARMUP_EPOCHS > 0:
+        _warm = torch.optim.lr_scheduler.LinearLR(
+            opt, start_factor=1.0 / WARMUP_START_DIV, end_factor=1.0,
+            total_iters=WARMUP_EPOCHS)
+        _cos = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(1, args.epochs - WARMUP_EPOCHS), eta_min=MIN_LR)
+        sched = torch.optim.lr_scheduler.SequentialLR(
+            opt, schedulers=[_warm, _cos], milestones=[WARMUP_EPOCHS])
+    else:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs,
+                                                           eta_min=MIN_LR)
+
+    # STABILITY FIX 4 -- resolve the EMA decay now that steps/epoch is known.
+    # At batch 1, steps/epoch == len(train set), so this is the number of
+    # optimiser steps the EMA will see per epoch.
+    _steps_per_epoch = max(1, len(train_loader))
+    ema_decay = derive_ema_decay(_steps_per_epoch)
+    LOG(f"  EMA: decay {ema_decay:.6f} derived from {_steps_per_epoch} "
+        f"steps/epoch (window {EMA_EPOCH_WINDOW:.1f} epochs)"
+        if EMA_DECAY is None else
+        f"  EMA: decay {ema_decay:.6f} (pinned)")
+    LOG(f"  LR: warmup {WARMUP_EPOCHS} epochs "
+        f"({LR / WARMUP_START_DIV:.2e} -> {LR:.2e}), then cosine to {MIN_LR:.2e}"
+        if WARMUP_EPOCHS > 0 else
+        f"  LR: no warmup, cosine {LR:.2e} -> {MIN_LR:.2e}")
+    LOG(f"  validation weights: {'EMA' if VALIDATE_WITH_EMA else 'RAW'}")
+
     ema = {k: v.detach().clone().float() for k, v in model.state_dict().items()}
 
     epoch_rows: List[dict] = []
@@ -2855,7 +3021,7 @@ def main() -> int:
             with prof.section("train/ema_update"):
                 with torch.no_grad():
                     for k, v in model.state_dict().items():
-                        ema[k].mul_(EMA_DECAY).add_(v.float(), alpha=1 - EMA_DECAY)
+                        ema[k].mul_(ema_decay).add_(v.float(), alpha=1 - ema_decay)
 
             it_dt = time.perf_counter() - it_t0
             ep_loss += float(loss.detach())
@@ -2878,6 +3044,21 @@ def main() -> int:
         do_hd95 = ((epoch + 1) % HD95_EVERY_EPOCHS == 0) or (epoch + 1 == args.epochs)
         model.eval()
         model.attach_profiler(None)         # keep validation out of train timers
+
+        # STABILITY FIX 1 -- validate on the EMA weights.
+        #
+        # best.pth has always stored the EMA weights, but validation ran on the
+        # RAW weights. So the score that selected a checkpoint was never the
+        # score of the checkpoint being selected: a noisy proxy chose a smooth
+        # model, and the smooth model was never measured. Swap the EMA weights
+        # in for the whole validation pass and restore the raw weights after,
+        # so training continues from exactly where it left off.
+        #
+        # VALIDATE_WITH_EMA=False restores the previous behaviour for an A/B.
+        _raw_sd = None
+        if VALIDATE_WITH_EMA and ema is not None:
+            _raw_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            model.load_state_dict({k: v.to(_raw_sd[k].dtype) for k, v in ema.items()})
         v_t0 = time.perf_counter()
         dsum = {r: [] for r in REGIONS}
         isum = {r: [] for r in REGIONS}
@@ -2929,6 +3110,18 @@ def main() -> int:
                 vload_t0 = time.perf_counter()
         v_s = time.perf_counter() - v_t0
         val_total_s += v_s
+
+        # STABILITY FIX 1 (restore) -- put the RAW weights back.
+        #
+        # This must happen BEFORE the checkpoint block below, which saves
+        # model.state_dict() as "model" and `ema` separately. Restoring later
+        # would write the EMA weights into the raw slot, so a resume would
+        # silently continue training from the EMA copy and the two would
+        # collapse into each other.
+        if _raw_sd is not None:
+            model.load_state_dict(_raw_sd)
+            _raw_sd = None
+
         gpu_diag.set_phase(P_VALIDATION)
         gpu_diag.sample(epoch=epoch + 1, step=global_step)
 
