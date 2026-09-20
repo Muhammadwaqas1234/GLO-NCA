@@ -72,30 +72,41 @@ import numpy as np
 
 # ############################################################################
 # #                                                                          #
-# #   THIS FILE IS CONFIGURED AS A **CATEGORY-C** EXPERIMENT.                #
+# #   AUTHORITATIVE ARCHITECTURE IDENTITY                                    #
 # #                                                                          #
-# #   IT DOES **NOT** RUN THE PRODUCTION GLO-NCA ARCHITECTURE.               #
+# #   This file runs the PRODUCTION GLO-NCA architecture, matching           #
+# #   configs/glo_nca_production.yaml exactly:                               #
 # #                                                                          #
-# #   Default preset: "fast_grid4864".                                       #
-# #   Differences from configs/glo_nca_production.yaml:                      #
-# #       geometry      48^3 / 64^3    SAME AS PRODUCTION                    #
-# #       NCA steps     15+15 = 30     (production 20+20 = 40)               #
-# #       spatial GC    k=5            (production k=7)                      #
-# #       patchify      ON, 56^3       (production OFF)                      #
-# #       parameters    32,217         (production 33,089)                   #
+# #       working volume   96^3                                              #
+# #       level 1          48^3, 24 ch, 20 NCA steps, perception k=7         #
+# #       level 2          64^3, 24 ch, 20 NCA steps, perception k=3         #
+# #       level 3          ABSENT                                            #
+# #       total steps      40                                                #
+# #       spatial GC       k=7                                               #
+# #       SE               ON                                                #
+# #       fusion           learned Conv3d(48 -> 24)                          #
+# #       global context   FULL 96^3 working volume                          #
+# #       patchify         OFF                                               #
+# #       parameters       33,089                                            #
 # #                                                                          #
-# #   These are the frozen Category-C candidates from                        #
-# #   reports/audit/GLO_NCA_COMPLETE_SPEED_OPTIMIZATION_REPORT.md.           #
-# #   NONE of them has Dice/HD95 validation.                                 #
+# #   The identity gate ABORTS the run on any mismatch. It never adjusts     #
+# #   the model to make a check pass.                                        #
 # #                                                                          #
-# #   => Results from this file MUST NOT be reported as validating the       #
-# #      production architecture or as a thesis performance figure.          #
-# #      They are an engineering/convergence sweep only.                     #
+# #   A1 (fused channels-last BatchNorm) is active. A1 is an                 #
+# #   implementation-level optimisation, NOT an architecture change: the     #
+# #   forward pass is bit-identical in fp32 and the parameter count is       #
+# #   unchanged.                                                             #
 # #                                                                          #
-# #   To run the PRODUCTION identity instead, set in this block:             #
-# #       FAST_GRID = False ; NCA_STEPS = 20 ;                               #
-# #       SPATIAL_GC_KERNEL = 7 ; USE_PATCHIFY = False                       #
-# #   -> parameter count returns to 33,089 and the gate enforces it.         #
+# #   SCOPE: engineering validation -- training correctness, timing, VRAM,   #
+# #   convergence, overfitting behaviour, checkpoint/resume. It is NOT       #
+# #   final thesis performance: the Kaggle split is local to this file and   #
+# #   is not the 898/200/198 master split.                                   #
+# #                                                                          #
+# #   CATEGORY-C CANDIDATES (15+15 steps, spatial GC k=5, patchify,          #
+# #   smaller geometry) are reachable ONLY via use_preset(). They are        #
+# #   evaluated-only, have no Dice/HD95 validation, and every artifact from  #
+# #   such a run is stamped CATEGORY-C so it can never be mistaken for a     #
+# #   production result.                                                     #
 # #                                                                          #
 # ############################################################################
 #
@@ -135,7 +146,7 @@ FAST_GRID = False
 # MEASURED (3 interleaved rounds, +/-0.05 s):
 #     20+20 -> 7.17 s/iter
 #     15+15 -> 5.38 s/iter   (1.33x)
-NCA_STEPS = 15
+NCA_STEPS = 20
 
 if FAST_GRID:
     L1_RES, L1_CH, L1_STEPS, L1_K = 32, 24, NCA_STEPS, 7
@@ -150,7 +161,7 @@ else:
 # Parameters: 33,089 -> 32,217 (the 2->1 conv loses 2*(7^3-5^3) = 436 weights
 # per level, x2 levels = 872).
 # MEASURED, stacked on 15+15: 5.38 -> 4.86 s/iter (a further 1.11x).
-SPATIAL_GC_KERNEL = 5
+SPATIAL_GC_KERNEL = 7
 HIDDEN = 128
 FIRE_RATE = 0.6
 DROPOUT = 0.1
@@ -190,7 +201,7 @@ GRADIENT_CHECKPOINTING = True
 # Like upstream, the global level stays IN the backward graph (no detach): the
 # crop is a differentiable slice, so level-1 weights are still trained through
 # the level-2 loss. Upstream does not detach, and neither do we.
-USE_PATCHIFY = True
+USE_PATCHIFY = False
 PATCH_NATIVE_RES = True      # False restores the old (no-op) fixed-grid behaviour
 # Patch must be strictly SMALLER than the high-res grid, or patchify is a
 # no-op (level 2 would run on the same voxel count either way). Same formula
@@ -349,7 +360,7 @@ def use_preset(name: str, verbose: bool = True):
     return name
 
 
-ACTIVE_PRESET = "fast_grid4864"   # matches the settings hard-coded above
+ACTIVE_PRESET = "production"      # matches the settings hard-coded above
 
 
 def print_presets():
