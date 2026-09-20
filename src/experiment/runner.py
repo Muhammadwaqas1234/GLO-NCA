@@ -30,7 +30,9 @@ from src.agents.Agent_GLO_NCA_V3 import Agent_GLO_NCA_V3
 from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 
 from . import checkpoint as ckpt_io
-from . import datasource, early_stopping, environment, extension, graphs
+from . import datasource, diagnostics as diag, early_stopping, environment
+from . import extension, graphs
+from . import state_machine as sm
 from . import metrics_eval as ME
 from . import reproducibility as repro
 from . import statistics as STATS
@@ -388,6 +390,11 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     """Execute (or resume) a full experiment inside workspace ``ws``."""
     logger = get_logger(ws)
     ws.write_status("initializing", progress=0.0)
+    # Explicit lifecycle. `write_status` remains for the existing dashboard;
+    # `state.json` is the machine-readable record of what actually happened.
+    run_state = sm.TrainingState.load(ws.path("reports"),
+                                      run_id=ws.experiment_id)
+    gpu_diag = diag.GPUDiagnostics(enabled=True, min_interval_s=10.0)
     logger.info("=" * 70)
     logger.info("GLO-NCA %s experiment: %s",
                 "V3" if _is_v3(cfg) else "V2", ws.experiment_id)
@@ -429,6 +436,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         return _fail(ws, logger, "dataset root not found",
                      "Set dataset.root in the config or $DATA_ROOT.")
     ws.write_status("validating", progress=0.0)
+    if run_state.can_transition(sm.PREFLIGHT):
+        run_state.transition(sm.PREFLIGHT, "dataset + identity gates")
     n_pat = int(cfg.get("dataset", "number_of_patients", 0)) or None
 
     # --- explicit operational data-quality policy (canonical split preserved) --
@@ -764,6 +773,13 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
                                "continuation is an explicit operator override")
             ws.write_status("extended", current_epoch=start_epoch,
                             total_epochs=epochs)
+            if run_state.can_transition(sm.COMPLETED_300):
+                run_state.transition(sm.COMPLETED_300,
+                                     "parent run reached its planned budget")
+            run_state.transition(sm.EXTENDED, ext_plan.reason,
+                                 parent_epoch=ext_plan.parent_epoch,
+                                 extend_to=ext_plan.target_epoch,
+                                 lr_policy=ext_plan.lr_policy)
     elif resume:
         logger.warning("resume requested but no last.pth found; starting fresh.")
     if extend_to is not None and not (resume and os.path.exists(ws.last_ckpt)):
@@ -794,6 +810,14 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     ws.write_status("training", current_epoch=start_epoch, total_epochs=epochs,
                     progress=start_epoch / max(1, epochs), best_epoch=best_epoch,
                     best_score=best)
+    run_state.transition(sm.RUNNING,
+                         f"training from epoch {start_epoch + 1}",
+                         start_epoch=start_epoch, total_epochs=epochs)
+    run_state.set_metadata(parameters=sum(p_.numel() for m_ in ca
+                                          for p_ in m_.parameters()),
+                           planned_max_epochs=epochs,
+                           split_sha256=split_meta.get("split_sha256"),
+                           seed=cfg.seed, precision=_prec)
     logger.info("Loading + caching volumes (first pass is slow)...")
 
     workers = int(cfg.get("training", "workers"))
@@ -841,6 +865,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     for ep in range(start_epoch, epochs):
         ep_start = time.time()
         losses = []
+        gpu_diag.set_phase(diag.ACTIVE_GPU)
+        gpu_diag.sample(epoch=ep + 1, step=0)
         # Epoch travels to the workers via the sampler's yielded indices, so it
         # reaches worker dataset copies even when they persist across epochs.
         sampler.set_epoch(ep)
@@ -901,6 +927,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         cur_lr = agent.optimizer[0].param_groups[0]["lr"]
         if _prof.enabled:
             _prof.flush()
+        gpu_diag.set_phase(diag.VALIDATION)
+        gpu_diag.sample(epoch=ep + 1, step=-1)
         with _prof.section("validation/total", cuda=True):
             # HD95 is ~97% of validation scoring cost. Dice and mIoU are computed
             # EVERY epoch (model selection and threshold tuning are untouched);
@@ -975,6 +1003,10 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
             weights = ema if ema is not None else [m.state_dict() for m in ca]
             ckpt_io.save_best_weights(ws.best_ckpt, weights, ep + 1, vm, vm_smooth)
             logger.info("   * new best (smoothed) %.3f saved", vm_smooth)
+            if run_state.can_transition(sm.BEST_UPDATED):
+                run_state.transition(sm.BEST_UPDATED,
+                                     f"new best {vm_smooth:.4f}",
+                                     epoch=ep + 1, score=float(vm_smooth))
 
             # Ranked best-K set alongside the single best file. Selected on the
             # SAME metric, so best_1 and best.pth always agree. Weights are
@@ -1010,7 +1042,12 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         with _prof.section("train/checkpoint_write"):
             ckpt_io.save_checkpoint(ws.last_ckpt, full)
         if ckpt_freq and (ep + 1) % ckpt_freq == 0:
-            ckpt_io.save_checkpoint(ws.periodic_ckpt(ep + 1), full)
+            with gpu_diag.phase(diag.CHECKPOINT):
+                ckpt_io.save_checkpoint(ws.periodic_ckpt(ep + 1), full)
+                gpu_diag.sample(epoch=ep + 1, step=ep + 1)
+        if run_state.can_transition(sm.CHECKPOINTED):
+            run_state.transition(sm.CHECKPOINTED, f"epoch {ep + 1} persisted",
+                                 epoch=ep + 1)
 
         ws.write_status("training", current_epoch=ep + 1, total_epochs=epochs,
                         progress=(ep + 1) / max(1, epochs),
@@ -1028,10 +1065,42 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
             logger.info("   %d of %d epochs used; evaluating the BEST "
                         "checkpoint, not the final one", ep + 1, epochs)
             epochs_run = ep + 1
+            run_state.transition(
+                sm.EARLY_STOPPED,
+                f"{stopper.monitor} did not improve by >{stopper.min_delta:g} "
+                f"for {stopper.patience} consecutive validations",
+                epoch=ep + 1, best_epoch=stopper.best_epoch,
+                best_value=stopper.best)
             break
 
     train_time = time.time() - t0
     peak = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0.0
+
+    # Terminal lifecycle state. An extended run must not be recorded as the
+    # original budget, so the two completions are distinct states.
+    if not stopper.should_stop:
+        if ext_plan is not None:
+            run_state.transition(sm.COMPLETED_EXTENSION,
+                                 f"reached extension target epoch {epochs}",
+                                 epochs_run=epochs_run)
+        elif run_state.can_transition(sm.COMPLETED_300):
+            run_state.transition(sm.COMPLETED_300,
+                                 f"planned budget of {epochs} epochs reached",
+                                 epochs_run=epochs_run)
+
+    # Diagnostics and timing are written whatever the outcome: a run that
+    # stopped early is exactly when this evidence is most useful.
+    _diag_csv = gpu_diag.write_csv(ws.path("reports", "gpu_diagnostics.csv"))
+    if _diag_csv:
+        _dsum = gpu_diag.summary()
+        logger.info("GPU diagnostics: %d samples -> %s",
+                    _dsum.get("samples", 0), os.path.relpath(_diag_csv, ws.root))
+        if _dsum.get("warning"):
+            logger.warning("%s", _dsum["warning"])
+        if _dsum.get("throttle_warning"):
+            logger.warning("%s", _dsum["throttle_warning"])
+        ws.write_json(os.path.join("reports", "gpu_diagnostics_summary.json"),
+                      _dsum)
 
     # ------------------------------------------------------------- evaluation
     ws.write_status("evaluating", progress=1.0, best_epoch=best_epoch, best_score=best)
