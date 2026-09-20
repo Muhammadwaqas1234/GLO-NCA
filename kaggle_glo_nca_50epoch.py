@@ -444,6 +444,9 @@ def time_presets(names=None, iters=12, warmup=3, train_cases=129,
                 with torch.amp.autocast(dev.type, dtype=amp,
                                         enabled=(dev.type == "cuda")):
                     o = model(x, patch_cl=p, patch_box=box)
+                # train() mode, so deep supervision returns (logits, aux).
+                if isinstance(o, tuple):
+                    o = o[0]
                 o = o.float().permute(0, 2, 3, 4, 1).contiguous()
                 tg = torch.randint(0, 2, o.shape, device=dev).float()
                 loss = sum(lf(o[..., j], tg[..., j]) for j in range(3))
@@ -2771,12 +2774,22 @@ def evaluate_test(checkpoint: str = None, data_root: str = None,
     print("=" * 74)
     print(f"  checkpoint       : {checkpoint}")
     print(f"  trained to epoch : {ck.get('ep', ck.get('epoch', '?'))}")
+    # Deep supervision adds auxiliary heads, which are real parameters. They
+    # are TRAINING-ONLY (eval() returns seg_head alone), so a checkpoint that
+    # carries them is still the same evaluated architecture. Compare against
+    # the count for the ACTIVE configuration instead of refusing a model this
+    # very file just trained.
+    _aux = sum(q.numel() for q in model.aux_heads.parameters()
+               if q.requires_grad) if getattr(model, "aux_heads", None) else 0
+    _expect = EXPECTED_PARAMS + _aux
     print(f"  parameters       : {n_params:,}"
-          + ("" if n_params == EXPECTED_PARAMS
-             else f"   *** expected {EXPECTED_PARAMS:,} ***"))
+          + (f"  ({_aux} of them training-only deep-supervision heads)"
+             if _aux else "")
+          + ("" if n_params == _expect
+             else f"   *** expected {_expect:,} ***"))
     print(f"  test cases       : {len(split['test'])}")
     print(f"  device           : {device}")
-    if n_params != EXPECTED_PARAMS:
+    if n_params != _expect:
         print("\nREFUSING: the checkpoint is not the production architecture.")
         return {"status": "FAILED", "reason": "architecture mismatch"}
 
@@ -3959,7 +3972,14 @@ def main() -> int:
         m2.train()
         xb, yb, _, _pb2, _box2 = next(iter(train_loader))
         xb, yb = xb.to(device), yb.to(device)
-        lg = m2(xb).float().permute(0, 2, 3, 4, 1).contiguous()
+        # m2 is in train() mode for the continuation step, so with deep
+        # supervision the model returns (logits, [aux...]). Unpack before
+        # calling .float(), or this reports a resume FAILURE that is really
+        # an AttributeError in the check itself.
+        _lg = m2(xb)
+        if isinstance(_lg, tuple):
+            _lg = _lg[0]
+        lg = _lg.float().permute(0, 2, 3, 4, 1).contiguous()
         t_cf = yb.permute(0, 4, 1, 2, 3).contiguous()
         if tuple(t_cf.shape[2:]) != tuple(lg.shape[1:4]):
             t_cf = torch.nn.functional.interpolate(t_cf, size=tuple(lg.shape[1:4]),
@@ -4309,11 +4329,18 @@ def main() -> int:
             _d = best_meta.get(f"dice_{_r}", float('nan'))
             _i = best_meta.get(f"iou_{_r}", float('nan'))
             _h = best_meta.get(f"hd95_{_r}", float('nan'))
-            LOG(f"    {_r:8s} {_d:8.4f} {_i:8.4f} {_h:9.2f}")
+            # HD95 runs only every HD95_EVERY_EPOCHS epochs, so the BEST
+            # epoch often has none. Say so instead of printing "nan", which
+            # reads like a failed computation rather than an unmeasured one.
+            _hs = f"{_h:9.2f}" if _h == _h else "      n/m"
+            LOG(f"    {_r:8s} {_d:8.4f} {_i:8.4f} {_hs}")
         LOG(f"    {'mean':8s} {best_meta.get('dice_mean', float('nan')):8.4f}")
         LOG(f"    loss (FocalTverskyCE): {best_meta.get('val_loss', float('nan')):.4f}"
             f"   [objective, not a quality score]")
-        LOG(f"    HD95 is in VOXELS; lower is better. Dice/IoU: higher is better.")
+        LOG("    HD95 is in VOXELS; lower is better. Dice/IoU: higher is "
+            "better.  n/m = not measured at this epoch (HD95 runs "
+            f"every {HD95_EVERY_EPOCHS} epochs); the frozen-test HD95 "
+            "below is measured on every case.")
 
     if isinstance(test_metrics, dict) and test_metrics.get("status") == "MEASURED":
         LOG("")
