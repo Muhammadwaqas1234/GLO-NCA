@@ -3418,13 +3418,30 @@ def main() -> int:
         o2 = torch.optim.AdamW(m2.parameters(), lr=LR, betas=BETAS,
                                weight_decay=WEIGHT_DECAY)
         o2.load_state_dict(sd["optimizer"])
-        s2 = torch.optim.lr_scheduler.CosineAnnealingLR(o2, T_max=args.epochs,
-                                                         eta_min=MIN_LR)
+        # Must be the SAME scheduler type the run used, or load_state_dict
+        # raises KeyError('_schedulers') once warmup is enabled.
+        if WARMUP_EPOCHS > 0:
+            s2 = torch.optim.lr_scheduler.SequentialLR(o2, schedulers=[
+                torch.optim.lr_scheduler.LinearLR(
+                    o2, start_factor=1.0 / WARMUP_START_DIV, end_factor=1.0,
+                    total_iters=WARMUP_EPOCHS),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    o2, T_max=max(1, args.epochs - WARMUP_EPOCHS),
+                    eta_min=MIN_LR)], milestones=[WARMUP_EPOCHS])
+        else:
+            s2 = torch.optim.lr_scheduler.CosineAnnealingLR(
+                o2, T_max=args.epochs, eta_min=MIN_LR)
         s2.load_state_dict(sd["scheduler"])
         weights_ok = all(torch.equal(a.cpu(), b.cpu()) for a, b in
                          zip(model.state_dict().values(), m2.state_dict().values()))
         ema_ok = len(sd["ema"]) == len(ema)
-        step_ok = sd["epoch"] == args.epochs and sd["global_step"] == global_step
+        # The run may stop EARLY, so the last checkpoint holds the epoch the
+        # run actually reached, not args.epochs. Comparing against args.epochs
+        # made the resume test FAIL on every early-stopped run while resume
+        # itself was working correctly -- the check was wrong, not the code.
+        # Compare against the epoch this process actually finished at.
+        step_ok = (sd["epoch"] == len(epoch_rows)
+                   and sd["global_step"] == global_step)
         sched_ok = s2.state_dict()["last_epoch"] == sched.state_dict()["last_epoch"]
         # continue training one iteration from the restored state
         m2.train()
@@ -3632,9 +3649,18 @@ def main() -> int:
     LOG(f"Mean Dice:          {last.get('dice_mean', float('nan')):.4f}")
     LOG(f"IoU (WT/TC/ET):     {last.get('iou_WT', float('nan')):.4f} / "
         f"{last.get('iou_TC', float('nan')):.4f} / {last.get('iou_ET', float('nan')):.4f}")
-    LOG(f"HD95 (WT/TC/ET):    {last.get('hd95_WT', float('nan')):.2f} / "
-        f"{last.get('hd95_TC', float('nan')):.2f} / "
-        f"{last.get('hd95_ET', float('nan')):.2f}  [voxels]")
+    # HD95 is computed only every HD95_EVERY_EPOCHS epochs, so the LAST epoch
+    # usually stores nan. Reporting that made a real, measured quantity look
+    # missing ("nan / nan / nan") in the summary while the value existed a few
+    # epochs earlier. Report the most recent epoch that actually measured it,
+    # and say which epoch that was.
+    _hd = next((r for r in reversed(epoch_rows)
+                if r.get("hd95_WT") == r.get("hd95_WT")), None)   # nan != nan
+    if _hd is None:
+        LOG("HD95 (WT/TC/ET):    NOT MEASURED  [no epoch computed HD95]")
+    else:
+        LOG(f"HD95 (WT/TC/ET):    {_hd['hd95_WT']:.2f} / {_hd['hd95_TC']:.2f} / "
+            f"{_hd['hd95_ET']:.2f}  [voxels, epoch {_hd.get('epoch', '?')}]")
     LOG("")
     LOG(f"Resume test:        {'PASS' if resume_ok else 'FAIL'}")
     LOG(f"Architecture ident: {'PASS' if arch['passed'] else 'FAIL'}")
