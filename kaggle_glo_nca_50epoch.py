@@ -134,7 +134,7 @@ WORKING_VOLUME = 96          # global-context source volume
 # it alters the architecture under test, so results are NOT comparable to the
 # production 48/64 model and must not be reported as validating it.
 #
-# MEASURED: the parameter count is 33,089 at EVERY grid size, because an NCA
+# MEASURED: the parameter count is 29,337 at EVERY grid size, because an NCA
 # shares one update rule across all voxels -- resolution changes compute, not
 # parameters. So the identity gate still passes; only the geometry differs.
 #
@@ -151,7 +151,7 @@ FAST_GRID = False
 
 # --- NCA STEPS (selected lever) --------------------------------------------
 # 20+20 -> 15+15. CATEGORY C: fewer NCA iterations is a different model, but
-# the PARAMETER COUNT IS UNCHANGED (33,089) because an NCA applies one shared
+# the PARAMETER COUNT IS UNCHANGED (29,337) because an NCA applies one shared
 # update rule `steps` times -- steps change compute, not weights.
 # MEASURED (3 interleaved rounds, +/-0.05 s):
 #     20+20 -> 7.17 s/iter
@@ -168,7 +168,7 @@ else:
 # --- SPATIAL GLOBAL-CONTEXT KERNEL (selected lever) ------------------------
 # GCSpatialBlock3D kernel 7 -> 5. CATEGORY C: shrinks the spatial global-context
 # receptive field, so it touches the thesis contribution directly.
-# Parameters: 33,089 -> 32,217 (the 2->1 conv loses 2*(7^3-5^3) = 436 weights
+# Parameters: k=7 -> k=5 loses 2*(7^3-5^3) = 436 weights
 # per level, x2 levels = 872).
 # MEASURED, stacked on 15+15: 5.38 -> 4.86 s/iter (a further 1.11x).
 SPATIAL_GC_KERNEL = 5
@@ -232,7 +232,7 @@ USE_CACHE = True
 # choice, not a performance one.
 USE_AUGMENTATION = True
 
-# Parameter count. 33,089 at spatial GC k=7; 32,217 at k=5.
+# Parameter count. 29,337 at the production spatial GC k=5 (k=7 gives 30,209).
 # The ONLY thing that changes the count is SPATIAL_GC_KERNEL: the 2->1 spatial
 # conv drops 2*(7^3 - 5^3) = 436 weights per level, x2 levels = 872.
 # Grid size and NCA step count do NOT change it -- an NCA shares one update rule
@@ -1927,7 +1927,7 @@ def self_check() -> int:
     # rather than against a number remembered from another preset.
     print(f"  preset            : {ACTIVE_PRESET}   [{RUN_MODE}]")
     print(f"  expected params   : {EXPECTED_PARAMS:,}"
-          f"{'' if IS_PRODUCTION_IDENTITY else '   (production is 33,089)'}")
+          f"{'' if IS_PRODUCTION_IDENTITY else '   (production is 29,337)'}")
     print(f"  geometry          : {L1_RES}^3 / {L2_RES}^3, "
           f"steps {L1_STEPS}+{L2_STEPS}, spatial GC k={SPATIAL_GC_KERNEL}")
     if not IS_PRODUCTION_IDENTITY:
@@ -3115,7 +3115,7 @@ def main() -> int:
     # ITEM 8 -- class-imbalance diagnostics, computed on TRAIN + VALIDATION
     # only. The test split is never opened here.
     try:
-        _imb = region_prevalence(split["train"], split["val"])
+        _imb = region_prevalence(split["train"], split["validation"])
         LOG("  Region prevalence (train+val only; test untouched):")
         for _r in REGIONS:
             _st = _imb[_r]
@@ -4018,7 +4018,8 @@ def main() -> int:
                      "production architecture or as thesis performance.**\n\n")
         else:
             fh.write("> Architecture matches `configs/glo_nca_production.yaml` "
-                     "(33,089 parameters).\n> Still an engineering run: "
+                     f"({EXPECTED_PARAMS:,} parameters).\n"
+                     "> Still an engineering run: "
                      "Kaggle-local split, not the 898/200/198 master split.\n\n")
         fh.write("**Experiment artifact only.** Not thesis performance, not an "
                  "ablation, not the thesis master split.\n\n")
@@ -4029,7 +4030,7 @@ def main() -> int:
                  f"PyTorch {torch.__version__}\n")
         fh.write(f"- Parameters: **{arch['parameter_count']:,}** "
                  f"(expected {EXPECTED_PARAMS:,}"
-                 f"{'' if IS_PRODUCTION_IDENTITY else '; production is 33,089'})\n")
+                 f"{'' if IS_PRODUCTION_IDENTITY else '; production is 29,337'})\n")
         fh.write(f"- Geometry: {WORKING_VOLUME}³ → {L1_RES}³ + {L2_RES}³, "
                  f"NCA steps {L1_STEPS}+{L2_STEPS}, spatial GC k="
                  f"{SPATIAL_GC_KERNEL}, patchify "
