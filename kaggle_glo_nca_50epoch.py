@@ -504,9 +504,17 @@ def time_presets(names=None, iters=12, warmup=3, train_cases=129,
 
 
 # --- training control -------------------------------------------------------
-# 100 epochs is a BUDGET, not a target: early stopping ends the run once
-# validation has plateaued.
-EPOCHS = 100
+# ITEM 13 -- this is a 30-epoch DIAGNOSTIC run, not a convergence run.
+#
+# 30 is a deliberate stopping point chosen to compare stability fixes against
+# the previous 45-epoch run on the same split, NOT a claim that the model has
+# converged by then. The previous run's best was epoch 30, so 30 epochs covers
+# the region of interest at about two thirds of the cost.
+#
+# Early stopping stays ENABLED and correct: if validation plateaus before 30
+# the run ends earlier; if epoch 30 arrives first the run simply ends there.
+# Reaching 30 says nothing about convergence.
+EPOCHS = 30
 EARLY_STOPPING_ENABLED = True
 EARLY_STOPPING_PATIENCE = 20      # consecutive non-improving validations
 EARLY_STOPPING_MIN_DELTA = 0.01   # smaller gains count as noise
@@ -532,7 +540,7 @@ MIN_LR = 0.00001
 # The 50-epoch T4 run collapsed at epoch 3 (TC 0.499->0.316) and recovered:
 # the signature of a full-rate LR before the batch-1 normalisation statistics
 # have settled. Set WARMUP_EPOCHS = 0 to restore the previous schedule.
-WARMUP_EPOCHS = 4                 # epochs of linear ramp; 0 disables
+WARMUP_EPOCHS = 3                 # ITEM 3: 3-epoch linear ramp; 0 disables
 WARMUP_START_DIV = 20.0           # start at LR/20, ramp linearly to LR
 WEIGHT_DECAY = 0.0001
 BETAS = (0.9, 0.99)
@@ -556,7 +564,12 @@ EMPTY_REGION_BCE_WEIGHT = 0.1
 # smoothing behaves identically on both splits.
 #
 # Set EMA_DECAY to a float to pin it explicitly and skip the derivation.
-EMA_EPOCH_WINDOW = 3.0            # smooth over ~3 epochs of updates
+# ITEM 2 -- at 129 training cases and batch 1 there are 129 optimiser steps
+# per epoch, so a window of ~0.78 epochs gives decay ~0.99, the value asked
+# for in the diagnostic brief. Expressing it in EPOCHS rather than pinning the
+# decay keeps the same smoothing behaviour when the 898-case run makes an
+# epoch 7x longer.
+EMA_EPOCH_WINDOW = 0.78           # ~0.99 decay at 129 steps/epoch
 EMA_DECAY = None                  # None -> derived from steps/epoch
 
 
@@ -1620,6 +1633,208 @@ def collate(batch):
 # ============================================================================
 # §9 METRICS
 # ============================================================================
+def failure_analysis(per_case: list, log=print) -> dict:
+    """ITEM 10/11 -- per-case failure report for the frozen test split.
+
+    An aggregate mean +/- sd cannot distinguish "uniformly mediocre" from
+    "mostly good with a handful of total failures", and those call for
+    completely different fixes. This counts the failures explicitly and, using
+    the ground-truth volumes, separates:
+
+      ABSENT  gt_vox == 0   the region is not in the case at all. Dice is
+                            undefined-by-convention here, not a model error.
+      MISSED  gt_vox > 0 and pred_vox == 0   a real region found nowhere.
+      PARTIAL everything else.
+
+    Returns a JSON-serialisable dict; prints a readable report.
+    """
+    out = {}
+    n = len(per_case)
+    if not n:
+        log("  failure analysis: NO CASES")
+        return {"status": "NOT MEASURED", "reason": "no cases"}
+
+    def col(k):
+        return [c[k] for c in per_case if k in c]
+
+    log("")
+    log("  " + "-" * 66)
+    log("  PER-CASE FAILURE ANALYSIS  (frozen test split, n=%d)" % n)
+    log("  " + "-" * 66)
+
+    # --- 1/2: mean, sd, median -------------------------------------------
+    log(f"  {'region':6s}{'mean':>9s}{'sd':>9s}{'median':>9s}"
+        f"{'min':>9s}{'max':>9s}")
+    for r in REGIONS:
+        v = sorted(x for x in col(f"dice_{r}") if x == x)
+        if not v:
+            continue
+        mean = float(np.mean(v))
+        sd = float(np.std(v))
+        med = float(v[len(v) // 2])
+        out[f"dice_{r}"] = {"mean": mean, "std": sd, "median": med,
+                            "min": float(v[0]), "max": float(v[-1])}
+        log(f"  {r:6s}{mean:9.4f}{sd:9.4f}{med:9.4f}{v[0]:9.4f}{v[-1]:9.4f}")
+    log("  A median well above the mean means a few very low cases are "
+        "pulling the mean down.")
+
+    # --- 3: low-Dice counts ----------------------------------------------
+    log("")
+    log("  Low-Dice case counts (the aggregate sd cannot show these):")
+    out["low_dice_counts"] = {}
+    for r in REGIONS:
+        v = [x for x in col(f"dice_{r}") if x == x]
+        row = {}
+        for thr in (0.10, 0.20, 0.30):
+            row[f"lt_{thr:.2f}"] = sum(1 for x in v if x < thr)
+        out["low_dice_counts"][r] = row
+        log(f"    {r:3s}  <0.10: {row['lt_0.10']:3d}   "
+            f"<0.20: {row['lt_0.20']:3d}   "
+            f"<0.30: {row['lt_0.30']:3d}   of {len(v)}")
+
+    # --- 6: absent vs missed ---------------------------------------------
+    log("")
+    log("  Why the low cases are low (ground-truth volume decides):")
+    out["failure_kind"] = {}
+    for r in REGIONS:
+        absent = missed = partial = 0
+        for c in per_case:
+            gv = c.get(f"gt_vox_{r}")
+            pv = c.get(f"pred_vox_{r}")
+            if gv is None or pv is None:
+                continue
+            if gv == 0:
+                absent += 1
+            elif pv == 0:
+                missed += 1
+            elif c.get(f"dice_{r}", 1.0) < 0.30:
+                partial += 1
+        out["failure_kind"][r] = {"absent_in_gt": absent,
+                                  "missed_entirely": missed,
+                                  "partial_lt_0.30": partial}
+        log(f"    {r:3s}  absent in GT: {absent:3d}   "
+            f"missed entirely: {missed:3d}   partial(<0.30): {partial:3d}")
+    log("    ABSENT is not a model failure -- Dice is undefined when the")
+    log("    region does not exist. MISSED is a genuine model failure.")
+
+    # --- 4/5: worst 10 by ET and TC ---------------------------------------
+    for r in ("ET", "TC"):
+        if f"dice_{r}" not in per_case[0]:
+            continue
+        worst = sorted(per_case, key=lambda c: c.get(f"dice_{r}", 1.0))[:10]
+        out[f"worst10_{r}"] = [
+            {"case": c.get("case"), "dice": c.get(f"dice_{r}"),
+             "gt_vox": c.get(f"gt_vox_{r}"),
+             "pred_vox": c.get(f"pred_vox_{r}")} for c in worst]
+        log("")
+        log(f"  Worst 10 by {r} Dice:")
+        log(f"    {'case':28s}{'dice':>8s}{'gt_vox':>10s}{'pred_vox':>10s}")
+        for c in worst:
+            log(f"    {str(c.get('case'))[:28]:28s}"
+                f"{c.get(f'dice_{r}', float('nan')):8.4f}"
+                f"{c.get(f'gt_vox_{r}', -1):10d}"
+                f"{c.get(f'pred_vox_{r}', -1):10d}")
+
+    # --- 7/8: small regions and volume-vs-Dice correlation ----------------
+    log("")
+    out["volume_vs_dice"] = {}
+    for r in REGIONS:
+        pairs = [(c[f"gt_vox_{r}"], c[f"dice_{r}"]) for c in per_case
+                 if c.get(f"gt_vox_{r}", 0) > 0
+                 and c.get(f"dice_{r}") == c.get(f"dice_{r}")]
+        if len(pairs) < 3:
+            out["volume_vs_dice"][r] = {
+                "status": "NOT MEASURED",
+                "reason": f"only {len(pairs)} usable cases"}
+            log(f"    {r:3s} volume-vs-Dice: NOT MEASURED ({len(pairs)} cases)")
+            continue
+        gv = np.array([a for a, _ in pairs], dtype=float)
+        dv = np.array([b for _, b in pairs], dtype=float)
+        # Spearman (rank) -- the relationship is monotone rather than linear,
+        # and ranks are robust to the heavy right tail of tumour volumes.
+        rg = np.argsort(np.argsort(gv)).astype(float)
+        rd = np.argsort(np.argsort(dv)).astype(float)
+        rho = (float(np.corrcoef(rg, rd)[0, 1])
+               if rg.std() > 0 and rd.std() > 0 else float("nan"))
+        q25 = np.percentile(gv, 25)
+        q75 = np.percentile(gv, 75)
+        # Guard the degenerate case where every volume is identical (q25 ==
+        # q75): a strict < then selects nothing and the quartile mean is nan.
+        small_mask = gv <= q25 if q25 == q75 else gv < q25
+        big_mask = gv >= q75
+        small_d = float(np.mean(dv[small_mask])) if small_mask.any() else float("nan")
+        big_d = float(np.mean(dv[big_mask])) if big_mask.any() else float("nan")
+        out["volume_vs_dice"][r] = {
+            "spearman_rho": rho, "n": len(pairs),
+            "smallest_quartile_mean_dice": small_d,
+            "largest_quartile_mean_dice": big_d}
+        log(f"    {r:3s} volume-vs-Dice rho={rho:+.3f} (n={len(pairs)})  "
+            f"smallest-quartile Dice {small_d:.3f} vs largest {big_d:.3f}")
+    log("    A strong positive rho means small regions are the hard ones --")
+    log("    i.e. the problem is region SIZE, not the region itself.")
+
+    # --- ITEM 11: HD95 validity accounting --------------------------------
+    log("")
+    log("  HD95 validity (a nan here is UNDEFINED, never silently averaged):")
+    out["hd95"] = {}
+    for r in REGIONS:
+        v = col(f"hd95_{r}")
+        valid = [x for x in v if x == x]
+        invalid = len(v) - len(valid)
+        out["hd95"][r] = {
+            "valid_cases": len(valid), "invalid_cases": invalid,
+            "mean": float(np.mean(valid)) if valid else None,
+            "median": float(sorted(valid)[len(valid) // 2]) if valid else None,
+            "reason_invalid": ("prediction or ground truth empty -- surface "
+                               "distance undefined" if invalid else None)}
+        m = f"{np.mean(valid):9.2f}" if valid else "      n/a"
+        log(f"    {r:3s} valid {len(valid):3d}/{len(v):3d}  "
+            f"invalid {invalid:3d}  mean {m} voxels")
+    log("    Invalid = empty prediction or empty ground truth, where a")
+    log("    surface distance does not exist. Never replaced by a number.")
+    log("  " + "-" * 66)
+    return out
+
+
+def region_prevalence(*splits) -> dict:
+    """ITEM 8 -- foreground prevalence per region, for imbalance diagnosis.
+
+    Counts how many cases contain each region and the fraction of voxels that
+    are positive. TEST IS NEVER PASSED HERE: the caller supplies train and
+    validation only, so these statistics cannot leak test information into any
+    decision.
+
+    Returns {region: {n, present, present_pct, pos_frac_mean, pos_frac_median}}.
+    """
+    cases = [c for sp in splits for c in sp]
+    frac = {r: [] for r in REGIONS}
+    present = {r: 0 for r in REGIONS}
+    import nibabel as nib
+    for c in cases:
+        try:
+            raw = np.asarray(nib.load(c["files"]["seg"]).dataobj,
+                             dtype=np.float32)
+        except Exception:
+            continue                      # unreadable case: skip, never guess
+        seg = labels_to_regions(raw)      # same nesting the training uses
+        for k, r in enumerate(REGIONS):
+            m = seg[..., k]
+            f = float(m.mean())
+            frac[r].append(f)
+            if m.any():
+                present[r] += 1
+    out = {}
+    n = max(1, len(frac[REGIONS[0]]))
+    for r in REGIONS:
+        v = sorted(frac[r]) or [0.0]
+        out[r] = {"n": len(frac[r]),
+                  "present": present[r],
+                  "present_pct": 100.0 * present[r] / n,
+                  "pos_frac_mean": float(np.mean(v)),
+                  "pos_frac_median": float(v[len(v) // 2])}
+    return out
+
+
 def dice_iou(prob: np.ndarray, gt: np.ndarray, thr=0.5) -> Tuple[float, float]:
     p = prob >= thr
     g = gt >= 0.5
@@ -2519,6 +2734,14 @@ def evaluate_test(checkpoint: str = None, data_root: str = None,
                 row[f"dice_{r}"] = dd
                 row[f"iou_{r}"] = ii
                 row[f"hd95_{r}"] = hh
+                # ITEM 10 -- ground-truth and predicted volumes, so a low Dice
+                # can be attributed: an ABSENT region (gt_vox 0) and a MISSED
+                # region (gt_vox large, pred_vox 0) both score ~0 but are
+                # completely different failures.
+                _g = gt[..., k] >= 0.5
+                row[f"gt_vox_{r}"] = int(_g.sum())
+                row[f"pred_vox_{r}"] = int((prob[..., k] >= 0.5).sum())
+                row[f"gt_present_{r}"] = int(bool(_g.any()))
             per_case.append(row)
     secs = time.perf_counter() - t0
 
@@ -2553,6 +2776,11 @@ def evaluate_test(checkpoint: str = None, data_root: str = None,
     print()
     print("  This is the generalisation estimate. Validation numbers are")
     print("  optimistic by construction: they chose the checkpoint.")
+
+    # ITEM 10/11 -- the aggregate above cannot distinguish a uniformly
+    # mediocre model from a good one with a few total failures. Run the
+    # per-case analysis every time, so that question is always answered.
+    res["failure_analysis"] = failure_analysis(per_case, log=print)
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "test_per_case.csv"), "w", newline="",
@@ -2860,6 +3088,45 @@ def main() -> int:
         f"  LR: no warmup, cosine {LR:.2e} -> {MIN_LR:.2e}")
     LOG(f"  validation weights: {'EMA' if VALIDATE_WITH_EMA else 'RAW'}")
 
+    # ITEM 5 -- patchify must be OFF on the production identity path. The
+    # identity gate already asserts it on the built model; this is the
+    # RUNTIME assertion on the execution path actually about to be used, so a
+    # hard-coded or default re-enable cannot slip through silently.
+    assert USE_PATCHIFY is False, (
+        f"patchify_enabled must be False for the production identity "
+        f"(got {USE_PATCHIFY!r})")
+    LOG("  Patchify: OFF  [asserted at runtime]")
+
+    # ITEM 7 -- sampling policy, stated explicitly.
+    # This standalone uses its OWN dataset (BraTSDataset) with a uniform
+    # shuffle. The ET-prioritised sampler in src/experiment/runner.py
+    # (priotize_masks / prioritize_region) is NOT on this path -- it belongs
+    # to the patchify code, and patchify is OFF. Nothing is being silently
+    # overridden: there is no region-prioritised sampling here to honour.
+    LOG("  Sampling: uniform random shuffle over the training split "
+        "(no region prioritisation on this path; patchify OFF)")
+
+    # ITEM 9 -- threshold policy.
+    # There is no threshold tuning in this standalone: every Dice/IoU/HD95
+    # uses a FIXED 0.5. Nothing is fitted on validation and nothing is fitted
+    # on test, so the test numbers carry no threshold-selection optimism.
+    LOG("  Thresholds: FIXED 0.5 for all regions (no tuning on val or test)")
+
+    # ITEM 8 -- class-imbalance diagnostics, computed on TRAIN + VALIDATION
+    # only. The test split is never opened here.
+    try:
+        _imb = region_prevalence(split["train"], split["val"])
+        LOG("  Region prevalence (train+val only; test untouched):")
+        for _r in REGIONS:
+            _st = _imb[_r]
+            LOG(f"    {_r:3s} present in {_st['present']:3d}/{_st['n']:3d} cases "
+                f"({_st['present_pct']:5.1f}%)  mean positive-voxel fraction "
+                f"{_st['pos_frac_mean']:.5f}  median {_st['pos_frac_median']:.5f}")
+        _artifact_imbalance = _imb
+    except Exception as _e:
+        LOG(f"  Region prevalence: NOT MEASURED ({type(_e).__name__}: {_e})")
+        _artifact_imbalance = {"status": "NOT MEASURED", "reason": str(_e)}
+
     ema = {k: v.detach().clone().float() for k, v in model.state_dict().items()}
 
     epoch_rows: List[dict] = []
@@ -2901,6 +3168,26 @@ def main() -> int:
                     LOG(f"  resume: scheduler state incompatible "
                         f"({type(_e).__name__}) -- rebuilt by stepping to epoch "
                         f"{_target}; LR now {opt.param_groups[0]['lr']:.3e}")
+            if _sd.get("scaler") is not None and scaler is not None:
+                scaler.load_state_dict(_sd["scaler"])
+                LOG("  resume: GradScaler state restored")
+            for _key, _restore in (
+                    ("rng_state", lambda v: torch.set_rng_state(
+                        v if v.dtype == torch.uint8 else v.to(torch.uint8))),
+                    ("numpy_rng_state", np.random.set_state),
+                    ("python_rng_state", random.setstate)):
+                if _sd.get(_key) is not None:
+                    try:
+                        _restore(_sd[_key])
+                    except Exception as _re:
+                        LOG(f"  resume: could not restore {_key}: "
+                            f"{type(_re).__name__}")
+            if _sd.get("rng_state_cuda") is not None and torch.cuda.is_available():
+                try:
+                    torch.cuda.set_rng_state_all(_sd["rng_state_cuda"])
+                except Exception as _re:
+                    LOG(f"  resume: could not restore cuda RNG: "
+                        f"{type(_re).__name__}")
             if "ema" in _sd:
                 # EMA is saved as a plain {name: tensor} dict (see torch.save below).
                 ema = {k: v.to(device) for k, v in _sd["ema"].items()}
@@ -3148,12 +3435,26 @@ def main() -> int:
             c0 = time.perf_counter()
             ck_path = os.path.join(OUT_DIR, "checkpoint", "last.pth")
             tmp = ck_path + ".tmp"
+            # ITEM 12 -- the checkpoint must carry everything needed to
+            # reproduce continuation. The GradScaler state was previously
+            # omitted, so an fp16 resume (the T4 default) restarted with a
+            # fresh scale factor and could emit a burst of skipped steps
+            # before re-converging on the right scale. RNG states are included
+            # so augmentation and shuffling continue rather than restart.
             torch.save({"model": model.state_dict(), "ema": ema,
                         "optimizer": opt.state_dict(),
                         "scheduler": sched.state_dict(),
+                        "scaler": (scaler.state_dict()
+                                   if scaler is not None else None),
                         "epoch": epoch + 1, "global_step": global_step,
                         "early_stopping": stopper.state_dict(),
                         "best_score": best_smooth, "best_epoch": best_epoch,
+                        "rng_state": torch.get_rng_state(),
+                        "rng_state_cuda": (torch.cuda.get_rng_state_all()
+                                           if torch.cuda.is_available() else None),
+                        "numpy_rng_state": np.random.get_state(),
+                        "python_rng_state": random.getstate(),
+                        "warmup_epochs": WARMUP_EPOCHS,
                         "fingerprint": FINGERPRINT}, tmp)
             os.replace(tmp, ck_path)
             # Periodic recovery snapshot, kept independently of best.pth so a
@@ -3339,6 +3640,12 @@ def main() -> int:
                         _row[f"dice_{_r}"] = _dd
                         _row[f"iou_{_r}"] = _ii
                         _row[f"hd95_{_r}"] = _hh
+                        # ITEM 10 -- same volume columns as evaluate_test, so
+                        # the inline and standalone reports are comparable.
+                        _gm = _gt[..., _k] >= 0.5
+                        _row[f"gt_vox_{_r}"] = int(_gm.sum())
+                        _row[f"pred_vox_{_r}"] = int((_prob[..., _k] >= 0.5).sum())
+                        _row[f"gt_present_{_r}"] = int(bool(_gm.any()))
                     _per_case.append(_row)
             _test_s = time.perf_counter() - _t0
 
@@ -3373,6 +3680,9 @@ def main() -> int:
             LOG(f"  {'mean':8s} {test_metrics['dice_mean']:8.4f}")
             LOG(f"  evaluated {len(_per_case)} cases in {_test_s:.1f}s "
                 f"({_test_s / max(1, len(_per_case)):.2f}s/case)")
+            # ITEM 10/11 -- per-case failure analysis on the frozen split.
+            test_metrics["failure_analysis"] = failure_analysis(_per_case,
+                                                                log=LOG)
             LOG("  HD95 in VOXELS (lower better); Dice/IoU higher better.")
 
             with open(os.path.join(OUT_DIR, "test_per_case.csv"), "w",
@@ -3443,6 +3753,16 @@ def main() -> int:
         step_ok = (sd["epoch"] == len(epoch_rows)
                    and sd["global_step"] == global_step)
         sched_ok = s2.state_dict()["last_epoch"] == sched.state_dict()["last_epoch"]
+        # ITEM 12 -- the LR itself must match, not just the step counter: a
+        # scheduler can restore last_epoch and still produce a different rate
+        # if it was rebuilt with different bounds.
+        lr_ok = abs(o2.param_groups[0]["lr"] - opt.param_groups[0]["lr"]) < 1e-12
+        # fp16 runs carry a GradScaler; its scale must survive the round trip.
+        scaler_ok = (sd.get("scaler") is not None) if scaler is not None else True
+        # EMA compared by VALUE, not just key count.
+        ema_vals_ok = all(
+            torch.equal(sd["ema"][k].cpu().float(), ema[k].cpu().float())
+            for k in ema) if isinstance(sd.get("ema"), dict) else False
         # continue training one iteration from the restored state
         m2.train()
         xb, yb, _, _pb2, _box2 = next(iter(train_loader))
@@ -3456,8 +3776,11 @@ def main() -> int:
         l2 = sum(loss_f(lg[..., m], tg[..., m]) for m in range(lg.shape[-1]))
         o2.zero_grad(set_to_none=True); l2.backward(); o2.step()
         cont_ok = bool(torch.isfinite(l2))
-        resume_ok = all([weights_ok, ema_ok, step_ok, sched_ok, cont_ok])
-        resume_detail = (f"weights={weights_ok} ema={ema_ok} epoch/step={step_ok} "
+        resume_ok = all([weights_ok, ema_ok, ema_vals_ok, step_ok,
+                         sched_ok, lr_ok, scaler_ok, cont_ok])
+        resume_detail = (f"weights={weights_ok} ema={ema_ok} "
+                         f"ema_values={ema_vals_ok} lr={lr_ok} "
+                         f"scaler={scaler_ok} epoch/step={step_ok} "
                          f"scheduler={sched_ok} continue_training={cont_ok}")
     except Exception as e:
         resume_detail = f"{type(e).__name__}: {e}"
