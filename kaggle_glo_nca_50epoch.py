@@ -2299,6 +2299,161 @@ def audit_artifacts(outdir: str) -> dict:
 
 
 # ============================================================================
+# STANDALONE TEST EVALUATION
+# ============================================================================
+def evaluate_test(checkpoint: str = None, data_root: str = None,
+                  out_dir: str = None) -> dict:
+    """Evaluate a SAVED model on the frozen test split.
+
+    Separate from training on purpose: the test split is scored once, after
+    the model is final, using the checkpoint that validation selected. It is
+    never used for early stopping, checkpoint selection or ranking -- that is
+    what makes the number an estimate of generalisation rather than a
+    restatement of what the run already optimised for.
+
+    Re-runnable without retraining:
+
+        evaluate_test()                       # best.pth from the last run
+        evaluate_test("path/to/best.pth")     # any saved checkpoint
+    """
+    import torch
+
+    out_dir = out_dir or OUT_DIR
+    checkpoint = checkpoint or os.path.join(out_dir, "checkpoint", "best.pth")
+    if not os.path.isfile(checkpoint):
+        print(f"FAILED: no checkpoint at {checkpoint}\n"
+              f"Train first, or pass an explicit path.")
+        return {"status": "FAILED", "reason": "checkpoint not found"}
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    root = data_root or find_dataset_root()
+    prof = Profiler(enabled=False)
+    inv = inventory_dataset(root, prof)
+    split = make_split(inv["cases"])
+    if not split["test"]:
+        print("FAILED: this split has no independent test set.")
+        return {"status": NOT_MEASURED, "reason": "no test split"}
+
+    ck = torch.load(checkpoint, map_location=device, weights_only=False)
+    model, _ = make_model(device)
+    model = model.to(device)
+    sd = ck.get("m", ck.get("model"))
+    model.load_state_dict(sd if isinstance(sd, dict) else sd[0])
+    model.eval()
+    n_params = sum(p_.numel() for p_ in model.parameters())
+
+    print("=" * 74)
+    print("FROZEN TEST EVALUATION")
+    print("=" * 74)
+    print(f"  checkpoint       : {checkpoint}")
+    print(f"  trained to epoch : {ck.get('ep', ck.get('epoch', '?'))}")
+    print(f"  parameters       : {n_params:,}"
+          + ("" if n_params == EXPECTED_PARAMS
+             else f"   *** expected {EXPECTED_PARAMS:,} ***"))
+    print(f"  test cases       : {len(split['test'])}")
+    print(f"  device           : {device}")
+    if n_params != EXPECTED_PARAMS:
+        print("\nREFUSING: the checkpoint is not the production architecture.")
+        return {"status": "FAILED", "reason": "architecture mismatch"}
+
+    amp_dtype = None
+    if device.type == "cuda":
+        cap = torch.cuda.get_device_capability(0)
+        amp_dtype = (torch.bfloat16 if cap >= (8, 0)
+                     and torch.cuda.is_bf16_supported() else torch.float16)
+
+    ds = BraTSDataset(split["test"], {}, use_cache=USE_CACHE,
+                      patch_size=None, train=False)
+    dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False,
+                                     num_workers=0, collate_fn=collate,
+                                     pin_memory=(device.type == "cuda"))
+    d = {r: [] for r in REGIONS}
+    i_ = {r: [] for r in REGIONS}
+    h = {r: [] for r in REGIONS}
+    per_case = []
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        for xb, yb, ids, _pb, _box in dl:
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
+            if amp_dtype is not None:
+                with torch.amp.autocast("cuda", dtype=amp_dtype):
+                    o = model(xb)
+                o = o.float()
+            else:
+                o = model(xb)
+            o = o.permute(0, 2, 3, 4, 1).contiguous()
+            tg = yb
+            if tg.shape[1:4] != o.shape[1:4]:
+                tcf = tg.permute(0, 4, 1, 2, 3).contiguous()
+                tcf = torch.nn.functional.interpolate(
+                    tcf, size=tuple(o.shape[1:4]), mode="nearest")
+                tg = tcf.permute(0, 2, 3, 4, 1).contiguous()
+            prob = torch.sigmoid(o)[0].detach().cpu().numpy()
+            gt = tg[0].detach().cpu().numpy()
+            row = {"case": ids[0]}
+            for k, r in enumerate(REGIONS):
+                dd, ii = dice_iou(prob[..., k], gt[..., k])
+                hh = hd95(prob[..., k], gt[..., k])
+                d[r].append(dd); i_[r].append(ii); h[r].append(hh)
+                row[f"dice_{r}"] = dd
+                row[f"iou_{r}"] = ii
+                row[f"hd95_{r}"] = hh
+            per_case.append(row)
+    secs = time.perf_counter() - t0
+
+    def mean(v):
+        vv = [x for x in v if not np.isnan(x)]
+        return float(np.mean(vv)) if vv else float("nan")
+
+    def std(v):
+        vv = [x for x in v if not np.isnan(x)]
+        return float(np.std(vv)) if len(vv) > 1 else 0.0
+
+    res = {"status": "MEASURED", "cases": len(per_case),
+           "checkpoint": checkpoint,
+           "model_epoch": ck.get("ep", ck.get("epoch")),
+           "selected_on": "validation (test never used for selection)",
+           "seconds": secs,
+           **{f"dice_{r}": mean(d[r]) for r in REGIONS},
+           **{f"dice_std_{r}": std(d[r]) for r in REGIONS},
+           **{f"iou_{r}": mean(i_[r]) for r in REGIONS},
+           **{f"hd95_{r}": mean(h[r]) for r in REGIONS}}
+    res["dice_mean"] = mean([res[f"dice_{r}"] for r in REGIONS])
+
+    print()
+    print(f"  {'region':8s} {'Dice':>8s} {'+/-':>7s} {'IoU':>8s} {'HD95':>9s}")
+    for r in REGIONS:
+        print(f"  {r:8s} {res[f'dice_{r}']:8.4f} {res[f'dice_std_{r}']:7.4f} "
+              f"{res[f'iou_{r}']:8.4f} {res[f'hd95_{r}']:9.2f}")
+    print(f"  {'mean':8s} {res['dice_mean']:8.4f}")
+    print(f"  {len(per_case)} cases in {secs:.1f}s "
+          f"({secs / max(1, len(per_case)):.2f}s/case)")
+    print("  HD95 in VOXELS (lower better); Dice/IoU higher better.")
+    print()
+    print("  This is the generalisation estimate. Validation numbers are")
+    print("  optimistic by construction: they chose the checkpoint.")
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "test_per_case.csv"), "w", newline="",
+              encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(per_case[0].keys()))
+        w.writeheader()
+        for r2 in per_case:
+            w.writerow(r2)
+    with open(os.path.join(out_dir, "test_results.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({**res, **run_fingerprint(root), "per_case": per_case,
+                   "protocol": ("Single evaluation on the frozen test split, "
+                                "after training, using the "
+                                "validation-selected checkpoint.")},
+                  fh, indent=2, default=str)
+    print(f"\n  written: {out_dir}/test_results.json, test_per_case.csv")
+    print("=" * 74)
+    return res
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 def main() -> int:
@@ -2913,6 +3068,133 @@ def main() -> int:
 
     total_s = time.perf_counter() - t_experiment
 
+    # ---- FROZEN TEST EVALUATION -------------------------------------------
+    # Runs ONCE, after training is finished, on the BEST checkpoint. The test
+    # split was never touched during training: not for early stopping, not for
+    # checkpoint selection, not for the top-k ranking. That is what makes this
+    # number an estimate of generalisation rather than a restatement of what
+    # the run already optimised for.
+    test_metrics: Dict[str, object] = {"status": NOT_MEASURED}
+    if has_test and best_meta:
+        LOG("")
+        LOG("=" * 74)
+        LOG("FROZEN TEST EVALUATION")
+        LOG("=" * 74)
+        LOG(f"  cases            : {len(split['test'])}")
+        LOG(f"  model            : best.pth (epoch {best_meta['epoch']}, "
+            f"selected on VALIDATION)")
+        LOG(f"  first use of test: yes -- never seen during training")
+        try:
+            _bw = torch.load(os.path.join(OUT_DIR, "checkpoint", "best.pth"),
+                             map_location=device, weights_only=False)
+            _tm, _ = make_model(device)
+            _tm = _tm.to(device)
+            _tm.load_state_dict(_bw["m"] if isinstance(_bw["m"], dict)
+                                else _bw["m"][0])
+            _tm.eval()
+            _tds = BraTSDataset(split["test"], {}, use_cache=USE_CACHE,
+                                patch_size=None, train=False)
+            _tl = torch.utils.data.DataLoader(
+                _tds, batch_size=1, shuffle=False, num_workers=0,
+                collate_fn=collate, pin_memory=(device.type == "cuda"))
+            _d = {r: [] for r in REGIONS}
+            _i = {r: [] for r in REGIONS}
+            _h = {r: [] for r in REGIONS}
+            _per_case = []
+            _t0 = time.perf_counter()
+            with torch.no_grad():
+                for _xb, _yb, _ids, _pb, _box in _tl:
+                    _xb = _xb.to(device, non_blocking=True)
+                    _yb = _yb.to(device, non_blocking=True)
+                    if use_amp:
+                        with torch.amp.autocast("cuda", dtype=amp_dtype):
+                            _o = _tm(_xb)
+                        _o = _o.float()
+                    else:
+                        _o = _tm(_xb)
+                    _o = _o.permute(0, 2, 3, 4, 1).contiguous()
+                    _tg = _yb
+                    if _tg.shape[1:4] != _o.shape[1:4]:
+                        _tcf = _tg.permute(0, 4, 1, 2, 3).contiguous()
+                        _tcf = torch.nn.functional.interpolate(
+                            _tcf, size=tuple(_o.shape[1:4]), mode="nearest")
+                        _tg = _tcf.permute(0, 2, 3, 4, 1).contiguous()
+                    _prob = torch.sigmoid(_o)[0].detach().cpu().numpy()
+                    _gt = _tg[0].detach().cpu().numpy()
+                    _row = {"case": _ids[0]}
+                    for _k, _r in enumerate(REGIONS):
+                        _dd, _ii = dice_iou(_prob[..., _k], _gt[..., _k])
+                        _hh = hd95(_prob[..., _k], _gt[..., _k])
+                        _d[_r].append(_dd); _i[_r].append(_ii); _h[_r].append(_hh)
+                        _row[f"dice_{_r}"] = _dd
+                        _row[f"iou_{_r}"] = _ii
+                        _row[f"hd95_{_r}"] = _hh
+                    _per_case.append(_row)
+            _test_s = time.perf_counter() - _t0
+
+            def _mean(v):
+                vv = [x for x in v if not np.isnan(x)]
+                return float(np.mean(vv)) if vv else float("nan")
+
+            def _std(v):
+                vv = [x for x in v if not np.isnan(x)]
+                return float(np.std(vv)) if len(vv) > 1 else 0.0
+
+            test_metrics = {
+                "status": "MEASURED", "cases": len(_per_case),
+                "model_epoch": best_meta["epoch"],
+                "selected_on": "validation (test never used for selection)",
+                "seconds": _test_s,
+                **{f"dice_{r}": _mean(_d[r]) for r in REGIONS},
+                **{f"dice_std_{r}": _std(_d[r]) for r in REGIONS},
+                **{f"iou_{r}": _mean(_i[r]) for r in REGIONS},
+                **{f"hd95_{r}": _mean(_h[r]) for r in REGIONS},
+            }
+            test_metrics["dice_mean"] = _mean(
+                [test_metrics[f"dice_{r}"] for r in REGIONS])
+
+            LOG("")
+            LOG(f"  {'region':8s} {'Dice':>8s} {'+/-':>7s} {'IoU':>8s} {'HD95':>9s}")
+            for _r in REGIONS:
+                LOG(f"  {_r:8s} {test_metrics[f'dice_{_r}']:8.4f} "
+                    f"{test_metrics[f'dice_std_{_r}']:7.4f} "
+                    f"{test_metrics[f'iou_{_r}']:8.4f} "
+                    f"{test_metrics[f'hd95_{_r}']:9.2f}")
+            LOG(f"  {'mean':8s} {test_metrics['dice_mean']:8.4f}")
+            LOG(f"  evaluated {len(_per_case)} cases in {_test_s:.1f}s "
+                f"({_test_s / max(1, len(_per_case)):.2f}s/case)")
+            LOG("  HD95 in VOXELS (lower better); Dice/IoU higher better.")
+
+            with open(os.path.join(OUT_DIR, "test_per_case.csv"), "w",
+                      newline="", encoding="utf-8") as _fh:
+                _w = csv.DictWriter(_fh, fieldnames=list(_per_case[0].keys()))
+                _w.writeheader()
+                for _r2 in _per_case:
+                    _w.writerow(_r2)
+            with open(os.path.join(OUT_DIR, "test_results.json"), "w",
+                      encoding="utf-8") as _fh:
+                json.dump({**test_metrics, **FINGERPRINT,
+                           "per_case": _per_case,
+                           "protocol": ("Single evaluation on the frozen test "
+                                        "split, after training, using the "
+                                        "validation-selected best checkpoint. "
+                                        "The test split was never used for "
+                                        "early stopping, checkpoint selection "
+                                        "or ranking.")},
+                          _fh, indent=2, default=str)
+            del _tm
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+        except Exception as _e:
+            LOG(f"  TEST EVALUATION FAILED: {type(_e).__name__}: {_e}")
+            test_metrics = {"status": "FAILED", "error": str(_e)[:200]}
+    elif not has_test:
+        LOG("")
+        LOG("FROZEN TEST EVALUATION: skipped -- no independent test split "
+            "(dataset too small to carve one)")
+        test_metrics = {"status": NOT_MEASURED,
+                        "reason": "no independent test split"}
+
     # ---- §15 checkpoint / resume test -------------------------------------
     LOG("")
     LOG("CHECKPOINT / RESUME TEST (§15):")
@@ -3232,6 +3514,10 @@ def main() -> int:
         top_k_entries=top_k_entries, best_meta=best_meta,
         periodic=periodic_ckpts, final_ckpt=final_ckpt_path,
         resume_checks=_resume_checks, timing=_timing)
+    with open(os.path.join(OUT_DIR, "test_evaluation.json"), "w",
+              encoding="utf-8") as _fh:
+        json.dump({**FINGERPRINT, "test": test_metrics}, _fh, indent=2,
+                  default=str)
     _audit = audit_artifacts(OUT_DIR)
 
     LOG("")
@@ -3276,6 +3562,20 @@ def main() -> int:
         LOG(f"    loss (FocalTverskyCE): {best_meta.get('val_loss', float('nan')):.4f}"
             f"   [objective, not a quality score]")
         LOG(f"    HD95 is in VOXELS; lower is better. Dice/IoU: higher is better.")
+
+    if isinstance(test_metrics, dict) and test_metrics.get("status") == "MEASURED":
+        LOG("")
+        LOG(f"  FROZEN TEST SET ({test_metrics['cases']} cases, never seen "
+            f"during training)")
+        LOG(f"    {'region':8s} {'Dice':>8s} {'IoU':>8s} {'HD95':>9s}")
+        for _r in REGIONS:
+            LOG(f"    {_r:8s} {test_metrics[f'dice_{_r}']:8.4f} "
+                f"{test_metrics[f'iou_{_r}']:8.4f} "
+                f"{test_metrics[f'hd95_{_r}']:9.2f}")
+        LOG(f"    {'mean':8s} {test_metrics['dice_mean']:8.4f}")
+        LOG("    This is the generalisation estimate. Validation numbers "
+            "above were used for")
+        LOG("    model selection, so they are optimistic by construction.")
     if stopper.should_stop:
         LOG(f"  EARLY STOPPED        : best {stopper.best:.4f} @ epoch "
             f"{stopper.best_epoch}, {len(epoch_rows)} epochs used")
