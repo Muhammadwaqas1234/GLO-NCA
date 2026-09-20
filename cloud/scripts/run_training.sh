@@ -8,8 +8,12 @@
 #   * a lock prevents two concurrent training processes on this VM
 #
 # Usage:
-#   ./cloud/scripts/run_training.sh configs/gcp_full.yaml     # full run
-#   ./cloud/scripts/run_training.sh configs/smoke_test.yaml   # cloud smoke test
+#   ./cloud/scripts/run_training.sh configs/glo_nca_production.yaml   # THE run
+#
+# configs/glo_nca_production.yaml is the ONLY production configuration. The
+# other configs in configs/ are historical (V2-era baselines and the frozen
+# V3 reference) and train a DIFFERENT architecture; they are kept because
+# audit scripts and thesis evidence cite them, not because they are options.
 #
 # This NEVER starts automatically -- the user runs it explicitly.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
