@@ -2883,7 +2883,24 @@ def main() -> int:
             model.load_state_dict(_sd["model"])
             opt.load_state_dict(_sd["optimizer"])
             if "scheduler" in _sd:
-                sched.load_state_dict(_sd["scheduler"])
+                # A checkpoint written BEFORE the warmup fix holds a plain
+                # CosineAnnealingLR state, whose keys (T_max, eta_min, ...) do
+                # not match SequentialLR's (_schedulers, _milestones, ...), so
+                # a direct load raises KeyError: '_schedulers'. Rather than
+                # refuse the resume, rebuild the schedule by fast-forwarding
+                # the NEW scheduler to the saved epoch: warmup is already over
+                # by then in any run long enough to be worth resuming, and the
+                # cosine is a closed-form function of last_epoch, so the LR
+                # lands on the correct point of the new curve.
+                try:
+                    sched.load_state_dict(_sd["scheduler"])
+                except (KeyError, TypeError, ValueError) as _e:
+                    _target = int(_sd.get("epoch", 0))
+                    for _ in range(_target):
+                        sched.step()
+                    LOG(f"  resume: scheduler state incompatible "
+                        f"({type(_e).__name__}) -- rebuilt by stepping to epoch "
+                        f"{_target}; LR now {opt.param_groups[0]['lr']:.3e}")
             if "ema" in _sd:
                 # EMA is saved as a plain {name: tensor} dict (see torch.save below).
                 ema = {k: v.to(device) for k, v in _sd["ema"].items()}
