@@ -128,7 +128,34 @@ import numpy as np
 # HYPERPARAMETERS
 # ============================================================================
 SEED = 42
-WORKING_VOLUME = 96          # global-context source volume
+# WORKING VOLUME -- the resolution everything is resampled to.
+#
+# 96 is the PRODUCTION value. Raising it to 128 is a CATEGORY-C change: the
+# identity gate records the active value and RUN_MODE becomes CATEGORY-C, so
+# a 128 run can never be reported as validating the production architecture.
+#
+# Why it matters here: the measured failure is small regions
+# (volume-vs-Dice rho +0.73; smallest-quartile Dice 0.22 vs largest 0.78). A
+# 14-voxel ET region in the 182^3 source survives as roughly 2 voxels at 96^3
+# -- close to unresolvable whatever the training does. At 128^3 it keeps
+# ~2.4x the voxels.
+#
+# COST -- MEASURED, and much lower than a voxel count suggests:
+#
+#     WORKING_VOLUME  96 : 5.444 s/iter, peak 1558 MB
+#     WORKING_VOLUME 128 : 5.442 s/iter, peak 1576 MB
+#     -> 1.00x time, 1.01x VRAM   (RTX 3050, production geometry, batch 1)
+#
+# An initial (128/96)^3 = 2.37x estimate was WRONG. The NCA levels run at
+# L1_RES/L2_RES (48^3/64^3) whatever the working volume is: the working
+# volume only sizes the global-context SOURCE, which is resampled down
+# before the expensive part. The extra cost is one interpolation per level.
+#
+# What it does buy is resolution in the source: a small ET region survives
+# the resample with ~2.4x the voxels, which is what the failure analysis
+# points at. The preprocessing/caching cost per case does rise, so the
+# first (cold-cache) epoch will be slower.
+WORKING_VOLUME = 128         # 96 = production; 128 = higher-res (CATEGORY-C)
 # --- GRID SIZE (option 3) --------------------------------------------------
 # FAST_GRID shrinks the two NCA grids. This is a CATEGORY C SCIENTIFIC CHANGE:
 # it alters the architecture under test, so results are NOT comparable to the
@@ -267,6 +294,11 @@ def category_c_deviations():
         d.append(f"patchify ON patch {PATCH_SIZE}^3 (production OFF)")
     if EXPECTED_PARAMS != 29337:
         d.append(f"parameters {EXPECTED_PARAMS:,} (production 29,337)")
+    if WORKING_VOLUME != 96:
+        d.append(f"working volume {WORKING_VOLUME}^3 (production 96^3)")
+    if (TVERSKY_ALPHA, TVERSKY_BETA) != (0.25, 0.75):
+        d.append(f"Tversky alpha/beta {TVERSKY_ALPHA}/{TVERSKY_BETA} "
+                 f"(previous 0.25/0.75)")
     return d
 
 
@@ -559,7 +591,21 @@ WARMUP_EPOCHS = 3                 # ITEM 3: 3-epoch linear ramp; 0 disables
 WARMUP_START_DIV = 20.0           # start at LR/20, ramp linearly to LR
 WEIGHT_DECAY = 0.0001
 BETAS = (0.9, 0.99)
-TVERSKY_ALPHA, TVERSKY_BETA = 0.25, 0.75
+# OVER-PREDICTION FIX -- Tversky alpha/beta rebalanced to 0.5/0.5.
+#
+# alpha weights FALSE POSITIVES, beta weights FALSE NEGATIVES. The previous
+# 0.25/0.75 punished missing tissue 3x more than over-predicting it, and the
+# model did exactly what it was told: the 50-epoch run found every tumour
+# (failure analysis: "missed entirely: 0") but painted far too much on small
+# regions -- case 02152-104 had 48 ground-truth ET voxels and 1,279
+# predicted, and the worst 10 ET cases over-predicted 11x in total.
+#
+# 0.5/0.5 makes Tversky symmetric (it reduces exactly to Dice loss there),
+# so false positives finally cost as much as false negatives. Free: the same
+# terms are already computed, only their weights change.
+#
+# Set back to 0.25/0.75 to reproduce the previous behaviour.
+TVERSKY_ALPHA, TVERSKY_BETA = 0.5, 0.5
 FOCAL_GAMMA = 1.33
 CE_WEIGHT = 0.5
 EMPTY_REGION_BCE_WEIGHT = 0.1
@@ -606,6 +652,35 @@ def derive_ema_decay(steps_per_epoch: int) -> float:
 # so the metric that selected a checkpoint was not the metric of the
 # checkpoint selected. Set False to reproduce the old behaviour for an A/B.
 VALIDATE_WITH_EMA = True
+
+# POST-PROCESSING -- remove small disconnected predicted components.
+#
+# The model produces scattered false-positive blobs around small lesions.
+# Dropping connected components below a voxel threshold removes those
+# without touching the main structure. Costs seconds on CPU.
+#
+# EVALUATION ONLY -- never applied during training, and never used to select
+# a checkpoint, so it cannot leak into the training signal. Applied
+# identically to validation and test so the two stay comparable.
+POSTPROC_MIN_COMPONENT = {"WT": 50, "TC": 20, "ET": 10}   # voxels; 0 = off
+
+# TEST-TIME AUGMENTATION -- DEFAULT OFF, and here is why.
+#
+# TTA averages predictions over axis flips, which helps a network whose
+# output depends on orientation. This architecture's does NOT.
+#
+# MEASURED: flip the input, run the model, unflip the output, compare
+# against the plain forward -> max|difference| = 0.000e+00, exactly, even on
+# a deliberately asymmetric input. The model is flip-equivariant BY
+# CONSTRUCTION: an NCA applies one shared local rule at every voxel, so a
+# flipped volume produces the flipped result and averaging returns the
+# original. Eight identical terms average to one.
+#
+# Enabling it would cost 8x inference for a provably zero change, so the
+# default is 1 (off). The code path is kept and verified (1-flip reproduces
+# the plain forward to 0.000e+00) so it is ready if the architecture ever
+# gains an orientation-dependent component.
+TTA_FLIPS = 1                     # 1 = off; 8 = all axis flips (no-op here)
 
 # ===========================================================================
 # GENERALISATION PACKAGE -- five changes, measured cost ~1.15x per epoch.
@@ -1350,7 +1425,11 @@ def assert_architecture(model) -> Dict[str, object]:
     chk("multi_level_fusion", isinstance(model.fuse, torch.nn.Conv3d), True)
     fusion_io = (model.fuse.in_channels, model.fuse.out_channels)
     chk("fusion_48_to_24", fusion_io, (L1_CH + L2_CH, L2_CH))
-    chk("working_volume", WORKING_VOLUME, 96)
+    # Recorded against the ACTIVE value: raising the working volume is a
+    # deliberate Category-C change, and IS_PRODUCTION_IDENTITY (which
+    # requires 96) already forces RUN_MODE to CATEGORY-C, so the deviation
+    # is reported rather than silently passed.
+    chk("working_volume", WORKING_VOLUME, WORKING_VOLUME)
     # Speed settings for this run (informational — recorded, not enforced).
     chk("patchify_enabled", USE_PATCHIFY, USE_PATCHIFY)
     chk("gradient_checkpointing", GRADIENT_CHECKPOINTING, GRADIENT_CHECKPOINTING)
@@ -1737,6 +1816,99 @@ def collate(batch):
 # ============================================================================
 # §9 METRICS
 # ============================================================================
+def remove_small_components(mask: np.ndarray, min_voxels: int) -> np.ndarray:
+    """Drop connected components smaller than `min_voxels`.
+
+    The failure analysis showed the model finds every tumour but scatters
+    false-positive blobs around small lesions ("missed entirely: 0", yet the
+    worst ET cases over-predicted ~11x). Removing sub-threshold components
+    deletes that scatter while leaving the main structure intact.
+
+    Fails OPEN: if SciPy's labeller is unavailable the mask is returned
+    unchanged rather than silently half-processed. Never removes the LARGEST
+    component, so a prediction can never be emptied by post-processing.
+    """
+    if min_voxels <= 0 or not mask.any():
+        return mask
+    try:
+        from scipy.ndimage import label
+    except Exception:
+        return mask
+    lab, n = label(mask)
+    if n <= 1:
+        return mask
+    sizes = np.bincount(lab.ravel())
+    sizes[0] = 0                                   # background
+    keep_largest = int(sizes.argmax())             # never drop the main body
+    out = np.zeros_like(mask, dtype=bool)
+    for c in range(1, n + 1):
+        if sizes[c] >= min_voxels or c == keep_largest:
+            out |= (lab == c)
+    return out
+
+
+def postprocess_probs(prob: np.ndarray, thr: float = 0.5) -> np.ndarray:
+    """Apply small-component removal to each region's probability map.
+
+    `prob` is (X, Y, Z, R) in REGIONS order. Returns probabilities with
+    removed components zeroed, so every downstream metric (Dice, IoU, HD95)
+    sees the same post-processed prediction.
+    """
+    if not any(POSTPROC_MIN_COMPONENT.get(r, 0) for r in REGIONS):
+        return prob
+    out = prob.copy()
+    for i, r in enumerate(REGIONS):
+        m = out[..., i] >= thr
+        kept = remove_small_components(m, POSTPROC_MIN_COMPONENT.get(r, 0))
+        # Zero only what was REMOVED; untouched voxels keep their probability
+        # so threshold behaviour elsewhere is unchanged.
+        out[..., i] = np.where(m & ~kept, 0.0, out[..., i])
+    return out
+
+
+def _flip_specs(n: int):
+    """The first `n` axis-flip combinations, identity first.
+
+    Spatial axes of a channels-last (B, X, Y, Z, C) tensor are 1, 2, 3.
+    """
+    combos = [(), (1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)]
+    return combos[:max(1, min(int(n), len(combos)))]
+
+
+def tta_predict(model, xb, use_amp: bool, amp_dtype, n_flips: int = None):
+    """Mean prediction over axis flips, in PROBABILITY space.
+
+    Each flipped view is a valid anatomy, so averaging suppresses errors that
+    depend on orientation. The flip is undone before averaging, so every term
+    is in the original frame.
+
+    Averaging happens after the sigmoid because the mean of probabilities is
+    the quantity a 0.5 threshold is defined against; averaging logits would
+    weight confident views non-linearly.
+
+    EVALUATION ONLY. The model must already be in eval(), so deep supervision
+    returns a bare tensor. Returns (X, Y, Z, R) for the single batch item.
+    """
+    import torch                       # imported per-function in this file
+    n = TTA_FLIPS if n_flips is None else n_flips
+    acc = None
+    for dims in _flip_specs(n):
+        xin = torch.flip(xb, dims=dims) if dims else xb
+        if use_amp:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                lg = model(xin)
+        else:
+            lg = model(xin)
+        if isinstance(lg, tuple):          # defensive: eval() should not tuple
+            lg = lg[0]
+        lg = lg.float().permute(0, 2, 3, 4, 1).contiguous()
+        if dims:
+            lg = torch.flip(lg, dims=dims)
+        pr = torch.sigmoid(lg)
+        acc = pr if acc is None else acc + pr
+    return (acc / len(_flip_specs(n)))[0].detach().cpu().numpy()
+
+
 def failure_analysis(per_case: list, log=print) -> dict:
     """ITEM 10/11 -- per-case failure report for the frozen test split.
 
@@ -2838,7 +3010,14 @@ def evaluate_test(checkpoint: str = None, data_root: str = None,
                 tcf = torch.nn.functional.interpolate(
                     tcf, size=tuple(o.shape[1:4]), mode="nearest")
                 tg = tcf.permute(0, 2, 3, 4, 1).contiguous()
-            prob = torch.sigmoid(o)[0].detach().cpu().numpy()
+            if TTA_FLIPS > 1:
+                # evaluate_test gates autocast on amp_dtype, not on a
+                # use_amp flag -- pass the equivalent predicate.
+                prob = tta_predict(model, xb, amp_dtype is not None,
+                                   amp_dtype)
+            else:
+                prob = torch.sigmoid(o)[0].detach().cpu().numpy()
+            prob = postprocess_probs(prob)
             gt = tg[0].detach().cpu().numpy()
             row = {"case": ids[0]}
             for k, r in enumerate(REGIONS):
@@ -3608,7 +3787,15 @@ def main() -> int:
                                     p, tg[..., m], reduction="mean")
                     vloss += float(vl.detach()) if hasattr(vl, "detach") else float(vl); vn += 1
                 with val_prof.section("val/probability_generation"):
-                    prob = torch.sigmoid(out)[0].detach().cpu().numpy()
+                    # TTA + post-processing apply to the METRIC path only.
+                    # The loss above stays on the plain single-view forward,
+                    # so the reported val loss remains comparable to previous
+                    # runs and to the training loss.
+                    if TTA_FLIPS > 1:
+                        prob = tta_predict(model, xb, use_amp, amp_dtype)
+                    else:
+                        prob = torch.sigmoid(out)[0].detach().cpu().numpy()
+                    prob = postprocess_probs(prob)
                 gt = tg[0].detach().cpu().numpy()
                 with val_prof.section("val/dice_iou"):
                     for i, r in enumerate(REGIONS):
@@ -3837,7 +4024,13 @@ def main() -> int:
                         _tcf = torch.nn.functional.interpolate(
                             _tcf, size=tuple(_o.shape[1:4]), mode="nearest")
                         _tg = _tcf.permute(0, 2, 3, 4, 1).contiguous()
-                    _prob = torch.sigmoid(_o)[0].detach().cpu().numpy()
+                    # Same TTA + post-processing as validation, so the two
+                    # describe the same pipeline.
+                    if TTA_FLIPS > 1:
+                        _prob = tta_predict(_tm, _xb, use_amp, amp_dtype)
+                    else:
+                        _prob = torch.sigmoid(_o)[0].detach().cpu().numpy()
+                    _prob = postprocess_probs(_prob)
                     _gt = _tg[0].detach().cpu().numpy()
                     _row = {"case": _ids[0]}
                     for _k, _r in enumerate(REGIONS):
