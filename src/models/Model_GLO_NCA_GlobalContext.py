@@ -301,5 +301,9 @@ def build_glo_nca_global_context(cfg, input_channels=4, output_channels=3,
         hidden_size=int(m.get("hidden", 128)), device=device,
         gradient_checkpointing=bool((cfg.raw.get("memory", {}) or {})
                                     .get("gradient_checkpointing", False)),
+        # Receptive field of the spatial global-context block -- the thesis's
+        # own mechanism, so it is stated by the config rather than hardcoded.
+        # Default 7 reproduces the original value for any config that omits it.
+        spatial_kernel_size=int(m.get("spatial_kernel_size", 7)),
         roi_fraction=roi,
         global_levels=int(gc_cfg.get("global_levels", 1)))
