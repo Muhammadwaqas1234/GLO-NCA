@@ -30,7 +30,7 @@ from src.agents.Agent_GLO_NCA_V3 import Agent_GLO_NCA_V3
 from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 
 from . import checkpoint as ckpt_io
-from . import datasource, environment, graphs
+from . import datasource, early_stopping, environment, graphs
 from . import metrics_eval as ME
 from . import reproducibility as repro
 from . import statistics as STATS
@@ -599,6 +599,27 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     best_window = int(cfg.get("evaluation", "smoothing_window"))
     ckpt_freq = int(cfg.get("logging", "checkpoint_frequency", 10))
 
+    # --- overfitting protection ---------------------------------------------
+    # Model selection and stopping both read the SAME validation metric: the
+    # `best_window`-epoch rolling mean of validation mean foreground Dice
+    # (mean over WT/TC/ET). Smoothing is what stops a single lucky epoch from
+    # being selected. The test split is never involved.
+    stopper = early_stopping.from_config(cfg.section("training").get(
+        "early_stopping"))
+    top_k = int(cfg.get("logging", "top_k_checkpoints", 1))
+    epochs_run = epochs          # overwritten if early stopping fires
+    if stopper.enabled:
+        logger.info("early stopping: monitor=%s mode=%s patience=%d "
+                    "min_delta=%.4g (validation only)",
+                    stopper.monitor, stopper.mode, stopper.patience,
+                    stopper.min_delta)
+    else:
+        logger.info("early stopping: DISABLED -- training runs the full "
+                    "%d-epoch budget", epochs)
+    if top_k > 1:
+        logger.info("top-%d best checkpoints retained (no weight averaging)",
+                    top_k)
+
     # --- mixed precision (performance only; default OFF) ---------------------
     # `performance.precision`: "fp32" (default) | "bf16" | "fp16". Applies to the
     # MODEL FORWARD only -- the loss always runs in FP32 (see
@@ -713,6 +734,15 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
+
+    # Identity block embedded in every ranked best checkpoint: code revision,
+    # config fingerprint, split identity and the software/hardware the weights
+    # were produced on. Built once -- none of it changes during a run.
+    _prov = ckpt_io.provenance_metadata(
+        config=cfg.to_dict(),
+        split_sha=str(split_meta.get("split_sha256") or ""),
+        dataset_root=str(data_root or ""))
+
     t0 = time.time()
     ws.write_status("training", current_epoch=start_epoch, total_epochs=epochs,
                     progress=start_epoch / max(1, epochs), best_epoch=best_epoch,
@@ -899,6 +929,27 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
             ckpt_io.save_best_weights(ws.best_ckpt, weights, ep + 1, vm, vm_smooth)
             logger.info("   * new best (smoothed) %.3f saved", vm_smooth)
 
+            # Ranked best-K set alongside the single best file. Selected on the
+            # SAME metric, so best_1 and best.pth always agree. Weights are
+            # never averaged: the ranked files exist for inspection.
+            if top_k > 1:
+                _ranked = ckpt_io.update_top_k(
+                    ws.path("checkpoints", "top_k"), weights=weights,
+                    epoch=ep + 1, score=vm_smooth,
+                    metrics={"dice_mean": vm, "dice_smooth": vm_smooth,
+                             **{f"dice_{r}": val[r]["dice"] for r in REGIONS},
+                             **{f"iou_{r}": val[r]["iou"] for r in REGIONS},
+                             **{f"hd95_{r}": val[r]["hd95"] for r in REGIONS}},
+                    meta=_prov, top_k=top_k)
+                logger.info("   * top-%d: %s", top_k,
+                            ", ".join(f"ep{e['epoch']}={e['score']:.4f}"
+                                      for e in _ranked))
+
+        # --- early stopping (VALIDATION metric only; test is never consulted) -
+        _stop = stopper.update(vm_smooth, ep + 1)
+        if stopper.enabled:
+            logger.info("   %s", stopper.status())
+
         # --- last.pth (full state) every epoch + periodic snapshots ---
         full = ckpt_io.build_checkpoint(
             epoch=ep + 1, models=ca, optimizers=agent.optimizer,
@@ -913,6 +964,20 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         ws.write_status("training", current_epoch=ep + 1, total_epochs=epochs,
                         progress=(ep + 1) / max(1, epochs),
                         best_epoch=best_epoch, best_score=best)
+
+        # Stop AFTER the full checkpoint is written, so the run is resumable
+        # from exactly where it stopped. The best checkpoint is untouched:
+        # stopping never overwrites it, and evaluation below loads it.
+        if _stop:
+            logger.info("early stopping at epoch %d: %s has not improved by "
+                        ">%.4g for %d consecutive validations "
+                        "(best %.4f @ epoch %d)",
+                        ep + 1, stopper.monitor, stopper.min_delta,
+                        stopper.patience, stopper.best, stopper.best_epoch)
+            logger.info("   %d of %d epochs used; evaluating the BEST "
+                        "checkpoint, not the final one", ep + 1, epochs)
+            epochs_run = ep + 1
+            break
 
     train_time = time.time() - t0
     peak = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0.0
