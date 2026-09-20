@@ -1,0 +1,47 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+  "total_vram_mb": 6143.5,
+  "cap_pct": 0.9,
+  "torch": "2.5.1+cu121",
+  "cuda": "12.1",
+  "python": "3.12.9",
+  "bf16_supported": true,
+  "phase": "D",
+  "config": "configs/glo_nca_fast_candidate.yaml",
+  "runs": [
+    {
+      "tag": "ckpt OFF",
+      "batch": 1,
+      "ckpt": false,
+      "amp": false,
+      "amp_dtype": null,
+      "tf32": false,
+      "compile": false,
+      "cudnn_benchmark": false,
+      "channels_last": false,
+      "status": "OOM",
+      "rss_before_mb": 497.2,
+      "params": 33089,
+      "levels": [
+        [
+          64,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ]
+      ],
+      "total_steps": 40,
+      "param_mb": 0.13,
+      "out_resolution": 96,
+      "ema_mb": 0.13,
+      "ema_requires_grad": false,
+      "input_mb": 23.62,
+      "fit": "OOM",
+      "error": "CUDA out of memory. Tried to allocate 48.00 MiB. GPU 0 has a total capacity of 6.00 GiB of which 0 bytes is free. 5.40 GiB allowed; Of the allocated m"
+    }
+  ]
+}

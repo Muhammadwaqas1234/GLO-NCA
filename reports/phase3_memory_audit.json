@@ -1,0 +1,945 @@
+{
+  "phase": "PHASE3_MEMORY_AUDIT",
+  "environment": {
+    "timestamp_utc": "2026-09-16T10:27:55Z",
+    "python": "3.12.9",
+    "os": "Windows 11",
+    "machine": "AMD64",
+    "git_commit": "7476e18ae1182ce204da919f70a15887ad74820a",
+    "torch": "2.5.1+cu121",
+    "cuda_build": "12.1",
+    "cuda_available": true,
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "gpu_total_vram_mb": 6143.5,
+    "capability": "8.6",
+    "nvidia_driver": "592.82",
+    "host_ram_total_gb": 15.65,
+    "host_ram_available_gb": 2.9
+  },
+  "production_config": "C:\\Users\\raiwa\\Downloads\\M3D-NCA-main\\configs\\v3_multilevel_ckpt.yaml",
+  "safety": {
+    "min_free_host_gb": 2.0,
+    "child_timeout_s": {
+      "32": 300,
+      "48": 300,
+      "64": 420,
+      "96": 600,
+      "128": 900
+    },
+    "process_isolation": true
+  },
+  "repeats_per_rung": 3,
+  "results": [
+    {
+      "resolution": 32,
+      "mode": "forward",
+      "timestamp_utc": "2026-09-16T10:28:19Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 32,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 408.79,
+        "system_used_mb": 13193.47,
+        "system_available_mb": 2831.04,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 12,
+        "mean_pct": 51.8,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 74.29,
+      "peak_reserved_mb": 92.0,
+      "allocated_mb": 9.77,
+      "reserved_mb": 92.0,
+      "host_after": {
+        "process_rss_mb": 717.58,
+        "system_used_mb": 13489.92,
+        "system_available_mb": 2534.59,
+        "gpu_allocated_mb": 9.77,
+        "gpu_reserved_mb": 92.0,
+        "gpu_peak_mb": 74.29
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 780.93,
+        "median_ms": 561.13,
+        "min_ms": 558.24,
+        "max_ms": 1223.44
+      },
+      "backward": null,
+      "release": {
+        "before": {
+          "process_rss_mb": 717.63,
+          "system_used_mb": 13489.98,
+          "system_available_mb": 2534.53,
+          "gpu_allocated_mb": 8.98,
+          "gpu_reserved_mb": 92.0,
+          "gpu_peak_mb": 74.29
+        },
+        "after": {
+          "process_rss_mb": 717.68,
+          "system_used_mb": 13493.94,
+          "system_available_mb": 2530.57,
+          "gpu_allocated_mb": 8.98,
+          "gpu_reserved_mb": 20.0,
+          "gpu_peak_mb": 74.29
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 18.2
+    },
+    {
+      "resolution": 32,
+      "mode": "fwdbwd",
+      "timestamp_utc": "2026-09-16T10:28:36Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 32,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 409.19,
+        "system_used_mb": 13265.09,
+        "system_available_mb": 2759.42,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 50,
+        "mean_pct": 59.9,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 264.71,
+      "peak_reserved_mb": 288.0,
+      "allocated_mb": 17.9,
+      "reserved_mb": 288.0,
+      "host_after": {
+        "process_rss_mb": 977.43,
+        "system_used_mb": 13791.48,
+        "system_available_mb": 2233.03,
+        "gpu_allocated_mb": 17.9,
+        "gpu_reserved_mb": 288.0,
+        "gpu_peak_mb": 264.71
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 1636.05,
+        "median_ms": 561.01,
+        "min_ms": 559.69,
+        "max_ms": 3787.45
+      },
+      "backward": {
+        "n": 3,
+        "mean_ms": 1629.23,
+        "median_ms": 1536.92,
+        "min_ms": 1536.59,
+        "max_ms": 1814.17
+      },
+      "release": {
+        "before": {
+          "process_rss_mb": 977.43,
+          "system_used_mb": 13791.48,
+          "system_available_mb": 2233.03,
+          "gpu_allocated_mb": 17.27,
+          "gpu_reserved_mb": 288.0,
+          "gpu_peak_mb": 264.71
+        },
+        "after": {
+          "process_rss_mb": 977.44,
+          "system_used_mb": 13770.33,
+          "system_available_mb": 2254.18,
+          "gpu_allocated_mb": 17.27,
+          "gpu_reserved_mb": 38.0,
+          "gpu_peak_mb": 264.71
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 25.4
+    },
+    {
+      "resolution": 48,
+      "mode": "forward",
+      "timestamp_utc": "2026-09-16T10:29:01Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 48,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 48,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 408.35,
+        "system_used_mb": 13172.12,
+        "system_available_mb": 2852.39,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 25,
+        "mean_pct": 80.1,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 215.9,
+      "peak_reserved_mb": 298.0,
+      "allocated_mb": 10.4,
+      "reserved_mb": 298.0,
+      "host_after": {
+        "process_rss_mb": 717.46,
+        "system_used_mb": 13493.9,
+        "system_available_mb": 2530.61,
+        "gpu_allocated_mb": 10.4,
+        "gpu_reserved_mb": 298.0,
+        "gpu_peak_mb": 215.9
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 1549.56,
+        "median_ms": 1362.91,
+        "min_ms": 1360.35,
+        "max_ms": 1925.42
+      },
+      "backward": null,
+      "release": {
+        "before": {
+          "process_rss_mb": 717.51,
+          "system_used_mb": 13493.91,
+          "system_available_mb": 2530.61,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 298.0,
+          "gpu_peak_mb": 215.9
+        },
+        "after": {
+          "process_rss_mb": 717.56,
+          "system_used_mb": 13492.44,
+          "system_available_mb": 2532.07,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 20.0,
+          "gpu_peak_mb": 215.9
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 19.5
+    },
+    {
+      "resolution": 48,
+      "mode": "fwdbwd",
+      "timestamp_utc": "2026-09-16T10:29:19Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 48,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 48,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 408.7,
+        "system_used_mb": 13237.18,
+        "system_available_mb": 2787.33,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 99,
+        "mean_pct": 80.4,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 665.54,
+      "peak_reserved_mb": 738.0,
+      "allocated_mb": 18.53,
+      "reserved_mb": 738.0,
+      "host_after": {
+        "process_rss_mb": 977.8,
+        "system_used_mb": 13826.46,
+        "system_available_mb": 2198.05,
+        "gpu_allocated_mb": 18.53,
+        "gpu_reserved_mb": 738.0,
+        "gpu_peak_mb": 665.54
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 2315.96,
+        "median_ms": 1364.55,
+        "min_ms": 1362.75,
+        "max_ms": 4220.58
+      },
+      "backward": {
+        "n": 3,
+        "mean_ms": 3666.5,
+        "median_ms": 3595.22,
+        "min_ms": 3581.14,
+        "max_ms": 3823.15
+      },
+      "release": {
+        "before": {
+          "process_rss_mb": 977.8,
+          "system_used_mb": 13828.5,
+          "system_available_mb": 2196.02,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 738.0,
+          "gpu_peak_mb": 665.54
+        },
+        "after": {
+          "process_rss_mb": 977.8,
+          "system_used_mb": 13835.77,
+          "system_available_mb": 2188.74,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 76.0,
+          "gpu_peak_mb": 665.54
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 30.6
+    },
+    {
+      "resolution": 64,
+      "mode": "forward",
+      "timestamp_utc": "2026-09-16T10:29:50Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 64,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 64,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 408.56,
+        "system_used_mb": 13367.0,
+        "system_available_mb": 2657.51,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 53,
+        "mean_pct": 92.5,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 496.29,
+      "peak_reserved_mb": 690.0,
+      "allocated_mb": 13.29,
+      "reserved_mb": 690.0,
+      "host_after": {
+        "process_rss_mb": 718.07,
+        "system_used_mb": 13743.36,
+        "system_available_mb": 2281.15,
+        "gpu_allocated_mb": 13.29,
+        "gpu_reserved_mb": 690.0,
+        "gpu_peak_mb": 496.29
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 3112.35,
+        "median_ms": 2913.39,
+        "min_ms": 2912.89,
+        "max_ms": 3510.78
+      },
+      "backward": null,
+      "release": {
+        "before": {
+          "process_rss_mb": 718.12,
+          "system_used_mb": 13743.36,
+          "system_available_mb": 2281.15,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 690.0,
+          "gpu_peak_mb": 496.29
+        },
+        "after": {
+          "process_rss_mb": 718.17,
+          "system_used_mb": 13744.36,
+          "system_available_mb": 2280.15,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 20.0,
+          "gpu_peak_mb": 496.29
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 23.1
+    },
+    {
+      "resolution": 64,
+      "mode": "fwdbwd",
+      "timestamp_utc": "2026-09-16T10:30:13Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 64,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 64,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 409.48,
+        "system_used_mb": 12926.74,
+        "system_available_mb": 3097.77,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 201,
+        "mean_pct": 91.0,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 1462.99,
+      "peak_reserved_mb": 1636.0,
+      "allocated_mb": 21.42,
+      "reserved_mb": 1636.0,
+      "host_after": {
+        "process_rss_mb": 978.32,
+        "system_used_mb": 13392.27,
+        "system_available_mb": 2632.24,
+        "gpu_allocated_mb": 21.42,
+        "gpu_reserved_mb": 1636.0,
+        "gpu_peak_mb": 1462.99
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 3751.45,
+        "median_ms": 2927.49,
+        "min_ms": 2918.37,
+        "max_ms": 5408.49
+      },
+      "backward": {
+        "n": 3,
+        "mean_ms": 7603.14,
+        "median_ms": 7551.59,
+        "min_ms": 7548.06,
+        "max_ms": 7709.77
+      },
+      "release": {
+        "before": {
+          "process_rss_mb": 978.32,
+          "system_used_mb": 13392.27,
+          "system_available_mb": 2632.25,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 1636.0,
+          "gpu_peak_mb": 1462.99
+        },
+        "after": {
+          "process_rss_mb": 978.33,
+          "system_used_mb": 13379.66,
+          "system_available_mb": 2644.86,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 38.0,
+          "gpu_peak_mb": 1462.99
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 47.2
+    },
+    {
+      "resolution": 96,
+      "mode": "forward",
+      "timestamp_utc": "2026-09-16T10:31:36Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 96,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 96,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 408.55,
+        "system_used_mb": 12336.88,
+        "system_available_mb": 3687.63,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 227,
+        "mean_pct": 97.3,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 1651.29,
+      "peak_reserved_mb": 2114.0,
+      "allocated_mb": 25.67,
+      "reserved_mb": 2114.0,
+      "host_after": {
+        "process_rss_mb": 800.24,
+        "system_used_mb": 12814.09,
+        "system_available_mb": 3210.43,
+        "gpu_allocated_mb": 25.67,
+        "gpu_reserved_mb": 2114.0,
+        "gpu_peak_mb": 1651.29
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 13730.7,
+        "median_ms": 13528.23,
+        "min_ms": 13514.66,
+        "max_ms": 14149.21
+      },
+      "backward": null,
+      "release": {
+        "before": {
+          "process_rss_mb": 800.29,
+          "system_used_mb": 12814.09,
+          "system_available_mb": 3210.42,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 2114.0,
+          "gpu_peak_mb": 1651.29
+        },
+        "after": {
+          "process_rss_mb": 800.33,
+          "system_used_mb": 12800.0,
+          "system_available_mb": 3224.52,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 20.0,
+          "gpu_peak_mb": 1651.29
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 55.5
+    },
+    {
+      "resolution": 96,
+      "mode": "fwdbwd",
+      "timestamp_utc": "2026-09-16T10:32:36Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 96,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 96,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": false,
+      "host_before": {
+        "process_rss_mb": 409.05,
+        "system_used_mb": 12299.23,
+        "system_available_mb": 3725.28,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 625,
+        "mean_pct": 95.7,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 4725.51,
+      "peak_reserved_mb": 5186.0,
+      "allocated_mb": 33.79,
+      "reserved_mb": 5186.0,
+      "host_after": {
+        "process_rss_mb": 1049.35,
+        "system_used_mb": 12957.7,
+        "system_available_mb": 3066.82,
+        "gpu_allocated_mb": 33.79,
+        "gpu_reserved_mb": 5186.0,
+        "gpu_peak_mb": 4725.51
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 3,
+        "mean_ms": 14552.97,
+        "median_ms": 13961.17,
+        "min_ms": 13636.01,
+        "max_ms": 16061.74
+      },
+      "backward": {
+        "n": 3,
+        "mean_ms": 28628.53,
+        "median_ms": 28641.56,
+        "min_ms": 28561.93,
+        "max_ms": 28682.1
+      },
+      "release": {
+        "before": {
+          "process_rss_mb": 1049.35,
+          "system_used_mb": 12957.64,
+          "system_available_mb": 3066.87,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 5186.0,
+          "gpu_peak_mb": 4725.51
+        },
+        "after": {
+          "process_rss_mb": 1049.36,
+          "system_used_mb": 12946.46,
+          "system_available_mb": 3078.05,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 90.0,
+          "gpu_peak_mb": 4725.51
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 151.1
+    },
+    {
+      "resolution": 128,
+      "mode": "forward",
+      "timestamp_utc": "2026-09-16T10:35:41Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 96,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 128,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": true,
+      "host_before": {
+        "process_rss_mb": 409.15,
+        "system_used_mb": 12325.89,
+        "system_available_mb": 3698.62,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 100,
+        "mean_pct": 89.0,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 3716.29,
+      "peak_reserved_mb": 5248.0,
+      "allocated_mb": 48.29,
+      "reserved_mb": 5248.0,
+      "host_after": {
+        "process_rss_mb": 800.36,
+        "system_used_mb": 12788.18,
+        "system_available_mb": 3236.33,
+        "gpu_allocated_mb": 48.29,
+        "gpu_reserved_mb": 5248.0,
+        "gpu_peak_mb": 3716.29
+      },
+      "status": "FIT",
+      "forward": {
+        "n": 1,
+        "mean_ms": 21623.47,
+        "median_ms": 21623.47,
+        "min_ms": 21623.47,
+        "max_ms": 21623.47
+      },
+      "backward": null,
+      "release": {
+        "before": {
+          "process_rss_mb": 800.41,
+          "system_used_mb": 12788.16,
+          "system_available_mb": 3236.35,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 5248.0,
+          "gpu_peak_mb": 3716.29
+        },
+        "after": {
+          "process_rss_mb": 800.46,
+          "system_used_mb": 12776.48,
+          "system_available_mb": 3248.03,
+          "gpu_allocated_mb": 8.12,
+          "gpu_reserved_mb": 32.0,
+          "gpu_peak_mb": 3716.29
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 41.4
+    },
+    {
+      "resolution": 128,
+      "mode": "fwdbwd",
+      "timestamp_utc": "2026-09-16T10:36:25Z",
+      "device_total_vram_mb": 6143.5,
+      "levels": [
+        {
+          "resolution": 32,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 7
+        },
+        {
+          "resolution": 96,
+          "channels": 24,
+          "nca_steps": 20,
+          "kernel_size": 3
+        },
+        {
+          "resolution": 128,
+          "channels": 16,
+          "nca_steps": 10,
+          "kernel_size": 3
+        }
+      ],
+      "total_nca_steps": 50,
+      "gradient_checkpointing": true,
+      "batch_size": 1,
+      "is_exact_production_geometry": true,
+      "host_before": {
+        "process_rss_mb": 409.38,
+        "system_used_mb": 12302.32,
+        "system_available_mb": 3722.19,
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_peak_mb": 0.0
+      },
+      "parameters": 40656,
+      "gpu_utilization": {
+        "status": "MEASURED",
+        "samples": 975,
+        "mean_pct": 96.6,
+        "max_pct": 100,
+        "min_pct": 0,
+        "method": "nvidia-smi utilization.gpu polled every 50 ms in a background thread"
+      },
+      "peak_allocated_mb": 8635.53,
+      "peak_reserved_mb": 9664.0,
+      "allocated_mb": 56.42,
+      "reserved_mb": 9664.0,
+      "host_after": {
+        "process_rss_mb": 4811.75,
+        "system_used_mb": 15524.72,
+        "system_available_mb": 499.79,
+        "gpu_allocated_mb": 56.42,
+        "gpu_reserved_mb": 9664.0,
+        "gpu_peak_mb": 8635.53
+      },
+      "spill_reason": "peak reserved 9664 MB exceeds 95% of device VRAM (6144 MB) -- host-RAM fallback, not a true fit",
+      "status": "SPILL",
+      "forward": {
+        "n": 1,
+        "mean_ms": 49954.93,
+        "median_ms": 49954.93,
+        "min_ms": 49954.93,
+        "max_ms": 49954.93
+      },
+      "backward": {
+        "n": 1,
+        "mean_ms": 168448.7,
+        "median_ms": 168448.7,
+        "min_ms": 168448.7,
+        "max_ms": 168448.7
+      },
+      "release": {
+        "before": {
+          "process_rss_mb": 4812.0,
+          "system_used_mb": 15524.55,
+          "system_available_mb": 499.96,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 9664.0,
+          "gpu_peak_mb": 8635.53
+        },
+        "after": {
+          "process_rss_mb": 1198.37,
+          "system_used_mb": 11821.7,
+          "system_available_mb": 4202.82,
+          "gpu_allocated_mb": 16.42,
+          "gpu_reserved_mb": 50.0,
+          "gpu_peak_mb": 8635.53
+        },
+        "device_total_mb": 6143.5
+      },
+      "child_wall_s": 241.4
+    }
+  ]
+}

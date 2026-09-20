@@ -1,0 +1,269 @@
+{
+  "b_roi1": {
+    "tag": "BASELINE 64/96 roi1.0",
+    "config": "glo_nca_fast_candidate.yaml",
+    "roi_fraction": 1.0,
+    "batch": 1,
+    "workers": 0,
+    "accum": 1,
+    "precision": "bf16",
+    "tf32": false,
+    "cudnn_benchmark": false,
+    "compile": false,
+    "cache": false,
+    "status": "OOM",
+    "rss_before_mb": 642.4,
+    "levels": [
+      [
+        64,
+        24,
+        20
+      ],
+      [
+        96,
+        24,
+        20
+      ]
+    ],
+    "params": 33089,
+    "total_steps": 40,
+    "error": "CUDA out of memory. Tried to allocate 216.00 MiB. GPU 0 has a total capacity of 6.00 GiB of which 0 bytes is free. 5.40 GiB allowe"
+  },
+  "b_roi23": {
+    "tag": "BASELINE 64/96 roi2/3",
+    "config": "glo_nca_fast_candidate.yaml",
+    "roi_fraction": 0.6666666666666666,
+    "batch": 1,
+    "workers": 0,
+    "accum": 1,
+    "precision": "bf16",
+    "tf32": false,
+    "cudnn_benchmark": false,
+    "compile": false,
+    "cache": false,
+    "status": "OK",
+    "rss_before_mb": 1565.0,
+    "levels": [
+      [
+        64,
+        24,
+        20
+      ],
+      [
+        96,
+        24,
+        20
+      ]
+    ],
+    "params": 33089,
+    "total_steps": 40,
+    "iter_ms": 12874.2,
+    "samples_per_sec": 0.0777,
+    "first_iter_ms": 12970.8,
+    "compile_s": null,
+    "median_data_wait_ms": 3301.0,
+    "peak_alloc_mb": 2572.4,
+    "peak_reserved_mb": 3242.0,
+    "vram_pct": 52.8,
+    "losses": [
+      1.270316,
+      3.671601,
+      3.653591,
+      2.76377
+    ],
+    "loss_finite": true,
+    "grads_finite": true,
+    "no_grad_params": 0,
+    "params_fp32": true,
+    "shapes": {
+      "input": [
+        1,
+        96,
+        96,
+        96,
+        4
+      ],
+      "prediction": [
+        1,
+        64,
+        64,
+        64,
+        3
+      ],
+      "aligned_target": [
+        1,
+        64,
+        64,
+        64,
+        3
+      ],
+      "roi_boxes": 1
+    },
+    "level_voxels": {
+      "0": 262144,
+      "1": 262144
+    },
+    "rss_after_mb": 1914.3,
+    "iters_measured": 4,
+    "warmup": 2,
+    "epoch_min_898": 192.7
+  },
+  "c_roi1": {
+    "tag": "CANDIDATE 48/64 roi1.0",
+    "config": "glo_nca_fast_48_64.yaml",
+    "roi_fraction": 1.0,
+    "batch": 1,
+    "workers": 0,
+    "accum": 1,
+    "precision": "bf16",
+    "tf32": false,
+    "cudnn_benchmark": false,
+    "compile": false,
+    "cache": false,
+    "status": "OK",
+    "rss_before_mb": 1578.1,
+    "levels": [
+      [
+        48,
+        24,
+        20
+      ],
+      [
+        64,
+        24,
+        20
+      ]
+    ],
+    "params": 33089,
+    "total_steps": 40,
+    "iter_ms": 8468.8,
+    "samples_per_sec": 0.1181,
+    "first_iter_ms": 8529.5,
+    "compile_s": null,
+    "median_data_wait_ms": 2884.3,
+    "peak_alloc_mb": 1972.1,
+    "peak_reserved_mb": 2290.0,
+    "vram_pct": 37.3,
+    "losses": [
+      3.420958,
+      3.519176,
+      3.283036,
+      2.955712
+    ],
+    "loss_finite": true,
+    "grads_finite": true,
+    "no_grad_params": 0,
+    "params_fp32": true,
+    "shapes": {
+      "input": [
+        1,
+        64,
+        64,
+        64,
+        4
+      ],
+      "prediction": [
+        1,
+        64,
+        64,
+        64,
+        3
+      ],
+      "aligned_target": [
+        1,
+        64,
+        64,
+        64,
+        3
+      ],
+      "roi_boxes": 0
+    },
+    "level_voxels": {
+      "0": 110592,
+      "1": 262144
+    },
+    "rss_after_mb": 1732.7,
+    "iters_measured": 4,
+    "warmup": 2,
+    "epoch_min_898": 126.8
+  },
+  "c_roi23": {
+    "tag": "CANDIDATE 48/64 roi2/3",
+    "config": "glo_nca_fast_48_64.yaml",
+    "roi_fraction": 0.6666666666666666,
+    "batch": 1,
+    "workers": 0,
+    "accum": 1,
+    "precision": "bf16",
+    "tf32": false,
+    "cudnn_benchmark": false,
+    "compile": false,
+    "cache": false,
+    "status": "OK",
+    "rss_before_mb": 1590.8,
+    "levels": [
+      [
+        48,
+        24,
+        20
+      ],
+      [
+        64,
+        24,
+        20
+      ]
+    ],
+    "params": 33089,
+    "total_steps": 40,
+    "iter_ms": 4918.8,
+    "samples_per_sec": 0.2033,
+    "first_iter_ms": 5045.0,
+    "compile_s": null,
+    "median_data_wait_ms": 2683.1,
+    "peak_alloc_mb": 952.1,
+    "peak_reserved_mb": 1034.0,
+    "vram_pct": 16.8,
+    "losses": [
+      1.117636,
+      3.37895,
+      3.376421,
+      3.217133
+    ],
+    "loss_finite": true,
+    "grads_finite": true,
+    "no_grad_params": 0,
+    "params_fp32": true,
+    "shapes": {
+      "input": [
+        1,
+        64,
+        64,
+        64,
+        4
+      ],
+      "prediction": [
+        1,
+        43,
+        43,
+        43,
+        3
+      ],
+      "aligned_target": [
+        1,
+        43,
+        43,
+        43,
+        3
+      ],
+      "roi_boxes": 1
+    },
+    "level_voxels": {
+      "0": 110592,
+      "1": 79507
+    },
+    "rss_after_mb": 1738.3,
+    "iters_measured": 4,
+    "warmup": 2,
+    "epoch_min_898": 73.6
+  }
+}

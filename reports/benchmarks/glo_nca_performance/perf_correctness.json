@@ -1,0 +1,94 @@
+{
+  "checks": {
+    "1. AMP path runs through the real training step": {
+      "pass": true,
+      "detail": ""
+    },
+    "2. fp32 loss finite": {
+      "pass": true,
+      "detail": "2.274232"
+    },
+    "3. bf16 loss finite": {
+      "pass": true,
+      "detail": "2.274199"
+    },
+    "4. bf16 loss agrees with fp32 within reduced-precision tolerance": {
+      "pass": true,
+      "detail": "rel diff 0.00001 (fp32 2.274232 vs bf16 2.274199)"
+    },
+    "5. gradients finite in both modes": {
+      "pass": true,
+      "detail": ""
+    },
+    "6. no parameter missing a gradient in either mode": {
+      "pass": true,
+      "detail": ""
+    },
+    "7. optimizer updates parameters in both modes": {
+      "pass": true,
+      "detail": "fp32 34/36, bf16 34/36"
+    },
+    "8. default precision is fp32 (AMP OFF unless requested)": {
+      "pass": true,
+      "detail": "precision=fp32"
+    },
+    "9. default hd95_every_epochs is 1 (previous behaviour)": {
+      "pass": true,
+      "detail": ""
+    },
+    "10. fp16 is refused rather than silently unscaled": {
+      "pass": true,
+      "detail": ""
+    },
+    "11. EMA finite and outside autograd under AMP": {
+      "pass": true,
+      "detail": ""
+    },
+    "12. model params stay FP32 under AMP (no unsafe dtype conversion)": {
+      "pass": true,
+      "detail": "{'torch.float32'}"
+    },
+    "13. checkpoint save/load exact under AMP": {
+      "pass": true,
+      "detail": ""
+    },
+    "14. resume restores optimizer + scheduler + epoch": {
+      "pass": true,
+      "detail": ""
+    },
+    "15. skipped-HD95 path reproduces Dice EXACTLY": {
+      "pass": true,
+      "detail": ""
+    },
+    "16. skipped-HD95 path reproduces mIoU EXACTLY": {
+      "pass": true,
+      "detail": ""
+    },
+    "17. model selection uses Dice only (unaffected by HD95 schedule)": {
+      "pass": true,
+      "detail": ""
+    },
+    "18. canonical split 898/200/198 + SHA unchanged": {
+      "pass": true,
+      "detail": ""
+    }
+  },
+  "pass": 18,
+  "fail": 0,
+  "amp": {
+    "fp32": {
+      "loss": 2.2742321491241455,
+      "changed": 34.0,
+      "n_state": 36.0,
+      "grads_finite": 1.0,
+      "no_grad": 0.0
+    },
+    "bf16": {
+      "loss": 2.2741990089416504,
+      "changed": 34.0,
+      "n_state": 36.0,
+      "grads_finite": 1.0,
+      "no_grad": 0.0
+    }
+  }
+}

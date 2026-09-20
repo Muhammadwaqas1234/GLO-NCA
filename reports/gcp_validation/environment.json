@@ -1,0 +1,19 @@
+{
+  "phase": "GCP target-hardware validation",
+  "local_env": {"python": "3.12.9", "pytorch": "2.5.1+cu121", "cuda": "12.1"},
+  "git": {"branch": "v3-multilevel", "commit": "7476e18"},
+  "gcp": {
+    "project": "even-continuity-501915-f9",
+    "account": "mo.waqas@techclomate.com",
+    "bucket": "gs://glo-nca-v3-even-continuity-501915",
+    "dataset_object": "datasets/brats-met-2025/MICCAI-LH-BraTS2025-MET-Challenge-TrainingData_batch1.zip",
+    "dataset_bytes": 33467863309,
+    "dataset_gib": 31.17,
+    "code_object": "code/glo_nca_v3_code.tar.gz",
+    "l4_quota": {"NVIDIA_L4_GPUS": 1, "PREEMPTIBLE_NVIDIA_L4_GPUS": 1, "usage": 0,
+                 "regions_checked": ["us-central1","us-east1","us-west1","us-east4"]},
+    "gpus_all_regions_usage_before": 0
+  },
+  "plan": {"scope": "subset ~50 cases", "vm": "g2-standard-8 SPOT", "gpu": "1x NVIDIA L4 24GB",
+           "production_training": "LOCKED - not run in this task"}
+}

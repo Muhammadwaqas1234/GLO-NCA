@@ -1,0 +1,141 @@
+{
+  "gpu": "NVIDIA L4",
+  "total_vram_mb": 22563.1,
+  "torch": "2.5.1+cu121",
+  "cuda": "12.1",
+  "warmup": 2,
+  "iters": 5,
+  "runs": [
+    {
+      "batch": 1,
+      "params": 40656,
+      "levels": [
+        [
+          32,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ],
+        [
+          128,
+          16,
+          10
+        ]
+      ],
+      "grad_ckpt": true,
+      "resolution": 128,
+      "status": "OK",
+      "median_ms": {
+        "h2d": 2.77,
+        "fwd": 5866.34,
+        "loss": 3.26,
+        "bwd": 14065.47,
+        "clip": 1.54,
+        "opt": 1.48,
+        "ema": 1.5,
+        "iter": 19942.48
+      },
+      "iter_per_sec": 0.0501,
+      "samples_per_sec": 0.0501,
+      "peak_allocated_mb": 8653.6,
+      "peak_reserved_mb": 9640.0,
+      "total_vram_mb": 22563.1,
+      "headroom_mb": 12923.1,
+      "headroom_pct": 57.3,
+      "vram_used_pct": 42.7,
+      "classification": "SAFE",
+      "loss_finite": true,
+      "loss_values": [
+        2.013955,
+        1.987933,
+        1.973799,
+        1.969278,
+        1.973757
+      ],
+      "grads_finite": true,
+      "params_without_grad": 0
+    },
+    {
+      "batch": 2,
+      "params": 40656,
+      "levels": [
+        [
+          32,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ],
+        [
+          128,
+          16,
+          10
+        ]
+      ],
+      "grad_ckpt": true,
+      "resolution": 128,
+      "status": "OK",
+      "median_ms": {
+        "h2d": 5.49,
+        "fwd": 11877.25,
+        "loss": 5.55,
+        "bwd": 28441.4,
+        "clip": 1.61,
+        "opt": 1.54,
+        "ema": 1.52,
+        "iter": 40336.19
+      },
+      "iter_per_sec": 0.0248,
+      "samples_per_sec": 0.0496,
+      "peak_allocated_mb": 17278.0,
+      "peak_reserved_mb": 19294.0,
+      "total_vram_mb": 22563.1,
+      "headroom_mb": 3269.1,
+      "headroom_pct": 14.5,
+      "vram_used_pct": 85.5,
+      "classification": "TIGHT",
+      "loss_finite": true,
+      "loss_values": [
+        2.014477,
+        1.987791,
+        1.973667,
+        1.969743,
+        1.974884
+      ],
+      "grads_finite": true,
+      "params_without_grad": 0
+    },
+    {
+      "batch": 3,
+      "params": 40656,
+      "levels": [
+        [
+          32,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ],
+        [
+          128,
+          16,
+          10
+        ]
+      ],
+      "grad_ckpt": true,
+      "resolution": 128,
+      "status": "OOM",
+      "error": "CUDA out of memory. Tried to allocate 3.00 GiB. GPU 0 has a total capacity of 22.03 GiB of which 2.89 GiB is free. Including non-PyTorch memory, this process has 19.14 GiB memory in use. Of the alloca"
+    }
+  ]
+}

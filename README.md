@@ -142,17 +142,31 @@ archive/                                    ← historical experiment scripts (n
 ```
 
 ## Reproducibility (quick start)
+
+**Verified environment: Python 3.12.9 · PyTorch 2.5.1+cu121 · CUDA 12.1.**
+Local development GPU: RTX 3050 6GB (profiling/correctness only — production
+training is **not** local).
+
+> **Invoke the interpreter explicitly.** A bare `python` picks whichever
+> interpreter is first on `PATH`, which on a machine with several installs may
+> not be 3.12. Because `train.py` imports torch before it can report anything,
+> the wrong interpreter fails at `import torch` (exit 1) instead of giving a
+> clear message. Use `py -3.12`, an activated 3.12.9 venv, or the full path.
+
 ```bash
-# Python 3.12
-python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+# 0. confirm the interpreter, GPU stack and production invariants FIRST
+py -3.12 scripts/check_environment.py
+
+# 1. (optional) project-local environment, created with 3.12 explicitly
+py -3.12 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements-docker.txt
 
 # software validation (synthetic; no dataset needed)
-python scripts/validate_v3_local.py --device cpu
+py -3.12 scripts/validate_v3_local.py --device cpu
 
 # with the real dataset available, verify the frozen split:
-python scripts/check_split.py --split split/master_split.json --data-root /path/to/BraTS-MET
+py -3.12 scripts/check_split.py --split split/master_split.json --data-root /path/to/BraTS-MET
 ```
 Full protocol and GCP workflow: `docs/thesis/FINAL_TRAINING_PROTOCOL.md` and
 `cloud/README.md`.

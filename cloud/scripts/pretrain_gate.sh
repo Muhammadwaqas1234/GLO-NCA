@@ -40,9 +40,18 @@ check() {
 
 cd "${REPO_DIR}"
 
-# Config under test (default: V3 production). Detect V3 so the gate adds the
-# V3-specific model/param/memory checks without changing the V2 flow.
-GATE_CFG="${1:-configs/v3_multilevel_ckpt.yaml}"
+# Config under test. Phase 4: there is deliberately NO DEFAULT. The previous
+# default (configs/v3_multilevel_ckpt.yaml) is the FROZEN 32/96/128 thesis
+# reference, so a bare `pretrain_gate.sh` silently validated the WRONG
+# architecture and reported PASS for a config nobody intended to train.
+# Fail closed instead: the caller must name the configuration explicitly.
+GATE_CFG="${1:-}"
+if [[ -z "${GATE_CFG}" ]]; then
+  die "usage: pretrain_gate.sh <config>
+       production : ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
+       reference  : ./cloud/scripts/pretrain_gate.sh configs/v3_multilevel_ckpt.yaml   (FROZEN 32/96/128)
+       No default is applied: gating the wrong architecture wastes days of GPU time."
+fi
 IS_V3=$("${PYBIN}" - "${GATE_CFG}" <<'PY'
 import sys, yaml
 try:
@@ -52,7 +61,20 @@ except Exception:
     print("0")
 PY
 )
-log "pre-training gate for config: ${GATE_CFG} (v3=${IS_V3})"
+# Phase 4: distinguish the GLOBAL-CONTEXT production candidate (level3 absent,
+# 48/64) from the frozen 32/96/128 reference. `model.global_context` is exactly
+# the key the runner uses to pick build_glo_nca_global_context, so the gate
+# follows the same signal rather than guessing from the filename.
+HAS_GLOBAL_CTX=$("${PYBIN}" - "${GATE_CFG}" <<'PY'
+import sys, yaml
+try:
+    raw = yaml.safe_load(open(sys.argv[1]))
+    print("1" if (raw.get("model", {}) or {}).get("global_context") is not None else "0")
+except Exception:
+    print("0")
+PY
+)
+log "pre-training gate for config: ${GATE_CFG} (v3=${IS_V3}, global_context=${HAS_GLOBAL_CTX})"
 
 # --- Part 1-3: preflight (GPU/CUDA/PyTorch/dataset/master-split/config/disk) --
 step "Part 1-3  GPU + CUDA + dataset preflight"
@@ -89,17 +111,40 @@ import sys, torch
 from src.experiment.config import load_config
 from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 cfg = load_config(sys.argv[1])
-m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
-pr = m.parameter_report()
-print(f"V3 parameters: {pr['total_parameters']} (by component: {pr['by_level']})")
+# Phase 4: build the model the RUNNER would actually build. When
+# `model.global_context` is present the runner uses the global-context model;
+# calling build_v3_from_config unconditionally reported the parameter count of
+# an architecture that production never instantiates.
+if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
+    from src.models.Model_GLO_NCA_GlobalContext import build_glo_nca_global_context
+    m = build_glo_nca_global_context(cfg, 4, 3, torch.device("cpu"))
+    n = sum(p.numel() for p in m.parameters())
+    geo = [(l.resolution, l.channels, l.nca_steps) for l in m.levels]
+    print(f"GLO-NCA (global context) parameters: {n} | levels (res,ch,steps): {geo}")
+else:
+    m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
+    pr = m.parameter_report()
+    print(f"V3 parameters: {pr['total_parameters']} (by component: {pr['by_level']})")
 PY
   V3_BUILD_RC=$?
   set -e
   mark "${V3_BUILD_RC}" "V3 builds + reports parameter count"
 
-  step "Part 4c  V3 production GPU memory gate (96^3 + 128^3)"
-  check "V3 96^3 + 128^3 GPU memory fit" \
-    "${PYBIN}" scripts/gpu_memory_gate_v3.py --config "${GATE_CFG}" --resolutions 96,128
+  # Phase 4: gpu_memory_gate_v3.py sweeps the LEVEL3 resolution and DERIVES
+  # level1/level2 from it (res//4, res*3//4), so it always builds a THREE-level
+  # model. The production candidate has level3 disabled (L1 48^3, L2 64^3), and
+  # no --resolutions value reproduces that geometry. Running it against the
+  # production config would have measured an architecture production never
+  # builds. Route by config instead of assuming the frozen reference.
+  if [ "${HAS_GLOBAL_CTX}" = "1" ]; then
+    step "Part 4c  GLO-NCA production config identity + memory (actual geometry)"
+    check "production configuration identity (fail-closed)" \
+      "${PYBIN}" scripts/verify_glo_nca_production_config.py "${GATE_CFG}"
+  else
+    step "Part 4c  V3 frozen-reference GPU memory gate (96^3 + 128^3)"
+    check "V3 96^3 + 128^3 GPU memory fit" \
+      "${PYBIN}" scripts/gpu_memory_gate_v3.py --config "${GATE_CFG}" --resolutions 96,128
+  fi
 fi
 
 # --- Part 5-6-13: real-data short training smoke (gate config, tiny) ----------

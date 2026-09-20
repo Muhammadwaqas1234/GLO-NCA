@@ -1,0 +1,256 @@
+{
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "vram_mb": 6143.5,
+    "torch": "2.5.1+cu121",
+    "cuda": "12.1",
+    "python": "3.12.9",
+    "bf16": true,
+    "timestamp": "2026-09-18T16:35:15.648514Z"
+  },
+  "stage": "cache",
+  "cache_disk": {
+    "mb_for_cases": 96.2,
+    "projected_gb_1296": 20.3
+  },
+  "runs": [
+    {
+      "tag": "cache OFF",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OK",
+      "rss_before_mb": 642.5,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 8285.1,
+      "samples_per_sec": 0.1207,
+      "first_iter_ms": 10507.6,
+      "compile_s": null,
+      "median_data_wait_ms": 0.9,
+      "peak_alloc_mb": 1973.1,
+      "peak_reserved_mb": 2382.0,
+      "vram_pct": 38.8,
+      "losses": [
+        3.356215,
+        3.410865,
+        3.20359,
+        2.989979
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1536.5,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 124.0
+    },
+    {
+      "tag": "cache ON cold",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": true,
+      "status": "OK",
+      "rss_before_mb": 1536.4,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 8268.4,
+      "samples_per_sec": 0.1209,
+      "first_iter_ms": 8612.9,
+      "compile_s": null,
+      "median_data_wait_ms": 0.5,
+      "peak_alloc_mb": 1972.6,
+      "peak_reserved_mb": 2282.0,
+      "vram_pct": 37.1,
+      "losses": [
+        3.333701,
+        3.524049,
+        3.29408,
+        2.970953
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1538.2,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 123.7
+    },
+    {
+      "tag": "cache ON warm",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": true,
+      "status": "OK",
+      "rss_before_mb": 1538.0,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 8277.7,
+      "samples_per_sec": 0.1208,
+      "first_iter_ms": 8559.4,
+      "compile_s": null,
+      "median_data_wait_ms": 0.6,
+      "peak_alloc_mb": 1972.7,
+      "peak_reserved_mb": 2282.0,
+      "vram_pct": 37.1,
+      "losses": [
+        3.319467,
+        3.429738,
+        3.230964,
+        2.972385
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1547.1,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 123.9
+    }
+  ],
+  "checks": {}
+}

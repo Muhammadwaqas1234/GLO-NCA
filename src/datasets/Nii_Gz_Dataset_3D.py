@@ -154,6 +154,48 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
     # Base seed for per-(epoch, case) augmentation reseeding; set by the runner.
     _aug_base_seed = None
 
+    # OPTIONAL genuine training-patch size, e.g. (96, 96, 96).
+    #
+    # WHY THIS EXISTS. `self.size` historically served TWO roles at once: the
+    # `rescale3d` resample target AND the `patchify_multimodal` patch size.
+    # Because the volume is resampled to exactly `self.size` BEFORE patching,
+    # `randint(0, shape - size)` degenerates to `randint(0, 0) == 0` on every
+    # axis, so the "patch" is the whole volume and patchify is a no-op (see the
+    # note in `patchify_multimodal`).
+    #
+    # Setting this to a size STRICTLY SMALLER than `self.size` on at least one
+    # axis separates the two roles:
+    #     self.size            -> WORKING VOLUME (resample target)
+    #     _train_patch_size    -> TRAINING PATCH (real spatial crop)
+    # None keeps the previous behaviour EXACTLY (patch size == self.size), so
+    # every existing config, including the frozen thesis reference, is
+    # unaffected. TRAIN-ONLY: `patchify_multimodal` is already gated on
+    # `self.state == "train"`, so validation/test inference geometry cannot be
+    # changed by this field.
+    _train_patch_size = None
+
+    def set_train_patch_size(self, size):
+        """Enable a genuine training patch smaller than the working volume.
+
+        ``size`` may be an int (cube) or a 3-sequence. ``None`` disables it and
+        restores the original whole-volume behaviour.
+        """
+        if size is None:
+            self._train_patch_size = None
+            return
+        if isinstance(size, int):
+            size = (size, size, size)
+        self._train_patch_size = tuple(int(v) for v in size)
+
+    # Optional on-disk deterministic preprocessing cache (see
+    # src/datasets/preprocess_cache.py). None => disabled, behaviour unchanged.
+    _precache = None
+
+    def set_preprocess_cache(self, cache):
+        """Attach a PreprocessCache. Caches ONLY the deterministic head of
+        __getitem__; all stochastic work still runs every epoch."""
+        self._precache = cache
+
     def set_augmentation_seed(self, seed):
         r"""Set the base seed used to derive the per-(epoch, case) augmentation
         RNG. Called once by the runner; see ``__getitem__``."""
@@ -196,6 +238,18 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
         key = self.images_list[idx]
         cached = self.data.get_data(key=key)
+        # --- on-disk deterministic cache lookup (RNG-neutral) --------------
+        # Consumes no random numbers, so a hit and a miss leave the RNG stream
+        # identical -- the stochastic path below is unaffected either way.
+        if not cached and self._precache is not None:
+            folder_name, p_id, _ = key
+            _hit = self._precache.get(str(p_id))
+            if _hit is not None:
+                with _prof.section("data/cache_hit"):
+                    _img, _label = _hit
+                cached = ("_" + str(p_id) + "_0", _img, _label)
+                self.data.set_data(key=key, data=cached)
+
         if not cached:
             folder_name, p_id, _ = key
             folder = os.path.join(self.images_path, folder_name)
@@ -226,6 +280,10 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
 
             img_id = "_" + str(p_id) + "_0"
+            # Persist the DETERMINISTIC result only (never patches/augmentation).
+            if self._precache is not None:
+                with _prof.section("data/cache_write"):
+                    self._precache.put(str(p_id), img, label)
             self.data.set_data(key=key, data=(img_id, img, label))
             cached = self.data.get_data(key=key)
 
@@ -400,7 +458,12 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 img (numpy): (X, Y, Z, 4)
                 label (numpy): (X, Y, Z, 3)
         """
-        size = self.size
+        # `self.size` is the WORKING VOLUME (the rescale3d target). When a
+        # genuine training patch is configured it is STRICTLY SMALLER on at
+        # least one axis, so the `randint` bounds below are non-degenerate and a
+        # REAL spatial crop happens. Falling back to `self.size` reproduces the
+        # historical no-op behaviour bit-for-bit.
+        size = self._train_patch_size or self.size
         prioritize = self.exp.get_from_config('priotize_masks')
         contains_mask = prioritize is not None and (random.uniform(0, 1) < prioritize)
         # Which region to bias the patch toward: 0=WT (default), 1=TC, 2=ET.

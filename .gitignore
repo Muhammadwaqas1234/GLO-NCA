@@ -27,6 +27,8 @@ Tutorial/Data/
 experiments/
 # Phase 2 profiling artifacts (traces can be large; never commit them)
 experiments/phase2_profiling/
+# Deterministic preprocessing cache (regenerable; ~38 MB/case at 128^3)
+.cache/
 **/profiler/*.pt.trace.json
 runs/
 compare_runs/
@@ -67,3 +69,5 @@ gcp-key*.json
 # purpose so the exact thesis split is archived in git.
 # -----------------------------------------------------------------------------
 !split/master_split.json
+.trash_md_review/
+.trash_cleanup/

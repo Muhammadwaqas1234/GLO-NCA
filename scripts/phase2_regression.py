@@ -100,8 +100,9 @@ def t_v3_forward_backward():
     from src.models.Model_GLO_NCA_V3 import build_v3_from_config
     from src.losses.LossFunctions import FocalTverskyCELoss
     # smoke_test_v3.yaml is the genuinely SMALL config (16/24/32, 4+4+3 steps).
-    # v3_smoke_1epoch.yaml keeps the full production resolutions (32/96/128) and
-    # only shortens the epoch count, so it would run the full 128^3 workload here.
+    # The former v3_smoke_1epoch.yaml only shortened the epoch count while keeping
+    # full resolutions (32/96/128), so it would have run the whole 128^3 workload
+    # here; it was removed in the final cleanup.
     cfg = load_config(os.path.join(_ROOT, "configs/smoke_test_v3.yaml"))
     m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
     x = torch.randn(1, 16, 16, 16, 4)

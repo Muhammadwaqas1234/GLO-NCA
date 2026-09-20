@@ -1,0 +1,164 @@
+{
+  "benchmark": {
+    "baseline_roi1_b1": {
+      "roi_fraction": 1.0,
+      "batch": 1,
+      "status": "OK",
+      "iter_ms": 24451.3,
+      "samples_per_sec": 0.0409,
+      "peak_alloc_mb": 3647.3,
+      "peak_reserved_mb": 4652.0,
+      "loss_finite": true,
+      "no_grad_params": 0,
+      "L1_voxels": 262144,
+      "L2_voxels": 884736,
+      "epoch_min_898": 366.0,
+      "h_300ep": 1829.8
+    },
+    "candidate_roi0667_b1": {
+      "roi_fraction": 0.6666666666666666,
+      "batch": 1,
+      "status": "OK",
+      "iter_ms": 12657.5,
+      "samples_per_sec": 0.079,
+      "peak_alloc_mb": 1469.4,
+      "peak_reserved_mb": 1882.0,
+      "loss_finite": true,
+      "no_grad_params": 0,
+      "L1_voxels": 262144,
+      "L2_voxels": 262144,
+      "epoch_min_898": 189.4,
+      "h_300ep": 947.2
+    },
+    "candidate_roi0667_b2": {
+      "roi_fraction": 0.6666666666666666,
+      "batch": 2,
+      "status": "OK",
+      "iter_ms": 25432.0,
+      "samples_per_sec": 0.0786,
+      "peak_alloc_mb": 2917.9,
+      "peak_reserved_mb": 3730.0,
+      "loss_finite": true,
+      "no_grad_params": 0,
+      "L1_voxels": 262144,
+      "L2_voxels": 262144,
+      "epoch_min_898": 190.3,
+      "h_300ep": 951.6
+    },
+    "candidate_roi0667_b4": {
+      "roi_fraction": 0.6666666666666666,
+      "batch": 4,
+      "status": "OOM",
+      "error": "CUDA out of memory. Tried to allocate 256.00 MiB. GPU 0 has a total capacity of 6.00 GiB of which 0 "
+    }
+  },
+  "measured": {
+    "speedup_pct": 48.2,
+    "vram_reduction_pct": 59.5,
+    "l2_voxel_reduction_pct": 70.4
+  },
+  "checks": {
+    "1. roi=1.0 reproduces reference forward EXACTLY": {
+      "pass": true,
+      "detail": "max|diff|=0.000e+00"
+    },
+    "2. parameter count identical": {
+      "pass": true,
+      "detail": "33,089"
+    },
+    "3. state_dict keys identical": {
+      "pass": true,
+      "detail": ""
+    },
+    "4. SE + spatial global context ON at every level": {
+      "pass": true,
+      "detail": "2 levels, SE+GC each"
+    },
+    "5. learnable projections + learnable fusion preserved": {
+      "pass": true,
+      "detail": "projections=1 fuse=Conv3d(48->24)"
+    },
+    "6. GLOBAL level processes the WHOLE volume (16^3)": {
+      "pass": true,
+      "detail": "(2, 16, 16, 16, 24)"
+    },
+    "7. high-resolution level computes on the ROI (16^3 = 2/3 x 24)": {
+      "pass": true,
+      "detail": "(2, 16, 16, 16, 24)"
+    },
+    "8. high-res voxels strictly reduced vs reference 24^3": {
+      "pass": true,
+      "detail": "4,096 < 13,824"
+    },
+    "9. output is 3-channel WT/TC/ET": {
+      "pass": true,
+      "detail": "(2, 3, 16, 16, 16)"
+    },
+    "10. model exposes one ROI box per sample": {
+      "pass": true,
+      "detail": "2 boxes"
+    },
+    "11. per-sample ROI boxes differ (independent sampling)": {
+      "pass": true,
+      "detail": "s0=(0.103, 0.77) s1=(0.077, 0.744)"
+    },
+    "12. cropped target matches prediction spatial dims": {
+      "pass": true,
+      "detail": "target(16, 16, 16) == pred(16, 16, 16)"
+    },
+    "13. WT/TC/ET binary after ROI crop": {
+      "pass": true,
+      "detail": "[0.0, 1.0]"
+    },
+    "14. ET subset TC subset WT preserved after crop": {
+      "pass": true,
+      "detail": ""
+    },
+    "15. image and label cropped with IDENTICAL coordinates": {
+      "pass": true,
+      "detail": "(16, 16, 16)"
+    },
+    "16. force_full_volume pins roi_fraction=1.0": {
+      "pass": true,
+      "detail": "1.0"
+    },
+    "17. evaluation high-res level sees FULL volume (24^3, not ROI)": {
+      "pass": true,
+      "detail": "(1, 24, 24, 24, 24)"
+    },
+    "18. evaluation output is full volume": {
+      "pass": true,
+      "detail": "(1, 3, 24, 24, 24)"
+    },
+    "19. evaluation produced NO ROI boxes (no crop)": {
+      "pass": true,
+      "detail": "[]"
+    },
+    "20. canonical split 898/200/198 + SHA unchanged": {
+      "pass": true,
+      "detail": "898/200/198"
+    },
+    "21. high-resolution voxel workload genuinely reduced (forward hooks)": {
+      "pass": true,
+      "detail": "+70.4%"
+    },
+    "22. measured speedup": {
+      "pass": true,
+      "detail": "+48.2%"
+    },
+    "23. loss finite + all params get gradients (batch 1)": {
+      "pass": true,
+      "detail": ""
+    },
+    "24. batch 2 runs": {
+      "pass": true,
+      "detail": "OK 25432.0ms"
+    },
+    "24. batch 4 status recorded": {
+      "pass": true,
+      "detail": "OOM"
+    }
+  },
+  "pass": 25,
+  "fail": 0
+}

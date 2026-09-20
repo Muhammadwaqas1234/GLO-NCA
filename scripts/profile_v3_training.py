@@ -58,6 +58,11 @@ def main() -> int:
     dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     cfg = load_config(args.config)
     ckpt_on = _bool(args.checkpointing)
+    # Only override level3 when the caller asked for a resolution different from
+    # the config's own, so the default path is byte-for-byte the previous one.
+    _cfg_l3 = int(((cfg.raw.get("model", {}) or {}).get("level3", {}) or {})
+                  .get("resolution", 128))
+    R_OVERRIDE = int(args.resolution) if int(args.resolution) != _cfg_l3 else None
 
     print("-" * 66)
     print("GLO-NCA V3 PERFORMANCE PROFILE")
@@ -90,6 +95,18 @@ def main() -> int:
     # ---- build model (respect checkpointing flag override) --------------------
     # Force the requested checkpointing regardless of the config's memory flag.
     cfg.raw.setdefault("memory", {})["gradient_checkpointing"] = ckpt_on
+    # Phase 6 fix: --resolution is documented as "finest-level (L3) resolution",
+    # but it previously only sized the synthetic INPUT and the target. The model
+    # was still built from the config's level3 (128), and since V3 resamples its
+    # input to each level's own resolution, the output stayed 128^3 while the
+    # target was R^3 -- so every R != 128 died with a size mismatch before any
+    # timing was produced. That made the whole sweep unusable at exactly the
+    # safe resolutions Phase 3 says we must use locally (128^3 fwd+bwd SPILLS on
+    # this 6 GB GPU). Apply the override to the model too, so the flag means what
+    # it says. Level 1/2 and the step counts are NOT touched; the default
+    # (--resolution 128) reproduces the previous production geometry exactly.
+    if R_OVERRIDE is not None:
+        cfg.raw.setdefault("model", {}).setdefault("level3", {})["resolution"] = R_OVERRIDE
     model = build_v3_from_config(cfg, input_channels=4, output_channels=3, device=dev)
     model.train()
     pr = model.parameter_report()
@@ -212,11 +229,20 @@ def main() -> int:
     print("-" * 66)
     print("CALL COUNTS (timed phase; must be consistent, no duplicate passes):")
     exp_forward = args.cases * args.repeats * len(model.levels)
-    exp_update = exp_forward * 0  # computed below from level steps
     steps_sum = sum(lv.nca_steps for lv in model.levels)
-    exp_update = args.cases * args.repeats * steps_sum
+    # Phase 6 fix: with gradient checkpointing ON, torch.utils.checkpoint invokes
+    # `update` TWICE per step -- once in forward, once recomputed during backward.
+    # That is the whole point of checkpointing (trade compute for activation
+    # memory), not a duplicate pass. The old line always printed the ckpt-OFF
+    # expectation, so a correct ckpt-ON run looked like a 2x duplication bug.
+    # Expect the multiplier explicitly instead.
+    _mult = 2 if ckpt_on else 1
+    exp_update = args.cases * args.repeats * steps_sum * _mult
+    _why = ("x2 for checkpoint recompute in backward" if ckpt_on
+            else "no checkpointing, single pass")
     print(f"  NCA.forward calls: {counts['forward']}  (expected {exp_forward} = cases*repeats*levels)")
-    print(f"  NCA.update calls : {counts['update']}  (expected {exp_update} = cases*repeats*sum(steps)={steps_sum})")
+    print(f"  NCA.update calls : {counts['update']}  (expected {exp_update} = "
+          f"cases*repeats*sum(steps)={steps_sum} x{_mult}: {_why})")
     print(f"  levels/steps     : {[(lv.resolution, lv.nca_steps) for lv in model.levels]}")
     if dev.type == "cuda":
         print("-" * 66)

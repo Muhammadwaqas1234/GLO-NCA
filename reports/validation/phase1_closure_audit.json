@@ -9,7 +9,7 @@
     "section": "STEP 4  GLO-NCA naming",
     "name": "GLO-NCA naming used across active files",
     "status": "PASS",
-    "detail": "52 active files carry GLO-NCA naming"
+    "detail": "54 active files carry GLO-NCA naming"
   },
   {
     "section": "STEP 4  GLO-NCA naming",
@@ -212,8 +212,8 @@
   {
     "section": "STEP 14/15  container, cloud scripts, security",
     "name": "production docker image built",
-    "status": "PASS",
-    "detail": "image present (16750a3fa7ce)"
+    "status": "SKIP",
+    "detail": "docker daemon not reachable"
   },
   {
     "section": "STEP 15  dead files / references / report integrity",

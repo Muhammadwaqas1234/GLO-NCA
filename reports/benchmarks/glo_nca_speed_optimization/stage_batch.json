@@ -1,0 +1,203 @@
+{
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "vram_mb": 6143.5,
+    "torch": "2.5.1+cu121",
+    "cuda": "12.1",
+    "python": "3.12.9",
+    "bf16": true,
+    "timestamp": "2026-09-18T16:16:43.582022Z"
+  },
+  "stage": "batch",
+  "runs": [
+    {
+      "tag": "48/64 batch 1",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OK",
+      "rss_before_mb": 642.6,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 8269.1,
+      "samples_per_sec": 0.1209,
+      "first_iter_ms": 10252.7,
+      "compile_s": null,
+      "median_data_wait_ms": 0.4,
+      "peak_alloc_mb": 1973.1,
+      "peak_reserved_mb": 2382.0,
+      "vram_pct": 38.8,
+      "losses": [
+        3.310154,
+        3.477134,
+        3.234178,
+        2.90751
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1535.5,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 123.8
+    },
+    {
+      "tag": "48/64 batch 2",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 2,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OK",
+      "rss_before_mb": 1535.4,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 16426.8,
+      "samples_per_sec": 0.1218,
+      "first_iter_ms": 16953.3,
+      "compile_s": null,
+      "median_data_wait_ms": 0.6,
+      "peak_alloc_mb": 3921.2,
+      "peak_reserved_mb": 4838.0,
+      "vram_pct": 78.7,
+      "losses": [
+        3.234457,
+        3.390627,
+        3.034614,
+        2.654198
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          2,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          2,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          2,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1735.9,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 122.9
+    },
+    {
+      "tag": "48/64 batch 4",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 4,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OOM",
+      "rss_before_mb": 1735.8,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "error": "CUDA out of memory. Tried to allocate 256.00 MiB. GPU 0 has a total capacity of 6.00 GiB of which 0 bytes is free. 5.40 GiB allowe"
+    }
+  ],
+  "checks": {}
+}

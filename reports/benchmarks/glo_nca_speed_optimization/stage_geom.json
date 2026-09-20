@@ -1,0 +1,203 @@
+{
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "vram_mb": 6143.5,
+    "torch": "2.5.1+cu121",
+    "cuda": "12.1",
+    "python": "3.12.9",
+    "bf16": true,
+    "timestamp": "2026-09-18T15:48:45.927094Z"
+  },
+  "stage": "geom",
+  "runs": [
+    {
+      "tag": "BASELINE 64/96",
+      "config": "glo_nca_fast_candidate.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OOM",
+      "rss_before_mb": 641.6,
+      "levels": [
+        [
+          64,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "error": "CUDA out of memory. Tried to allocate 216.00 MiB. GPU 0 has a total capacity of 6.00 GiB of which 0 bytes is free. 5.40 GiB allowe"
+    },
+    {
+      "tag": "CANDIDATE 48/64",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": null,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OK",
+      "rss_before_mb": 1621.5,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 8264.5,
+      "samples_per_sec": 0.121,
+      "first_iter_ms": 8555.6,
+      "compile_s": null,
+      "median_data_wait_ms": 0.4,
+      "peak_alloc_mb": 1972.3,
+      "peak_reserved_mb": 2290.0,
+      "vram_pct": 37.3,
+      "losses": [
+        3.426459,
+        3.625956,
+        3.419688,
+        2.849037
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "aligned_target": [
+          1,
+          64,
+          64,
+          64,
+          3
+        ],
+        "roi_boxes": 0
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 262144
+      },
+      "rss_after_mb": 1471.6,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 123.7
+    },
+    {
+      "tag": "CANDIDATE 48/64 roi2/3",
+      "config": "glo_nca_fast_48_64.yaml",
+      "roi_fraction": 0.6666666666666666,
+      "batch": 1,
+      "workers": 2,
+      "accum": 1,
+      "precision": "bf16",
+      "tf32": false,
+      "cudnn_benchmark": false,
+      "compile": false,
+      "cache": false,
+      "status": "OK",
+      "rss_before_mb": 1471.6,
+      "levels": [
+        [
+          48,
+          24,
+          20
+        ],
+        [
+          64,
+          24,
+          20
+        ]
+      ],
+      "params": 33089,
+      "total_steps": 40,
+      "iter_ms": 4741.3,
+      "samples_per_sec": 0.2109,
+      "first_iter_ms": 5284.4,
+      "compile_s": null,
+      "median_data_wait_ms": 1.1,
+      "peak_alloc_mb": 952.0,
+      "peak_reserved_mb": 1034.0,
+      "vram_pct": 16.8,
+      "losses": [
+        3.408732,
+        3.682556,
+        3.409544,
+        2.915675
+      ],
+      "loss_finite": true,
+      "grads_finite": true,
+      "no_grad_params": 0,
+      "params_fp32": true,
+      "shapes": {
+        "input": [
+          1,
+          64,
+          64,
+          64,
+          4
+        ],
+        "prediction": [
+          1,
+          43,
+          43,
+          43,
+          3
+        ],
+        "aligned_target": [
+          1,
+          43,
+          43,
+          43,
+          3
+        ],
+        "roi_boxes": 1
+      },
+      "level_voxels": {
+        "0": 110592,
+        "1": 79507
+      },
+      "rss_after_mb": 1617.5,
+      "iters_measured": 4,
+      "warmup": 2,
+      "epoch_min_898": 71.0
+    }
+  ],
+  "checks": {}
+}

@@ -82,12 +82,37 @@ class Agent_GLO_NCA_V3(Agent_NCA):
         model = self.model[0]
         logits_cf = model(inputs)                      # (B, 3, X, Y, Z)
         outputs_cl = logits_cf.permute(0, 2, 3, 4, 1).contiguous()  # -> channels-last
-        # Align targets to the model's output resolution (V3's finest level fixes
-        # the output size; the dataset volume may differ). Trilinear on the GT is
-        # only needed when sizes differ; for the standard config they match.
-        if targets.shape[1:4] != outputs_cl.shape[1:4]:
+
+        # --- ROI-AWARE TARGET ALIGNMENT -------------------------------------
+        # When the model computed its high-resolution level over a region of
+        # interest, the prediction describes only that sub-region. The target
+        # MUST then be cropped with the model's OWN ROI coordinates -- blindly
+        # resizing the full-volume label onto the ROI prediction would compare
+        # different anatomy and silently corrupt training.
+        #
+        # `last_roi_box()` returns [] when no crop happened (roi_fraction == 1,
+        # which is the default and is also forced for evaluation), so the
+        # original resize path below still handles the ordinary case.
+        boxes = model.last_roi_box() if hasattr(model, "last_roi_box") else []
+        if boxes:
+            if len(boxes) != outputs_cl.shape[0]:
+                raise RuntimeError(
+                    f"ROI/target mismatch: model reported {len(boxes)} ROI boxes "
+                    f"for a batch of {outputs_cl.shape[0]}. Refusing to train on "
+                    "misaligned targets.")
+            from src.models.Model_GLO_NCA_GlobalContext import crop_target_to_roi
+            targets = crop_target_to_roi(targets, boxes, outputs_cl.shape[1])
+        elif targets.shape[1:4] != outputs_cl.shape[1:4]:
+            # No ROI was used: align resolution only (V3's finest level fixes the
+            # output size; the dataset volume may differ). Nearest keeps the
+            # masks strictly binary, so ET subset TC subset WT is preserved.
             t_cf = targets.permute(0, 4, 1, 2, 3).contiguous()
             t_cf = torch.nn.functional.interpolate(
                 t_cf, size=tuple(outputs_cl.shape[1:4]), mode="nearest")
             targets = t_cf.permute(0, 2, 3, 4, 1).contiguous()
+
+        if targets.shape[1:4] != outputs_cl.shape[1:4]:
+            raise RuntimeError(
+                f"prediction/target geometry mismatch: prediction "
+                f"{tuple(outputs_cl.shape[1:4])} vs target {tuple(targets.shape[1:4])}")
         return outputs_cl, targets
