@@ -30,7 +30,7 @@ from src.agents.Agent_GLO_NCA_V3 import Agent_GLO_NCA_V3
 from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 
 from . import checkpoint as ckpt_io
-from . import datasource, early_stopping, environment, graphs
+from . import datasource, early_stopping, environment, extension, graphs
 from . import metrics_eval as ME
 from . import reproducibility as repro
 from . import statistics as STATS
@@ -382,7 +382,9 @@ def _model_info(cfg: Config, ca: List[torch.nn.Module]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # The run
 # --------------------------------------------------------------------------- #
-def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> Dict[str, Any]:
+def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
+        extend_to: int = None, lr_policy: str = "freeze",
+        extension_reason: str = None) -> Dict[str, Any]:
     """Execute (or resume) a full experiment inside workspace ``ws``."""
     logger = get_logger(ws)
     ws.write_status("initializing", progress=0.0)
@@ -674,6 +676,7 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # --- resume: restore full state ---
     hist = {k: [] for k in ("epoch", "loss", "lr", "val_mean", "val_WT", "val_TC", "val_ET")}
     best, best_epoch, start_epoch = -1.0, 0, 0
+    ext_plan = None          # set only when --extend-to is validated below
     if resume and os.path.exists(ws.last_ckpt):
         ck = ckpt_io.load_checkpoint(ws.last_ckpt, map_location=device)
         ckpt_io.restore_into(ck, models=ca, optimizers=agent.optimizer,
@@ -720,13 +723,57 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         best = ck.get("best_score", -1.0)
         best_epoch = ck.get("best_epoch", 0)
         start_epoch = int(ck.get("epoch", 0))
+        if ck.get("early_stopping"):
+            stopper.load_state_dict(ck["early_stopping"])
+            logger.info("resume: early-stopping state restored "
+                        "(best %.4f @ epoch %d, patience %d/%d)",
+                        stopper.best if stopper.best is not None else float("nan"),
+                        stopper.best_epoch, stopper.counter, stopper.patience)
         repro.restore_rng_state(ck.get("rng_state", {}))
         logger.info("RESUME: experiment=%s ckpt=%s prev_epoch=%d best_epoch=%d "
                     "best=%.4f -> next_epoch=%d",
                     ws.experiment_id, ws.last_ckpt, start_epoch, best_epoch,
                     best, start_epoch + 1)
+
+        # --- explicit continuation past the planned budget ------------------
+        # Validated AFTER the state is restored, so the plan is checked
+        # against what was actually loaded rather than what was requested.
+        if extend_to is not None:
+            try:
+                ext_plan = extension.plan_extension(
+                    checkpoint=ck, checkpoint_path=ws.last_ckpt,
+                    current_cfg=cfg.to_dict(), target_epoch=int(extend_to),
+                    lr_policy=lr_policy, reason=extension_reason or "",
+                    parent_run_id=ws.experiment_id)
+            except extension.ExtensionError as exc:
+                return _fail(ws, logger, "extension refused", str(exc))
+
+            epochs = ext_plan.target_epoch      # the loop's new upper bound
+            ext_lr_note = extension.apply_lr_policy(
+                agent.scheduler, ext_plan, steps_per_epoch=spe, logger=logger)
+            ext_record = extension.write_extension_record(
+                ws.path("reports"), ext_plan, ext_lr_note)
+            logger.info("EXTENSION: %s", ext_plan.metadata()["reporting_note"])
+            logger.info("  parent epoch %d -> target %d (%d epoch(s)), "
+                        "lr-policy=%s, record=%s",
+                        ext_plan.parent_epoch, ext_plan.target_epoch,
+                        ext_plan.extension_epochs, ext_plan.lr_policy,
+                        ext_record)
+            if ext_plan.early_stopping_was_triggered:
+                logger.warning("  parent run had ALREADY early-stopped; this "
+                               "continuation is an explicit operator override")
+            ws.write_status("extended", current_epoch=start_epoch,
+                            total_epochs=epochs)
     elif resume:
         logger.warning("resume requested but no last.pth found; starting fresh.")
+    if extend_to is not None and not (resume and os.path.exists(ws.last_ckpt)):
+        # Fail closed. Silently treating this as a fresh 301-epoch run would
+        # produce a model that LOOKS like a continuation but shares nothing
+        # with the parent.
+        return _fail(ws, logger, "extension refused: no parent checkpoint",
+                     f"--extend-to {extend_to} needs a complete checkpoint at "
+                     f"{ws.last_ckpt}. An extension continues an existing run; "
+                     f"it never starts one.")
 
     train_csv = CSVLogger(ws.path("metrics", "train.csv"), TRAIN_CSV_FIELDS)
     val_csv = CSVLogger(ws.path("metrics", "validation.csv"), VAL_CSV_FIELDS)
@@ -956,6 +1003,10 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
             schedulers=agent.scheduler, ema=ema, best_score=best,
             best_epoch=best_epoch, history=hist, config=cfg.to_dict(),
             rng_state=repro.capture_rng_state())
+        # Patience must survive a preemption. Without this the counter resets
+        # on resume and a plateaued run trains for another full `patience`
+        # epochs after every restart.
+        full["early_stopping"] = stopper.state_dict()
         with _prof.section("train/checkpoint_write"):
             ckpt_io.save_checkpoint(ws.last_ckpt, full)
         if ckpt_freq and (ep + 1) % ckpt_freq == 0:
@@ -1234,6 +1285,22 @@ def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
         "gpu": env_summary.get("gpu"),
         "software": env_summary.get("software"),
         "best_epoch": best_epoch,
+        # Budget accounting. `planned_max_epochs` is what the experiment was
+        # configured for; `actual_completed_epochs` is what it ran. They differ
+        # when early stopping fires or when the run was explicitly extended,
+        # and the thesis record must not conflate the two.
+        "planned_max_epochs": int(cfg.get("training", "epochs")),
+        "actual_completed_epochs": epochs_run,
+        "stopped_by_early_stopping": bool(stopper.should_stop),
+        "stop_reason": (
+            f"{stopper.monitor} did not improve by >{stopper.min_delta:g} for "
+            f"{stopper.patience} consecutive validations"
+            if stopper.should_stop else
+            ("extension target reached" if extend_to is not None
+             else "planned epoch budget reached")),
+        "early_stopping": stopper.report(),
+        "extension": (ext_plan.metadata() if ext_plan is not None else
+                      {"extension_mode": False}),
         "final_test": {r: test[r] for r in REGIONS},
         "status": status,
     }

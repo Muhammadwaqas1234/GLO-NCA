@@ -56,6 +56,32 @@ def _parse_args():
                          "generating '<name>-<timestamp>'. The cloud entrypoint "
                          "passes it so the GCS sync watcher knows the experiment "
                          "id up front instead of guessing the newest directory.")
+
+    # --- explicit continuation past the planned budget ----------------------
+    # `--resume` continues an UNFINISHED run toward its original
+    # `training.epochs`. `--extend-to` continues a run that already REACHED
+    # that budget, and records the continuation so the two are never confused
+    # in the thesis record.
+    ap.add_argument("--extend-to", metavar="EPOCH", type=int, default=None,
+                    help="continue a COMPLETED run past its planned budget, "
+                         "e.g. --extend-to 301. Requires --resume and a "
+                         "complete parent checkpoint. Refused if any protected "
+                         "identity (architecture, seed, split, loss, optimizer) "
+                         "has drifted -- that is a new experiment, not a "
+                         "continuation.")
+    ap.add_argument("--lr-policy", choices=("freeze", "continue", "rebuild"),
+                    default="freeze",
+                    help="learning-rate policy for --extend-to. "
+                         "'freeze' (default, production-safe) holds the LR at "
+                         "eta_min, leaving the original 1..N decay intact. "
+                         "'continue' steps the saved cosine onward, which "
+                         "RAISES the LR past T_max (a warm restart). "
+                         "'rebuild' re-fits the cosine to the new horizon, "
+                         "retroactively changing the original curve.")
+    ap.add_argument("--extension-reason", default=None,
+                    help="why the run is being continued. Recorded in "
+                         "extension.json for the thesis record. Required with "
+                         "--extend-to.")
     return ap.parse_args()
 
 
@@ -88,6 +114,31 @@ def main() -> int:
                   "The experiment's own config is required to resume "
                   "reproducibly; refusing to substitute a different config.")
             return 2
+
+    # --- continuation contract (checked before the heavy imports) -----------
+    # An extension continues a specific completed run, so it needs that run's
+    # directory and a stated justification. Both are cheap argument checks.
+    if args.extend_to is not None:
+        if not args.resume:
+            print("FAILED: --extend-to requires --resume <experiment-dir>.\n"
+                  "An extension continues a SPECIFIC completed run; it cannot "
+                  "start from a config alone.")
+            return 2
+        if not args.extension_reason or not args.extension_reason.strip():
+            print("FAILED: --extend-to requires --extension-reason.\n"
+                  "Training past the planned budget is a deliberate departure "
+                  "from the experiment plan and must be justifiable in the "
+                  "thesis record.")
+            return 2
+        if args.extend_to < 1:
+            print(f"FAILED: --extend-to {args.extend_to} is not a valid epoch.")
+            return 2
+        print(f"EXTENSION MODE: continuing {args.resume} to epoch "
+              f"{args.extend_to} (lr-policy={args.lr_policy})")
+        if args.lr_policy != "freeze":
+            print(f"  WARNING: lr-policy '{args.lr_policy}' changes the "
+                  f"learning-rate trajectory. 'freeze' is the production-safe "
+                  f"policy; anything else is a separate experiment.")
 
     from src.experiment.config import load_config
     from src.experiment.workspace import Workspace
@@ -133,7 +184,10 @@ def main() -> int:
         resume = False
 
     try:
-        result = runner.run(cfg, ws, resume=resume, device_str=args.device)
+        result = runner.run(cfg, ws, resume=resume, device_str=args.device,
+                            extend_to=args.extend_to,
+                            lr_policy=args.lr_policy,
+                            extension_reason=args.extension_reason)
     except KeyboardInterrupt:
         ws.write_status("failed", error="interrupted by user")
         print("\nInterrupted -- status set to failed; last.pth is on disk to resume.")
