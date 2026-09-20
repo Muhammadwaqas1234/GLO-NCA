@@ -298,8 +298,20 @@ PRESETS = {
                       "C: 40^3/56^3 grids. Params unchanged."),
     "geo32_48":      (True,     15,    5,    False, "2.30x",
                       "C: 32^3/48^3 grids. Params unchanged."),
+    # L1 stays at the fast 32^3 while L2 rises to the PRODUCTION 64^3, which
+    # buys back the fine-level resolution that matters most for small TC/ET
+    # regions.
+    #
+    # MEASURED 1.04x vs production on an RTX 3050 (median of 4 timed
+    # train steps after 2 warm-ups), NOT the ~1.5x first estimated from
+    # voxel counts. The fine level dominates the cost, so shrinking L1
+    # alone saves almost nothing: nearly production cost at lower coarse
+    # resolution. Choose it for the geometry, not for speed.
+    "geo32_64":      (None,     15,    5,    False, "1.04x",
+                      "C: 32^3/64^3 grids. Params unchanged. Fine level at "
+                      "production resolution; ~production cost."),
 }
-_GEO_OVERRIDE = {"geo40_56": (40, 56)}
+_GEO_OVERRIDE = {"geo40_56": (40, 56), "geo32_64": (32, 64)}
 
 
 def use_preset(name: str, verbose: bool = True):
