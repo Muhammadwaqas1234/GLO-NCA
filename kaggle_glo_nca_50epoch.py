@@ -3404,10 +3404,19 @@ def main() -> int:
                 if use_amp:
                     with torch.amp.autocast("cuda", dtype=amp_dtype):
                         logits = model(xb, patch_cl=pb, patch_box=box)
-                    logits = logits.float()     # loss always runs in FP32
                 else:
                     logits = model(xb, patch_cl=pb, patch_box=box)
+                # DEEP SUPERVISION returns (logits, [aux...]) under train()
+                # and a bare tensor under eval(). Unpack before any tensor
+                # method is called, or a tuple reaches .float().
+                aux_logits = []
+                if isinstance(logits, tuple):
+                    logits, aux_logits = logits
+                logits = logits.float()         # loss always runs in FP32
+                aux_logits = [a.float() for a in aux_logits]
                 outputs = logits.permute(0, 2, 3, 4, 1).contiguous()
+                aux_outputs = [a.permute(0, 2, 3, 4, 1).contiguous()
+                               for a in aux_logits]
 
             with prof.section("train/target_align"):
                 t_cf = yb.permute(0, 4, 1, 2, 3).contiguous()
