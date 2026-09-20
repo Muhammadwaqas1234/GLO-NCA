@@ -89,7 +89,8 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
                  use_attention: bool = True, use_spatial: bool = True,
                  dropout: float = 0.0, fusion: str = "concat",
                  hidden_size: int = 128, device=None,
-                 gradient_checkpointing: bool = False):
+                 gradient_checkpointing: bool = False,
+                 spatial_kernel_size: int = 7):
         super().__init__()
         assert len(levels) >= 2, "V3 needs at least 2 levels"
         self.input_channels = input_channels
@@ -110,7 +111,8 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
                        device=self.device, hidden_size=hidden_size,
                        input_channels=input_channels, kernel_size=lv.kernel_size,
                        use_attention=use_attention, use_spatial=use_spatial,
-                       dropout=dropout)
+                       dropout=dropout,
+                       spatial_kernel_size=spatial_kernel_size)
             for lv in self.levels
         ])
         # Propagate the memory-only flag to each level's NCA (default False keeps
@@ -258,4 +260,8 @@ def build_v3_from_config(cfg, input_channels=4, output_channels=3, device=None):
         dropout=float(m.get("dropout", 0.0)),
         fusion=str((m.get("feature_fusion", {}) or {}).get("type", "concat")),
         hidden_size=int(m.get("hidden", 128)), device=device,
-        gradient_checkpointing=gc)
+        gradient_checkpointing=gc,
+        # Receptive field of the spatial global-context block. Default 7
+        # reproduces the original hardcoded value for any config that does
+        # not state it.
+        spatial_kernel_size=int(m.get("spatial_kernel_size", 7)))

@@ -168,7 +168,7 @@ class GCSpatialBlock3D(nn.Module):
 
 
 class BasicNCA3D(nn.Module):
-    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False, dropout=0.0):
+    def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False, dropout=0.0, spatial_kernel_size=7):
         r"""Init function
             #Args:
                 channel_n: number of channels per cell
@@ -221,7 +221,14 @@ class BasicNCA3D(nn.Module):
         #   gc: spatial attention (which regions of the volume matter)
         self.use_spatial = use_spatial
         self.se = SEBlock3D(channel_n, reduction=se_reduction) if use_attention else None
-        self.gc = GCSpatialBlock3D(kernel_size=7) if use_spatial else None
+        # Spatial global-context kernel. Configurable rather than
+        # hardcoded: it defines the receptive field of the thesis's
+        # global-context mechanism, so it must be stated by the
+        # config rather than buried here. Default 7 preserves the
+        # original behaviour for every existing caller.
+        self.spatial_kernel_size = spatial_kernel_size
+        self.gc = (GCSpatialBlock3D(kernel_size=spatial_kernel_size)
+                   if use_spatial else None)
 
         with torch.no_grad():
             self.fc1.weight.zero_()
