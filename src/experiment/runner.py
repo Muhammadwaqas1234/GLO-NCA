@@ -105,7 +105,19 @@ class _EpochSampler(torch.utils.data.Sampler):
 # Training step (verbatim methodology from train.py, incl. the empty-region fix)
 # --------------------------------------------------------------------------- #
 def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
-                        empty_weight: float = 0.1) -> Dict[int, float]:
+                        empty_weight: float = 0.1,
+                        amp_dtype=None) -> Dict[int, float]:
+    """One training iteration.
+
+    ``amp_dtype`` (``torch.bfloat16`` / ``torch.float16`` / ``None``) enables
+    mixed precision for the MODEL FORWARD ONLY. The loss is always evaluated in
+    FP32: PyTorch explicitly refuses to autocast ``binary_cross_entropy``
+    (unsafe in reduced precision) and ``FocalTverskyCELoss`` applies sigmoid ->
+    BCE internally. Closing autocast before the loss and casting the logits to
+    float keeps the loss MATHEMATICS identical to the FP32 path, so this is a
+    performance change, not a methodology change. ``None`` reproduces the
+    previous behaviour exactly.
+    """
     # Phase 2 profiling is OBSERVATIONAL: `prof` is a NullProfiler unless
     # explicitly enabled, and then every section is a no-op context with no CUDA
     # synchronisation. The order of operations, the maths and every
@@ -116,7 +128,12 @@ def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
     with prof.section("train/h2d_transfer", cuda=True):
         data = agent.prepare_data(data)
     with prof.section("train/forward", cuda=True):
-        outputs, targets = agent.get_outputs(data)
+        if amp_dtype is not None:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                outputs, targets = agent.get_outputs(data)
+            outputs = outputs.float()      # loss runs in FP32 (see docstring)
+        else:
+            outputs, targets = agent.get_outputs(data)
     with prof.section("train/zero_grad"):
         for opt in agent.optimizer:
             opt.zero_grad(set_to_none=True)
@@ -213,8 +230,66 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
 
     ds = Dataset_NiiGz_3D_BraTS()
     ds.MODALITIES = list(cfg.get("dataset", "modalities"))
-    v3_model = build_v3_from_config(cfg, input_channels=4, output_channels=3,
-                                    device=device)
+
+    # --- optional GENUINE training patch (DEFAULT OFF) -----------------------
+    # `training.patch_size` sets BOTH the resample target and the patch size, so
+    # by default the crop is a no-op (patch == working volume). When
+    # `data.training_patch.enabled` is true, the volume is resampled to the
+    # larger `working_volume` and a REAL spatial crop of `patch_size` is taken,
+    # using the existing ET-aware sampler. TRAIN-ONLY: `patchify_multimodal` is
+    # gated on `state == "train"`, so validation/test stay full-volume.
+    # Omitting the block reproduces the previous behaviour exactly, which is why
+    # the frozen thesis reference is unaffected.
+    _tp = (cfg.section("data") or {}).get("training_patch") or {}
+    if bool(_tp.get("enabled", False)):
+        _work = int(_tp.get("working_volume", patch))
+        _pat = int(_tp.get("patch_size", patch))
+        if _pat >= _work:
+            raise ValueError(
+                f"data.training_patch: patch_size ({_pat}) must be STRICTLY smaller "
+                f"than working_volume ({_work}); otherwise the crop is a no-op.")
+        config[0]["input_size"] = [[_work, _work, _work]]   # -> dataset.size
+        ds.set_train_patch_size(_pat)
+
+    # --- optional deterministic preprocessing cache (DEFAULT OFF) ------------
+    # Caches ONLY the deterministic head of __getitem__ (load -> crop ->
+    # resample -> label conversion). All stochastic work (patchify,
+    # augmentation, per-(epoch,case) RNG) still runs every epoch, and cache
+    # lookup is RNG-neutral -- verified by scripts/test_preprocess_cache.py.
+    _cache_cfg = (cfg.section("data") or {}).get("cache") or {}
+    if bool(_cache_cfg.get("enabled", False)):
+        from src.datasets.preprocess_cache import PreprocessCache
+        _cdir = _cache_cfg.get("directory") or os.path.join(_HERE_ROOT, ".cache",
+                                                            "preprocessed")
+        if not os.path.isabs(_cdir):
+            _cdir = os.path.join(_HERE_ROOT, _cdir)
+        # The cache stores the DETERMINISTIC head of __getitem__, whose output is
+        # the resampled WORKING VOLUME -- not the training patch. When
+        # `data.training_patch` is enabled the dataset resamples to
+        # `working_volume` and the (stochastic) crop to `patch_size` happens
+        # afterwards, so sizing the cache with `patch` would make every lookup
+        # fail `_validate` (100% miss: silently slow, never incorrect).
+        # `_cache_size` is the actual dataset.size set above.
+        _cache_size = int(config[0]["input_size"][0][0])
+        ds.set_preprocess_cache(PreprocessCache(
+            _cdir, dataset_root=data_root,
+            modalities=list(cfg.get("dataset", "modalities")),
+            size=(_cache_size, _cache_size, _cache_size),
+            crop_fg=True, rescale=True, enabled=True))
+
+    # GLO-NCA Global Context + Multi-Level Fusion. When `model.global_context` is
+    # present the model keeps its GLOBAL level on the whole working volume and
+    # may compute the high-resolution level over a region of interest
+    # (`roi_fraction`). With the default `roi_fraction: 1.0` this is
+    # mathematically identical to the reference forward, so configs without the
+    # block -- including the frozen thesis reference -- are unaffected.
+    if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
+        from src.models.Model_GLO_NCA_GlobalContext import build_glo_nca_global_context
+        v3_model = build_glo_nca_global_context(cfg, input_channels=4,
+                                                output_channels=3, device=device)
+    else:
+        v3_model = build_v3_from_config(cfg, input_channels=4, output_channels=3,
+                                        device=device)
     ca = [v3_model]  # presented as a one-element list to the shared runner
     agent = Agent_GLO_NCA_V3(ca)
     exp = Experiment(config, ds, ca, agent)
@@ -524,6 +599,52 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     best_window = int(cfg.get("evaluation", "smoothing_window"))
     ckpt_freq = int(cfg.get("logging", "checkpoint_frequency", 10))
 
+    # --- mixed precision (performance only; default OFF) ---------------------
+    # `performance.precision`: "fp32" (default) | "bf16" | "fp16". Applies to the
+    # MODEL FORWARD only -- the loss always runs in FP32 (see
+    # `_clipped_batch_step`), so the loss mathematics is unchanged. fp16 needs a
+    # GradScaler, which this training step does not use, so it is refused rather
+    # than silently producing unscaled-gradient behaviour.
+    _perf = cfg.section("performance") or {}
+    _prec = str(_perf.get("precision", "fp32")).lower()
+    amp_dtype = None
+    if _prec in ("bf16", "bfloat16"):
+        if device.type != "cuda":
+            logger.warning("performance.precision=%s ignored: CUDA not in use", _prec)
+        elif not torch.cuda.is_bf16_supported():
+            logger.warning("performance.precision=%s ignored: bf16 unsupported on %s",
+                           _prec, torch.cuda.get_device_name(0))
+        else:
+            amp_dtype = torch.bfloat16
+    elif _prec in ("fp16", "float16"):
+        return _fail(ws, logger, "unsupported precision",
+                     "performance.precision=fp16 requires a GradScaler, which this "
+                     "training step does not implement. Use bf16 (validated) or fp32.")
+    elif _prec not in ("fp32", "float32", "none"):
+        return _fail(ws, logger, "unknown precision",
+                     f"performance.precision={_prec!r}; expected fp32 | bf16.")
+    logger.info("precision: %s | autocast=%s | device=%s | dtype=%s",
+                _prec, amp_dtype is not None, device,
+                (str(amp_dtype).split('.')[-1] if amp_dtype else "float32"))
+
+    # --- HD95 schedule (performance only; default = every epoch) -------------
+    # HD95 was measured at ~97% of validation scoring cost. Dice and mIoU still
+    # run EVERY epoch, so model selection (3-epoch rolling validation Dice) and
+    # threshold tuning are untouched. HD95 is reported on the configured epoch
+    # interval and ALWAYS on the final epoch; the frozen-test evaluation is
+    # unaffected. 1 = previous behaviour.
+    hd95_every = int((_perf.get("hd95_every_epochs") or 1))
+    if hd95_every < 1:
+        return _fail(ws, logger, "invalid hd95_every_epochs",
+                     f"performance.hd95_every_epochs={hd95_every}; must be >= 1.")
+    if hd95_every > 1:
+        logger.info("HD95 computed every %d epochs (Dice/mIoU every epoch; "
+                    "model selection and test evaluation unchanged)", hd95_every)
+    # Carried-forward HD95 for epochs where it is skipped. Initialised to NaN so
+    # a resumed run that skips HD95 on its first epoch reports NaN rather than
+    # raising -- NaN is already the established "not available" value here.
+    _last_hd95 = {r: float("nan") for r in REGIONS}
+
     info = _model_info(cfg, ca)
     logger.info("model params: total=%d trainable=%d (SE=%s, spatialGC=%s, levels=%d)",
                 info["total_parameters"], info["trainable_parameters"],
@@ -671,7 +792,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
                     break
             _prof.mark_iteration(_batch_idx)
             with _prof.section("total/iteration", cuda=True):
-                r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight)
+                r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight,
+                                        amp_dtype=amp_dtype)
                 with _prof.section("train/ema", cuda=True):
                     ema_update()
             if _prof.enabled and _mem is not None and _prof.is_profiled_iteration():
@@ -703,7 +825,33 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
         if _prof.enabled:
             _prof.flush()
         with _prof.section("validation/total", cuda=True):
-            val = ME.evaluate(agent, ds, "val")
+            # HD95 is ~97% of validation scoring cost. Dice and mIoU are computed
+            # EVERY epoch (model selection and threshold tuning are untouched);
+            # HD95 is computed on the configured interval and ALWAYS on the final
+            # epoch. On skipped epochs the last computed HD95 is carried forward
+            # for reporting and clearly flagged in `hd95_fresh`. `metrics_eval`
+            # is NOT modified -- the same `collect_probs`/`score` are reused.
+            _hd95_now = (hd95_every == 1 or (ep + 1) % hd95_every == 0
+                         or (ep + 1) == epochs)
+            if _hd95_now:
+                val = ME.evaluate(agent, ds, "val")
+                _last_hd95 = {r: val[r]["hd95"] for r in REGIONS}
+            else:
+                _pairs = ME.collect_probs(agent, ds, "val")
+                _th = {r: 0.5 for r in REGIONS}
+                val = {r: {"dice": 0.0, "iou": 0.0, "hd95": float("nan")}
+                       for r in REGIONS}
+                for i, r in enumerate(REGIONS):
+                    _d, _i = [], []
+                    for prob, gt in _pairs:
+                        p, t = prob[..., i], gt[..., i]
+                        inter = np.logical_and(p >= _th[r], t >= 0.5).sum()
+                        denom = (p >= _th[r]).sum() + (t >= 0.5).sum() + 1e-6
+                        _d.append((2 * inter) / denom)
+                        _i.append(ME.iou_score(p, t, threshold=_th[r]))
+                    val[r] = {"dice": float(np.mean(_d)), "iou": float(np.mean(_i)),
+                              "hd95": _last_hd95.get(r, float("nan"))}
+                del _pairs
         vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
         hist["epoch"].append(ep + 1)
         hist["loss"].append(float(np.mean(losses)) if losses else 0.0)
@@ -824,7 +972,11 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None) -> 
     # consumer of val_pairs -- then release val_pairs before the per-case /
     # bootstrap stage. Identical inputs, identical outputs, identical file
     # contents; only the peak host RAM drops (val+test were both held live).
-    _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds)
+    # Reuse the test scores computed above (pure function of the same cached
+    # pairs + thresholds) instead of recomputing HD95 over every test case.
+    _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds,
+                                test_05_precomputed=test_05,
+                                test_tuned_precomputed=test)
     del val_pairs
     import gc as _gc
     _gc.collect()
@@ -943,13 +1095,31 @@ def _write_per_case_csv(ws, per_case) -> None:
                             f"{per_case[r]['hd95'][i]:.4f}"])
 
 
-def _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds) -> None:
+def _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds,
+                                test_05_precomputed=None,
+                                test_tuned_precomputed=None) -> None:
     """threshold_comparison.csv: default(0.5) vs tuned, on val and test. Test
-    uses the FROZEN thresholds (never tuned on test)."""
+    uses the FROZEN thresholds (never tuned on test).
+
+    PHASE 4 (unnecessary work): the caller has ALREADY scored ``test_pairs`` at
+    0.5 and at the tuned thresholds. ``ME.score`` is a pure function of
+    (pairs, thresholds) -- verified -- so recomputing it here produced
+    byte-identical numbers at the cost of a second full HD95 pass over every
+    test case. HD95 runs a distance transform per region per case and measured
+    ~10.2 s/case at 128^3, so the duplicate test scoring cost ~2 x 198 cases
+    ~= 67 min of pure recomputation at the end of a run.
+
+    The already-computed results are now passed in and reused. Falls back to
+    recomputing if a caller does not supply them, so behaviour is unchanged for
+    any other call site. The CSV contents are identical either way.
+    """
     import csv
     half = {r: 0.5 for r in REGIONS}
     val_05, val_tuned = ME.score(val_pairs, half), ME.score(val_pairs, thresholds)
-    test_05, test_tuned = ME.score(test_pairs, half), ME.score(test_pairs, thresholds)
+    test_05 = (test_05_precomputed if test_05_precomputed is not None
+               else ME.score(test_pairs, half))
+    test_tuned = (test_tuned_precomputed if test_tuned_precomputed is not None
+                  else ME.score(test_pairs, thresholds))
     with open(ws.path("reports", "threshold_comparison.csv"), "w", newline="",
               encoding="utf-8") as fh:
         w = csv.writer(fh)

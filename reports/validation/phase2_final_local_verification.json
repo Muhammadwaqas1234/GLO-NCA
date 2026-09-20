@@ -24,6 +24,11 @@
         64,
         "OK",
         1.07
+      ],
+      [
+        96,
+        "OK",
+        3.57
       ]
     ],
     "total_gb": 6.0,
@@ -34,14 +39,14 @@
     "val_total_gb": 5.9,
     "test_total_gb": 5.8,
     "val_plus_test_gb": 11.7,
-    "process_rss_gb": 1.23,
+    "process_rss_gb": 1.24,
     "target_vm_ram_gb": 32.0,
     "local_host_total_gb": 15.6,
-    "local_host_available_gb": 1.7,
+    "local_host_available_gb": 2.9,
     "target_headroom_gb": 20.3
   },
   "timings": {
-    "dataset_getitem_s": 3.11
+    "dataset_getitem_s": 3.08
   },
   "results": [
     {
@@ -66,7 +71,7 @@
       "section": "B. V3 model on the local GPU",
       "name": "forward + loss + backward (GPU)",
       "status": "PASS",
-      "detail": "loss=4.0468 finite, 53 grad tensors, out=(1, 3, 32, 32, 32)"
+      "detail": "loss=4.0621 finite, 53 grad tensors, out=(1, 3, 32, 32, 32)"
     },
     {
       "section": "B. V3 model on the local GPU",
@@ -138,7 +143,7 @@
       "section": "F. memory",
       "name": "VRAM ladder 32->128 (checkpointing ON)",
       "status": "PASS",
-      "detail": "total 6.0 GB; 32^3:OK/0.15GB, 48^3:OK/0.46GB, 64^3:OK/1.07GB"
+      "detail": "total 6.0 GB; 32^3:OK/0.15GB, 48^3:OK/0.46GB, 64^3:OK/1.07GB, 96^3:OK/3.57GB"
     },
     {
       "section": "F. memory",
@@ -192,7 +197,7 @@
       "section": "G. config / methodology / cloud statics",
       "name": "docker production image build",
       "status": "SKIP",
-      "detail": "build not attempted in this pass (multi-GB download); run `docker build -t glo-nca:latest .` as a pre-flight step"
+      "detail": "docker daemon not running"
     }
   ]
 }

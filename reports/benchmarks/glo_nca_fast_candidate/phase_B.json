@@ -1,0 +1,135 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+  "total_vram_mb": 6143.5,
+  "cap_pct": 0.9,
+  "torch": "2.5.1+cu121",
+  "cuda": "12.1",
+  "python": "3.12.9",
+  "bf16_supported": true,
+  "phase": "B",
+  "config": "configs/glo_nca_fast_candidate.yaml",
+  "runs": [
+    {
+      "tag": "AMP fp16",
+      "batch": 1,
+      "ckpt": true,
+      "amp": true,
+      "amp_dtype": "float16",
+      "tf32": false,
+      "compile": false,
+      "cudnn_benchmark": false,
+      "channels_last": false,
+      "status": "OK",
+      "rss_before_mb": 497.3,
+      "params": 33089,
+      "levels": [
+        [
+          64,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ]
+      ],
+      "total_steps": 40,
+      "param_mb": 0.13,
+      "out_resolution": 96,
+      "ema_mb": 0.13,
+      "ema_requires_grad": false,
+      "input_mb": 23.62,
+      "grad_mb": 0.13,
+      "optimizer_state_mb": 0.25,
+      "activation_peak_after_fwd_mb": 3585.5,
+      "median_ms": {
+        "fwd": 8681.24,
+        "bwd": 23985.98,
+        "iter": 32669.99
+      },
+      "iter_s": 32.67,
+      "samples_per_sec": 0.0306,
+      "first_iter_ms": 34010.6,
+      "compile_s": null,
+      "peak_allocated_mb": 3587.6,
+      "peak_reserved_mb": 4604.0,
+      "vram_pct": 74.9,
+      "headroom_mb": 1539.5,
+      "fit": "FIT",
+      "loss_finite": true,
+      "losses": [
+        2.109857,
+        2.010087,
+        1.978876
+      ],
+      "outputs_finite": true,
+      "grads_finite": true,
+      "params_without_grad": 0,
+      "est_epoch_min": 489.0,
+      "est_300_epoch_h": 2444.8,
+      "rss_after_mb": 1223.0
+    },
+    {
+      "tag": "AMP bf16",
+      "batch": 1,
+      "ckpt": true,
+      "amp": true,
+      "amp_dtype": "bfloat16",
+      "tf32": false,
+      "compile": false,
+      "cudnn_benchmark": false,
+      "channels_last": false,
+      "status": "OK",
+      "rss_before_mb": 1223.0,
+      "params": 33089,
+      "levels": [
+        [
+          64,
+          24,
+          20
+        ],
+        [
+          96,
+          24,
+          20
+        ]
+      ],
+      "total_steps": 40,
+      "param_mb": 0.13,
+      "out_resolution": 96,
+      "ema_mb": 0.13,
+      "ema_requires_grad": false,
+      "input_mb": 23.62,
+      "grad_mb": 0.13,
+      "optimizer_state_mb": 0.25,
+      "activation_peak_after_fwd_mb": 3652.8,
+      "median_ms": {
+        "fwd": 4251.61,
+        "bwd": 20138.51,
+        "iter": 24393.27
+      },
+      "iter_s": 24.3933,
+      "samples_per_sec": 0.041,
+      "first_iter_ms": 24760.6,
+      "compile_s": null,
+      "peak_allocated_mb": 3654.5,
+      "peak_reserved_mb": 4492.0,
+      "vram_pct": 73.1,
+      "headroom_mb": 1651.5,
+      "fit": "FIT",
+      "loss_finite": true,
+      "losses": [
+        2.109807,
+        2.00991,
+        1.978857
+      ],
+      "outputs_finite": true,
+      "grads_finite": true,
+      "params_without_grad": 0,
+      "est_epoch_min": 365.1,
+      "est_300_epoch_h": 1825.4,
+      "rss_after_mb": 1433.9
+    }
+  ]
+}

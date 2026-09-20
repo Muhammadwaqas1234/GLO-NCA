@@ -1,0 +1,175 @@
+# =============================================================================
+# GLO-NCA — PRODUCTION CONFIGURATION  (THE single active training config)
+#
+# Architecture: GLO-NCA with GLOBAL CONTEXT + MULTI-LEVEL FUSION
+#   level1 = global-context level  — sees the whole input volume
+#   level2 = high-resolution segmentation level
+#   SE (channel) + spatial global context at EVERY NCA step
+#   learnable inter-level projection + learnable fusion Conv3d(48 -> 24)
+#   33,089 parameters (verified from the constructed model, not from docs)
+#
+# ---------------------------------------------------------------------------
+# CONFIG MAP — read this before editing any other file in configs/
+#
+#   THIS FILE                        -> the active production run
+#   configs/v3_multilevel_ckpt.yaml  -> FROZEN thesis reference (32/96/128, 50 steps)
+#   configs/v3_ablation_{A,B,C}.yaml -> thesis ablation matrix (DO NOT DELETE:
+#                                       their parameter counts are cited in
+#                                       reports/validation/REAL_DATA_V3_VALIDATION_REPORT.md)
+#   configs/ablation_*.yaml          -> V2-era ablations (legacy `_build` path)
+#   configs/*smoke*.yaml             -> fast CI / smoke tests
+#   configs/profile_local_v3.yaml    -> profiling only
+#
+# Supersedes the earlier 48/64 and 64/96 fast candidates (both removed in the
+# final cleanup; this file is the single production configuration).
+#
+# ---------------------------------------------------------------------------
+# PHASE 2 RESOLVED DECISION — training_patch stays DISABLED. Evidence-based.
+#
+# With training_patch ENABLED the DATASET crops a 64^3 patch out of the 96^3
+# working volume BEFORE the model is called. The model's global branch is
+# correct in itself (it always reads the uncropped tensor it is given), but it
+# then never receives the 96^3 volume: level1 — the GLOBAL-CONTEXT level, i.e.
+# the thesis contribution — would cover only ~30% of the brain during training
+# while covering the whole brain at evaluation.
+#
+# MEASURED (RTX 3050, bf16, batch 1, matched conditions; see
+# reports/benchmarks/glo_nca_phase2/patchify_speed.json):
+#     patchify ON  (model gets 64^3): 8200.6 ms/iter, 1406 MB peak
+#     patchify OFF (model gets 96^3): 8191.0 ms/iter, 1416 MB peak
+#     difference: -9.6 ms/iter (-0.1%), +10 MB
+#
+# Patchify buys NO speed here: both settings run the SAME 48^3 and 64^3 NCA
+# grids, and those grids dominate cost. Patchify only changes WHICH anatomy the
+# grid covers. So it cost the thesis contribution and returned nothing.
+#
+# Verified with patchify OFF: global context reads the whole 96^3 volume
+# (output changes by 0.81 when only the non-patch rim changes, while a
+# patch-only input is provably blind to it: 0.00e+00), train/eval global scope
+# identical, and parameter count unchanged at 33,089.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-PRODUCTION
+  seed: 42
+
+dataset:
+  root: null                        # supplied by --data-root / cloud entrypoint
+  number_of_patients: 0             # 0 = use the full canonical split
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+data:
+  # CANONICAL SPLIT — frozen. 898 train / 200 validation / 198 test.
+  # SHA d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559
+  split_file: split/master_split.json
+  quality_policy_file: split/data_quality_policy.json
+
+  # Deterministic preprocessing cache. Caches ONLY the deterministic head of
+  # __getitem__ (load -> foreground crop -> resample -> label conversion).
+  # All stochastic work (patchify, augmentation, per-(epoch,case) RNG) still
+  # runs every epoch, and cache lookup is RNG-neutral.
+  # Measured: 29.7x faster per case (2876.6 ms -> 96.7 ms warm), 4.75 MB/case
+  # (~4.3 GB for 898 training cases). Changes NO scientific definition.
+  cache:
+    enabled: true                   # ENABLED: 29.7x faster preprocessing per case
+    directory: .cache/preprocessed
+
+  # See the methodology warning in the header before enabling.
+  training_patch:
+    enabled: false
+    working_volume: 96              # resample target when enabled
+    patch_size: 64                  # MUST be strictly < working_volume
+
+model:
+  version: v3
+  name: GLO-NCA-PRODUCTION
+
+  # ROI is an INTERNAL EFFICIENCY MECHANISM ONLY — never a methodology claim.
+  # roi_fraction 1.0 == reference-identical mathematics (no cropping at all).
+  # Evaluation is ALWAYS full-volume: the ROI path is structurally unreachable
+  # outside training mode (`frac = self.roi_fraction if self.training else 1.0`).
+  global_context:
+    roi_fraction: 1.0
+    global_levels: 1
+
+  level1:                           # GLOBAL-CONTEXT level
+    enabled: true
+    resolution: 48
+    channels: 24
+    nca_steps: 20
+    kernel_size: 7                  # wide kernel -> larger receptive field
+  level2:                           # HIGH-RESOLUTION segmentation level
+    enabled: true
+    resolution: 64
+    channels: 24
+    nca_steps: 20
+    kernel_size: 3
+  level3:
+    enabled: false                  # structurally NOT instantiated
+    resolution: 128
+    channels: 16
+    nca_steps: 10
+
+  feature_fusion:
+    enabled: true
+    type: concat                    # concat -> LEARNED Conv3d(48->24), not naive
+
+  fire_rate: 0.6
+  use_attention: true               # SE channel global context
+  use_spatial: true                 # spatial global context
+  hidden: 128
+  dropout: 0.1
+
+training:
+  epochs: 300
+  batch_size: 1                     # 2 and 4 verified working; 1 is the default
+  patch_size: 64                    # = finest ACTIVE level (level2)
+  augmentation: light
+  workers: 2
+
+optimizer:
+  learning_rate: 0.0016
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:                               # FocalTverskyCELoss
+  tversky_beta: 0.75                # alpha = 0.25 (derived)
+  focal_gamma: 1.33
+  ce_weight: 0.5
+  empty_region_bce_weight: 0.1
+
+sampling:                           # ET-aware patch sampling
+  prioritize_probability: 0.7
+  prioritize_region: 2              # 2 = ET (hardest region)
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true             # VALIDATION ONLY — test stays frozen
+  smoothing_window: 3
+
+logging:
+  tensorboard: true
+  checkpoint_frequency: 10          # checkpoint = 0.546 MB, I/O negligible
+
+memory:
+  # LOAD-BEARING, not an optimization: training OOMs without it. Calls `update`
+  # twice per step (forward + backward recompute), use_reentrant=False.
+  gradient_checkpointing: true
+
+performance:
+  # bf16 applies to the MODEL FORWARD ONLY. The loss stays FP32 because PyTorch
+  # refuses to autocast binary_cross_entropy. fp16 is explicitly REFUSED by the
+  # runner with a hard error rather than silently falling back.
+  precision: bf16
+  # Dice/mIoU every epoch; HD95 (expensive surface distance) every 10th.
+  # Model selection and final test evaluation are unaffected.
+  hd95_every_epochs: 10

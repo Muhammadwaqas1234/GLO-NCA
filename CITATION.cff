@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "GLO-NCA: Global Context-Aware Neural Cellular Automata for Brain Tumor Segmentation"
+abstract: >-
+  A lightweight, global-context-aware Neural Cellular Automata (NCA) architecture
+  for multi-modal 3D brain-tumor segmentation on BraTS. GLO-NCA V3 is a unified
+  multi-level model (global 32^3, regional 96^3, fine 128^3) with learnable
+  cross-level projections and learnable fusion, totalling 40,656 parameters.
+type: software
+authors:
+  - family-names: Waqas
+    given-names: Muhammad
+    affiliation: "Air University, Islamabad"
+keywords:
+  - neural cellular automata
+  - brain tumor segmentation
+  - BraTS
+  - 3D medical image segmentation
+  - lightweight deep learning
+license: MIT
+references:
+  - type: conference-paper
+    title: "Med-NCA: Robust and Lightweight Segmentation with Neural Cellular Automata"
+    authors:
+      - family-names: Kalkhof
+        given-names: John
+    year: 2023
+    collection-title: "IPMI"
+  - type: conference-paper
+    title: "M3D-NCA: Robust 3D Segmentation with Built-In Quality Control"
+    authors:
+      - family-names: Kalkhof
+        given-names: John
+      - family-names: Mukhopadhyay
+        given-names: Anirban
+    year: 2023
+    collection-title: "MICCAI"

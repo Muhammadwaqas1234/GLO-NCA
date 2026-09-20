@@ -1,0 +1,21 @@
+{
+  "check": "bounded real-data pipeline + DataLoader (workers=0)",
+  "local_only": true, "gcp_used": false, "gcp_cost_usd": 0,
+  "python": "3.12.9", "torch": "2.5.1+cu121", "cuda": "12.1",
+  "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+  "branch": "v3-multilevel", "commit": "7476e18",
+  "dataset": "MICCAI-LH-BraTS2025-MET-Challenge-Training",
+  "note": "REDUCED geometry (16/24/32) for bounded local timing; production 128^3 fwd+bwd NOT run (Phase 3: SPILL).",
+  "config_used": "configs/v3_smoke_5epoch.yaml (carries its own 908/194/194 split; canonical 898/200/198 verified separately against v3_multilevel_ckpt.yaml)",
+  "workers": 0, "cases": 2, "geometry": [16, 24, 32], "total_nca_steps": 50,
+  "batches": [
+    {"id": "_BraTS-MET-00001-000_0", "load_ms": 3583.8, "h2d_ms": 7.62, "fwd_ms": 1350.2,
+     "nesting_ET_sub_TC_sub_WT": true, "x_finite": true, "out_finite": true, "label_values": [0.0, 1.0]},
+    {"id": "_BraTS-MET-00002-000_0", "load_ms": 3517.5, "h2d_ms": 18.01, "fwd_ms": 910.6,
+     "nesting_ET_sub_TC_sub_WT": true, "x_finite": true, "out_finite": true, "label_values": [0.0, 1.0]}
+  ],
+  "peak_reserved_gb": 0.168,
+  "gpu_after_run_mib": 0,
+  "workers_1_status": "DEFERRED - bounded attempt produced no timing; terminated within hard timeout; GPU returned to 0 MiB",
+  "workers_correctness": "proven separately by scripts/test_dataloader_spawn.py (14/14 at workers 0/1/2)"
+}

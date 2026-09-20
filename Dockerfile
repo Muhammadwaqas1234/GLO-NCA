@@ -71,10 +71,24 @@ RUN python -c "import json,hashlib,sys; d=json.load(open('split/master_split.jso
 print('split OK', d['split_version'], d['split_sha256'][:12], \
 d['train_count'], d['val_count'], d['test_count'])"
 
-# V3 is the production architecture. There is deliberately NO default config:
-# a bare `docker run glo-nca:latest` must fail with argparse usage rather than
-# silently training the V2 baseline (configs/gcp_full.yaml), which is what the
-# previous `CMD ["--config", "configs/gcp_full.yaml"]` did.
-#   docker run ... glo-nca:latest --config configs/v3_multilevel_ckpt.yaml
+# There is deliberately NO default config: a bare `docker run glo-nca:latest`
+# must fail with argparse usage rather than silently training the wrong
+# architecture (the previous `CMD ["--config", "configs/gcp_full.yaml"]` trained
+# the V2 baseline).
+#
+# CONFIGURATION MAP -- these are NOT interchangeable:
+#   configs/glo_nca_production.yaml   PRODUCTION CANDIDATE
+#                                     GLO-NCA global context + multi-level fusion
+#                                     96^3 working volume, L1 48^3, L2 64^3,
+#                                     no level3, 20+20 steps, 33,089 params,
+#                                     patchify OFF, bf16
+#   configs/v3_multilevel_ckpt.yaml   FROZEN THESIS REFERENCE (historical)
+#                                     32/96/128, 50 steps -- do NOT use for the
+#                                     production campaign
+#
+# Verify identity before a long run (fails closed on the wrong config):
+#   python scripts/verify_glo_nca_production_config.py configs/glo_nca_production.yaml
+#
+#   docker run ... glo-nca:latest --config configs/glo_nca_production.yaml
 #   docker run ... glo-nca:latest --resume /out/<experiment-id>
 ENTRYPOINT ["python", "train.py"]

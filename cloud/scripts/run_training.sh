@@ -20,7 +20,9 @@ load_config
 # bare `run_training.sh` would have launched the WRONG architecture for days.
 CONFIG="${1:-}"
 [[ -n "${CONFIG}" ]] || die "usage: run_training.sh <config>
-       production: ./cloud/scripts/run_training.sh configs/v3_multilevel_ckpt.yaml"
+       production : ./cloud/scripts/run_training.sh configs/glo_nca_production.yaml
+       reference  : ./cloud/scripts/run_training.sh configs/v3_multilevel_ckpt.yaml   (FROZEN 32/96/128 -- historical)
+       Verify first: python scripts/verify_glo_nca_production_config.py configs/glo_nca_production.yaml"
 [[ -f "${REPO_DIR}/${CONFIG}" || -f "${CONFIG}" ]] || die "config not found: ${CONFIG}"
 
 # Concurrency guard backed by systemd (the real job owner), not a launcher pid.

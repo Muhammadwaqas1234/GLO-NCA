@@ -62,6 +62,33 @@ def _parse_args():
 def main() -> int:
     args = _parse_args()
 
+    # Phase 5 (B-01): validate the CLI contract BEFORE importing torch. These two
+    # guards are pure argument checks that need no heavy module, but they used to
+    # sit after `import runner` (which pulls in torch), so a misinvocation paid a
+    # ~210 s import before being told it was invalid -- and a bare `train.py`
+    # could not be checked under a sane timeout. Same exit code (2), same
+    # message, same conditions; only the import is deferred past them. Nothing on
+    # the successful training path is reordered.
+    if not args.resume and not args.config:
+        print("FAILED: --config is required (or use --resume <dir>).\n"
+              "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+        return 2
+    # Final audit (B-02): a mistyped --config path previously paid the ~13 s torch
+    # import and then died with a raw FileNotFoundError traceback (rc=1). A wrong
+    # path is the most likely production invocation mistake, so check it here --
+    # before the heavy imports -- and report it the same way as the other guards.
+    if args.config and not os.path.isfile(args.config):
+        print(f"FAILED: config not found: {args.config}\n"
+              "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+        return 2
+    if args.resume:
+        _cfg_probe = os.path.join(args.resume, "config", "config.yaml")
+        if not os.path.isdir(args.resume) or not os.path.exists(_cfg_probe):
+            print(f"FAILED: cannot resume {args.resume}: missing {_cfg_probe}.\n"
+                  "The experiment's own config is required to resume "
+                  "reproducibly; refusing to substitute a different config.")
+            return 2
+
     from src.experiment.config import load_config
     from src.experiment.workspace import Workspace
     from src.experiment import runner
@@ -86,6 +113,20 @@ def main() -> int:
                   "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
             return 2
         cfg = load_config(args.config)
+        # Final audit (B-03): an invalid --device previously failed only once the
+        # runner tried to use it -- AFTER Workspace.create() had already made a
+        # timestamped experiment directory, leaving an empty junk directory in
+        # experiments/ for every typo. Validate the string first; this only parses
+        # the device and does not select, initialise or allocate on it, so the
+        # normal training path is unaffected.
+        if args.device:
+            try:
+                import torch as _torch
+                _torch.device(args.device)
+            except Exception as _exc:
+                print(f"FAILED: invalid --device {args.device!r}: {_exc}\n"
+                      "  examples: cpu | cuda | cuda:0")
+                return 2
         name = args.experiment or cfg.name
         ws = Workspace.create(args.output, name,
                               experiment_id=args.experiment_id)

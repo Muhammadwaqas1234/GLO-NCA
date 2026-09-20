@@ -1,0 +1,26 @@
+{
+  "B: patchify ON  (model gets 64^3)": {
+    "input": "64^3",
+    "iter_ms": 8492.8,
+    "fwd_ms": 1456.1,
+    "bwd_ms": 7036.7,
+    "peak_mb": 1406.0,
+    "loss": 0.6698,
+    "finite": true
+  },
+  "A: patchify OFF (model gets 96^3)": {
+    "input": "96^3",
+    "iter_ms": 8511.8,
+    "fwd_ms": 1688.8,
+    "bwd_ms": 6823.0,
+    "peak_mb": 1416.0,
+    "loss": 0.6714,
+    "finite": true
+  },
+  "delta": {
+    "abs_ms": 19.0,
+    "pct_of_off": 0.2,
+    "vram_mb": 10.0,
+    "epoch_min_898": 0.3
+  }
+}
