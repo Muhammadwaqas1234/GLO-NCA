@@ -14,8 +14,10 @@
 # fallback -- if it fails, the gate fails (Phase 2, P0).
 #
 # Usage (on the VM):
-#   ./cloud/scripts/pretrain_gate.sh                                 # V3 production (default)
-#   ./cloud/scripts/pretrain_gate.sh configs/gcp_full.yaml           # V2 baseline
+#   ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
+#
+# Any other config in configs/ is historical and trains a DIFFERENT
+# architecture. Passing one here gates the wrong model.
 # =============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config

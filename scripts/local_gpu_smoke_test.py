@@ -189,7 +189,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--patches", type=int, nargs="+", default=[32, 48, 64, 96])
     ap.add_argument("--device", default=None, help="force 'cpu' or 'cuda:0'")
-    ap.add_argument("--config", default=os.path.join("configs", "gcp_full.yaml"))
+    # Defaults to the PRODUCTION config. The previous default was
+    # configs/gcp_full.yaml -- the V2 baseline -- so running this bare
+    # measured an architecture the project no longer trains.
+    ap.add_argument("--config",
+                    default=os.path.join("configs", "glo_nca_production.yaml"))
     args = ap.parse_args()
 
     cuda_ok = gpu_diagnostics()

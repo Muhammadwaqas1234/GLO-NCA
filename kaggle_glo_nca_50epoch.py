@@ -15,10 +15,10 @@ Production architecture source:
       configs/glo_nca_production.yaml            (hyperparameters)
 
 Production geometry:
-    96^3 working volume  ->  Level 1 48^3  +  Level 2 64^3
+    96^3 working volume  ->  Level 1 48^3 k5  +  Level 2 64^3 k5, 15+15 steps
 
 Parameters:
-    33,089 expected (asserted before training; run ABORTS on mismatch)
+    29,337 expected (asserted before training; run ABORTS on mismatch)
 
 Patchify:
     OFF  (full-volume input; no training crop, no ROI)

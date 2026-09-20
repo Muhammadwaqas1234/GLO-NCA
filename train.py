@@ -14,10 +14,24 @@ metrics CSVs, graphs, TensorBoard logs, a training log, the exact config, the
 patient split, the environment capture, a status file and a manifest.
 
 Usage:
-    python train.py --config configs/smoke_test.yaml
-    python train.py --config configs/v3_multilevel_ckpt.yaml   # production V3
-    python train.py --resume experiments/GLO-NCA-V2-YYYYMMDD-HHMMSS
-    python train.py --config configs/v3_multilevel_ckpt.yaml --device cpu
+    # THE production run. This is the model the thesis trains.
+    python train.py --config configs/glo_nca_production.yaml
+
+    # resume an interrupted run (e.g. after a Spot preemption)
+    python train.py --resume experiments/<run-id>
+
+    # continue past the planned budget, explicitly and on the record
+    python train.py --resume experiments/<run-id> --extend-to 310 \
+                    --extension-reason "validation still improving"
+
+configs/glo_nca_production.yaml is the ONLY production configuration. Every
+other config in configs/ is historical -- V2-era baselines and the frozen V3
+reference -- and trains a DIFFERENT architecture. They remain in the tree
+because audit scripts and thesis evidence cite them, not because they are
+alternatives. Verify before a long run:
+
+    python scripts/verify_glo_nca_production_config.py \
+        configs/glo_nca_production.yaml
 
 Legacy note: the old env-variable interface (EPOCHS/PATCH/AUG_LEVEL/...) is
 replaced by YAML configs so every run has an exact, saved record. The kaggle_v*
