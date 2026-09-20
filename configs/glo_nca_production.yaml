@@ -1,37 +1,43 @@
 # =============================================================================
-# GLO-NCA — PRODUCTION CONFIGURATION  (THE single active training config)
+# GLO-NCA - PRODUCTION CONFIGURATION  (THE single active training config)
 #
 # Architecture: GLO-NCA with GLOBAL CONTEXT + MULTI-LEVEL FUSION
-#   level1 = global-context level  — sees the whole input volume
+#   level1 = global-context level  - sees the whole input volume
 #   level2 = high-resolution segmentation level
 #   SE (channel) + spatial global context at EVERY NCA step
 #   learnable inter-level projection + learnable fusion Conv3d(48 -> 24)
-#   33,089 parameters (verified from the constructed model, not from docs)
+#   29,337 parameters (verified from the constructed model, not from docs)
 #
-# ---------------------------------------------------------------------------
-# CONFIG MAP — read this before editing any other file in configs/
+# -----------------------------------------------------------------------------
+# CATEGORY-C ARCHITECTURE DECISION - READ THIS FIRST
 #
-#   THIS FILE                        -> the active production run
-#   configs/v3_multilevel_ckpt.yaml  -> FROZEN thesis reference (32/96/128, 50 steps)
-#   configs/v3_ablation_{A,B,C}.yaml -> thesis ablation matrix (DO NOT DELETE:
-#                                       their parameter counts are cited in
-#                                       reports/validation/REAL_DATA_V3_VALIDATION_REPORT.md)
-#   configs/ablation_*.yaml          -> V2-era ablations (legacy `_build` path)
-#   configs/*smoke*.yaml             -> fast CI / smoke tests
-#   configs/profile_local_v3.yaml    -> profiling only
+# This configuration was CHANGED from the previous production architecture by
+# an explicit, recorded decision. It is a SCIENTIFIC change, not an
+# engineering optimisation, and it has NO segmentation-quality evidence.
 #
-# Supersedes the earlier 48/64 and 64/96 fast candidates (both removed in the
-# final cleanup; this file is the single production configuration).
+#                        previous          current
+#   level1 kernel        k=7               k=5
+#   level2 kernel        k=3               k=5
+#   NCA steps            20+20 = 40        15+15 = 30
+#   spatial GC kernel    k=7               k=5
+#   parameters           33,089            29,337
 #
-# ---------------------------------------------------------------------------
-# PHASE 2 RESOLVED DECISION — training_patch stays DISABLED. Evidence-based.
+# The spatial global-context kernel IS the thesis contribution. Reducing it
+# from 7 to 5 shrinks that mechanism's receptive field. No Dice/IoU/HD95
+# evidence exists for this architecture at the time of writing: the change
+# was approved on speed grounds and must be validated by the thesis training
+# run before any quality claim is made.
+#
+# The previous 33,089-parameter configuration remains fully recoverable from
+# git history (see reports/audit/ for its measured evidence).
+#
+# -----------------------------------------------------------------------------
+# PATCHIFY - EXPLICITLY RESOLVED AS OFF
 #
 # With training_patch ENABLED the DATASET crops a 64^3 patch out of the 96^3
-# working volume BEFORE the model is called. The model's global branch is
-# correct in itself (it always reads the uncropped tensor it is given), but it
-# then never receives the 96^3 volume: level1 — the GLOBAL-CONTEXT level, i.e.
-# the thesis contribution — would cover only ~30% of the brain during training
-# while covering the whole brain at evaluation.
+# working volume BEFORE the model is called. level1 - the GLOBAL-CONTEXT
+# level, i.e. the thesis contribution - would then cover only ~30% of the
+# brain during training while covering the whole brain at evaluation.
 #
 # MEASURED (RTX 3050, bf16, batch 1, matched conditions; see
 # reports/benchmarks/glo_nca_phase2/patchify_speed.json):
@@ -39,14 +45,11 @@
 #     patchify OFF (model gets 96^3): 8191.0 ms/iter, 1416 MB peak
 #     difference: -9.6 ms/iter (-0.1%), +10 MB
 #
-# Patchify buys NO speed here: both settings run the SAME 48^3 and 64^3 NCA
-# grids, and those grids dominate cost. Patchify only changes WHICH anatomy the
-# grid covers. So it cost the thesis contribution and returned nothing.
+# Patchify buys NO speed here: both settings run the SAME NCA grids, and those
+# grids dominate cost. It only changes WHICH anatomy the grid covers. So it
+# would cost the thesis contribution and return nothing.
 #
-# Verified with patchify OFF: global context reads the whole 96^3 volume
-# (output changes by 0.81 when only the non-patch rim changes, while a
-# patch-only input is provably blind to it: 0.00e+00), train/eval global scope
-# identical, and parameter count unchanged at 33,089.
+# DECISION: OFF. This is not left ambiguous.
 # =============================================================================
 
 experiment:
@@ -60,8 +63,8 @@ dataset:
   split_seed: 42
 
 data:
-  # CANONICAL SPLIT — frozen. 898 train / 200 validation / 198 test.
-  # SHA d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559
+  # CANONICAL SPLIT - frozen, never modified. 898 / 200 / 198.
+  # SHA d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d
   split_file: split/master_split.json
   quality_policy_file: split/data_quality_policy.json
 
@@ -97,14 +100,14 @@ model:
     enabled: true
     resolution: 48
     channels: 24
-    nca_steps: 20
-    kernel_size: 7                  # wide kernel -> larger receptive field
+    nca_steps: 15
+    kernel_size: 5
   level2:                           # HIGH-RESOLUTION segmentation level
     enabled: true
     resolution: 64
     channels: 24
-    nca_steps: 20
-    kernel_size: 3
+    nca_steps: 15
+    kernel_size: 5
   level3:
     enabled: false                  # structurally NOT instantiated
     resolution: 128
@@ -118,6 +121,9 @@ model:
   fire_rate: 0.6
   use_attention: true               # SE channel global context
   use_spatial: true                 # spatial global context
+  # Receptive field of the spatial global-context block. This IS the thesis
+  # contribution's kernel, so it is stated here rather than hardcoded.
+  spatial_kernel_size: 5
   hidden: 128
   dropout: 0.1
 

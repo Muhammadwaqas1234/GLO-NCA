@@ -44,13 +44,16 @@ if HERE not in sys.path:
 EXPECTED = {
     "level1_resolution": 48,
     "level1_channels": 24,
-    "level1_nca_steps": 20,
+    "level1_kernel_size": 5,
+    "level1_nca_steps": 15,
     "level2_resolution": 64,
     "level2_channels": 24,
-    "level2_nca_steps": 20,
+    "level2_kernel_size": 5,
+    "level2_nca_steps": 15,
     "level3_enabled": False,
-    "total_nca_steps": 40,
-    "parameters": 33089,
+    "total_nca_steps": 30,
+    "spatial_kernel_size": 5,   # the thesis contribution's receptive field
+    "parameters": 29337,
     "working_volume": 96,
     "patchify_enabled": False,
     "roi_fraction": 1.0,
@@ -123,12 +126,21 @@ def main(argv) -> int:
     chk("level1.resolution", l1.get("resolution"), EXPECTED["level1_resolution"])
     chk("level1.channels", l1.get("channels"), EXPECTED["level1_channels"])
     chk("level1.nca_steps", l1.get("nca_steps"), EXPECTED["level1_nca_steps"])
+    chk("level1.kernel_size", l1.get("kernel_size"),
+        EXPECTED["level1_kernel_size"])
     chk("level2.resolution", l2.get("resolution"), EXPECTED["level2_resolution"])
     chk("level2.channels", l2.get("channels"), EXPECTED["level2_channels"])
     chk("level2.nca_steps", l2.get("nca_steps"), EXPECTED["level2_nca_steps"])
+    chk("level2.kernel_size", l2.get("kernel_size"),
+        EXPECTED["level2_kernel_size"])
     chk("level3.enabled", bool(l3.get("enabled", False)), EXPECTED["level3_enabled"])
     chk("use_attention (SE)", bool(m_.get("use_attention")), EXPECTED["use_attention"])
     chk("use_spatial (spatial GC)", bool(m_.get("use_spatial")), EXPECTED["use_spatial"])
+    # The spatial global-context receptive field. Must be stated by the config:
+    # a missing key would silently fall back to the old hardcoded 7 and build a
+    # different architecture than the one declared here.
+    chk("model.spatial_kernel_size", m_.get("spatial_kernel_size"),
+        EXPECTED["spatial_kernel_size"])
     chk("global_context.roi_fraction",
         float((m_.get("global_context") or {}).get("roi_fraction", -1)),
         EXPECTED["roi_fraction"])
@@ -184,7 +196,11 @@ def main(argv) -> int:
         return 2
 
     print("  RESULT: PASS -- configuration IS the GLO-NCA production candidate.")
-    print("          GLO-NCA | 96^3 working volume | L1 48^3 | L2 64^3 | 20+20 steps")
+    print(f"          GLO-NCA | 96^3 working volume | "
+          f"L1 48^3 k{EXPECTED['level1_kernel_size']} | "
+          f"L2 64^3 k{EXPECTED['level2_kernel_size']} | "
+          f"{EXPECTED['level1_nca_steps']}+{EXPECTED['level2_nca_steps']} steps "
+          f"| spatial GC k{EXPECTED['spatial_kernel_size']}")
     print(f"          {n_params:,} parameters | global context ON | patchify OFF | bf16")
     print()
     print("  NOTE: identity verified, NOT scientific approval. 48^3/64^3 remains a")

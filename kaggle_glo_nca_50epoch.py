@@ -78,16 +78,16 @@ import numpy as np
 # #   configs/glo_nca_production.yaml exactly:                               #
 # #                                                                          #
 # #       working volume   96^3                                              #
-# #       level 1          48^3, 24 ch, 20 NCA steps, perception k=7         #
-# #       level 2          64^3, 24 ch, 20 NCA steps, perception k=3         #
+# #       level 1          48^3, 24 ch, 15 NCA steps, perception k=5         #
+# #       level 2          64^3, 24 ch, 15 NCA steps, perception k=5         #
 # #       level 3          ABSENT                                            #
-# #       total steps      40                                                #
-# #       spatial GC       k=7                                               #
+# #       total steps      30                                                #
+# #       spatial GC       k=5                                               #
 # #       SE               ON                                                #
 # #       fusion           learned Conv3d(48 -> 24)                          #
 # #       global context   FULL 96^3 working volume                          #
 # #       patchify         OFF                                               #
-# #       parameters       33,089                                            #
+# #       parameters       29,337                                            #
 # #                                                                          #
 # #   The identity gate ABORTS the run on any mismatch. It never adjusts     #
 # #   the model to make a check pass.                                        #
@@ -102,11 +102,14 @@ import numpy as np
 # #   final thesis performance: the Kaggle split is local to this file and   #
 # #   is not the 898/200/198 master split.                                   #
 # #                                                                          #
-# #   CATEGORY-C CANDIDATES (15+15 steps, spatial GC k=5, patchify,          #
-# #   smaller geometry) are reachable ONLY via use_preset(). They are        #
-# #   evaluated-only, have no Dice/HD95 validation, and every artifact from  #
-# #   such a run is stamped CATEGORY-C so it can never be mistaken for a     #
-# #   production result.                                                     #
+# #   NOTE: this architecture is itself a RECORDED CATEGORY-C DECISION      #
+# #   (k7->k5 on both levels, 20+20->15+15 steps, spatial GC k7->k5,         #
+# #   33,089 -> 29,337 params). It has NO segmentation-quality evidence      #
+# #   yet; see configs/glo_nca_production.yaml for the full record.          #
+# #                                                                          #
+# #   Further variants (40 steps, GC k=7, smaller geometry) are reachable    #
+# #   ONLY via use_preset(). Every artifact from such a run is stamped       #
+# #   CATEGORY-C so it can never be mistaken for a production result.        #
 # #                                                                          #
 # ############################################################################
 #
@@ -146,14 +149,14 @@ FAST_GRID = False
 # MEASURED (3 interleaved rounds, +/-0.05 s):
 #     20+20 -> 7.17 s/iter
 #     15+15 -> 5.38 s/iter   (1.33x)
-NCA_STEPS = 20
+NCA_STEPS = 15
 
 if FAST_GRID:
-    L1_RES, L1_CH, L1_STEPS, L1_K = 32, 24, NCA_STEPS, 7
-    L2_RES, L2_CH, L2_STEPS, L2_K = 48, 24, NCA_STEPS, 3
+    L1_RES, L1_CH, L1_STEPS, L1_K = 32, 24, NCA_STEPS, 5
+    L2_RES, L2_CH, L2_STEPS, L2_K = 48, 24, NCA_STEPS, 5
 else:
-    L1_RES, L1_CH, L1_STEPS, L1_K = 48, 24, NCA_STEPS, 7
-    L2_RES, L2_CH, L2_STEPS, L2_K = 64, 24, NCA_STEPS, 3
+    L1_RES, L1_CH, L1_STEPS, L1_K = 48, 24, NCA_STEPS, 5
+    L2_RES, L2_CH, L2_STEPS, L2_K = 64, 24, NCA_STEPS, 5
 
 # --- SPATIAL GLOBAL-CONTEXT KERNEL (selected lever) ------------------------
 # GCSpatialBlock3D kernel 7 -> 5. CATEGORY C: shrinks the spatial global-context
@@ -161,7 +164,7 @@ else:
 # Parameters: 33,089 -> 32,217 (the 2->1 conv loses 2*(7^3-5^3) = 436 weights
 # per level, x2 levels = 872).
 # MEASURED, stacked on 15+15: 5.38 -> 4.86 s/iter (a further 1.11x).
-SPATIAL_GC_KERNEL = 7
+SPATIAL_GC_KERNEL = 5
 HIDDEN = 128
 FIRE_RATE = 0.6
 DROPOUT = 0.1
@@ -227,7 +230,7 @@ USE_AUGMENTATION = True
 # conv drops 2*(7^3 - 5^3) = 436 weights per level, x2 levels = 872.
 # Grid size and NCA step count do NOT change it -- an NCA shares one update rule
 # across all voxels and reuses it every step (measured: identical at every grid).
-EXPECTED_PARAMS = 33089 if SPATIAL_GC_KERNEL == 7 else 32217
+EXPECTED_PARAMS = 29337
 
 # --- RUN MODE (derived, never set by hand) ---------------------------------
 # True only when EVERY setting matches configs/glo_nca_production.yaml.
@@ -235,9 +238,9 @@ EXPECTED_PARAMS = 33089 if SPATIAL_GC_KERNEL == 7 else 32217
 # log, the config snapshot, the final summary JSON and the markdown report, so
 # a Category-C result cannot later be mistaken for a production one.
 IS_PRODUCTION_IDENTITY = (
-    (not FAST_GRID) and NCA_STEPS == 20 and SPATIAL_GC_KERNEL == 7
+    (not FAST_GRID) and NCA_STEPS == 15 and SPATIAL_GC_KERNEL == 5
     and (not USE_PATCHIFY) and WORKING_VOLUME == 96
-    and L1_RES == 48 and L2_RES == 64 and L1_K == 7 and L2_K == 3
+    and L1_RES == 48 and L2_RES == 64 and L1_K == 5 and L2_K == 5
     and L1_CH == 24 and L2_CH == 24 and HIDDEN == 128
 )
 RUN_MODE = "PRODUCTION" if IS_PRODUCTION_IDENTITY else "CATEGORY-C"
@@ -248,15 +251,15 @@ def category_c_deviations():
     d = []
     if FAST_GRID or L1_RES != 48 or L2_RES != 64:
         d.append(f"geometry {L1_RES}^3/{L2_RES}^3 (production 48^3/64^3)")
-    if NCA_STEPS != 20:
+    if NCA_STEPS != 15:
         d.append(f"NCA steps {L1_STEPS}+{L2_STEPS}={L1_STEPS+L2_STEPS} "
-                 f"(production 20+20=40)")
-    if SPATIAL_GC_KERNEL != 7:
-        d.append(f"spatial GC k={SPATIAL_GC_KERNEL} (production k=7)")
+                 f"(production 15+15=30)")
+    if SPATIAL_GC_KERNEL != 5:
+        d.append(f"spatial GC k={SPATIAL_GC_KERNEL} (production k=5)")
     if USE_PATCHIFY:
         d.append(f"patchify ON patch {PATCH_SIZE}^3 (production OFF)")
-    if EXPECTED_PARAMS != 33089:
-        d.append(f"parameters {EXPECTED_PARAMS:,} (production 33,089)")
+    if EXPECTED_PARAMS != 29337:
+        d.append(f"parameters {EXPECTED_PARAMS:,} (production 29,337)")
     return d
 
 
@@ -278,24 +281,16 @@ def category_c_deviations():
 # Each preset is (FAST_GRID, NCA_STEPS, SPATIAL_GC_KERNEL, USE_PATCHIFY).
 PRESETS = {
     # name            grid   steps  gc_k  patchify  speedup  note
-    "production":    (False,    20,    7,    False, "1.00x",
-                      "THE thesis architecture. 33,089 params. Reportable."),
-    "steps15":       (False,    15,    7,    False, "1.88x",
-                      "C: 30 NCA steps instead of 40. Params unchanged."),
-    "gc5":           (False,    20,    5,    False, "1.61x",
-                      "C: shrinks the spatial global-context receptive field."),
-    "geo40_56":      (None,     20,    7,    False, "2.21x",
+    "production":    (False,    15,    5,    False, "1.00x",
+                      "THE thesis architecture. 29,337 params. Reportable."),
+    "steps20":       (False,    20,    5,    False, "0.75x",
+                      "C: 40 NCA steps (the pre-2026-09 production depth)."),
+    "gc7":           (False,    15,    7,    False, "0.90x",
+                      "C: wider spatial global context (previous k=7)."),
+    "geo40_56":      (None,     15,    5,    False, "1.45x",
                       "C: 40^3/56^3 grids. Params unchanged."),
-    "geo32_48":      (True,     20,    7,    False, "3.85x",
+    "geo32_48":      (True,     15,    5,    False, "2.30x",
                       "C: 32^3/48^3 grids. Params unchanged."),
-    "fast":          (True,     15,    5,     True, "~4.0x",
-                      "C: all four stacked. THE CURRENT DEFAULT."),
-    # Same as "fast" but on the PRODUCTION 48^3/64^3 grid. Isolates the cost
-    # and the quality effect of grid size alone: steps, GC kernel and patchify
-    # stay exactly as in "fast", so a Dice difference vs "fast" is attributable
-    # to the grid and nothing else.
-    "fast_grid4864": (False,    15,    5,     True, "~1.4x",
-                      "C: fast settings on the production 48^3/64^3 grid."),
 }
 _GEO_OVERRIDE = {"geo40_56": (40, 56)}
 
@@ -324,20 +319,20 @@ def use_preset(name: str, verbose: bool = True):
         l1, l2 = 32, 48
     else:
         l1, l2 = 48, 64
-    g["L1_RES"], g["L1_CH"], g["L1_STEPS"], g["L1_K"] = l1, 24, steps, 7
-    g["L2_RES"], g["L2_CH"], g["L2_STEPS"], g["L2_K"] = l2, 24, steps, 3
+    g["L1_RES"], g["L1_CH"], g["L1_STEPS"], g["L1_K"] = l1, 24, steps, 5
+    g["L2_RES"], g["L2_CH"], g["L2_STEPS"], g["L2_K"] = l2, 24, steps, 5
     # Patch must be strictly SMALLER than the high-res grid, otherwise
     # patchify is a no-op: level 2 would run on the same number of voxels
     # either way (this was the measured 0%-gain bug the audit found).
     # Same rule as the module default: 48 at 64^3, 40 at 48^3.
     g["PATCH_SIZE"] = min(l2 - 8, WORKING_VOLUME - 8)
-    g["EXPECTED_PARAMS"] = 33089 if gck == 7 else 32217
+    g["EXPECTED_PARAMS"] = 30209 if gck == 7 else 29337
 
     g["IS_PRODUCTION_IDENTITY"] = (
-        (not g["FAST_GRID"]) and g["NCA_STEPS"] == 20
-        and g["SPATIAL_GC_KERNEL"] == 7 and (not g["USE_PATCHIFY"])
+        (not g["FAST_GRID"]) and g["NCA_STEPS"] == 15
+        and g["SPATIAL_GC_KERNEL"] == 5 and (not g["USE_PATCHIFY"])
         and WORKING_VOLUME == 96 and g["L1_RES"] == 48 and g["L2_RES"] == 64
-        and g["L1_K"] == 7 and g["L2_K"] == 3 and g["L1_CH"] == 24
+        and g["L1_K"] == 5 and g["L2_K"] == 5 and g["L1_CH"] == 24
         and g["L2_CH"] == 24 and HIDDEN == 128)
     g["RUN_MODE"] = ("PRODUCTION" if g["IS_PRODUCTION_IDENTITY"]
                      else "CATEGORY-C")
@@ -379,7 +374,7 @@ def print_presets():
         cls = "PRODUCTION" if nm == "production" else "CATEGORY C"
         mark = " <- active" if nm == ACTIVE_PRESET else ""
         print(f"  {nm:15s} {f'{l1}/{l2}':>9s} {steps*2:>6d} {gck:>5d} "
-              f"{str(patch):>6s} {33089 if gck == 7 else 32217:>8,d} "
+              f"{str(patch):>6s} {30209 if gck == 7 else 29337:>8,d} "
               f"{speed:>7s}  {cls}{mark}")
     print()
     print("  Only 'production' may be reported as thesis performance.")
