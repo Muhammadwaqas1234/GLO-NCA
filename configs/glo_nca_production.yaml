@@ -83,8 +83,8 @@ data:
 
   # See the methodology warning in the header before enabling.
   training_patch:
-    enabled: false
-    working_volume: 96              # resample target when enabled
+    enabled: false                  # patchify OFF; the runner refuses true here
+    working_volume: 128             # resample target when enabled
     patch_size: 64                  # MUST be strictly < working_volume
 
 model:
@@ -144,7 +144,12 @@ training:
   # scientifically necessary.
   epochs: 300
   batch_size: 1                     # 2 and 4 verified working; 1 is the default
-  patch_size: 64                    # = finest ACTIVE level (level2)
+
+  # WORKING VOLUME. The dataset resamples each case to this size and the model
+  # receives it whole; GLO_NCA_V3_MultiLevel.forward then resamples internally
+  # to each level's resolution. It is therefore the global-context source, and
+  # the only place the working volume is set.
+  patch_size: 128
   augmentation: light
   workers: 2
 
