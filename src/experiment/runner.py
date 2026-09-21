@@ -42,6 +42,7 @@ from .dataset_validation import (validate_dataset, summarize,
 from .data_quality import (load_policy as dq_load_policy,
                            DataQualityPolicyError)
 from .run_diagnosis import diagnose
+from . import postprocess as PP
 from src.profiling import configure as _configure_profiler
 from src.profiling.memory import MemorySampler
 from .logutil import CSVLogger, TensorBoard, get_logger
@@ -1186,9 +1187,20 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         m.load_state_dict(sd)
 
     tune = bool(cfg.get("evaluation", "tune_thresholds"))
+    _pp_cfg = (cfg.section("evaluation") or {}).get("postprocessing") or {}
+    _pp_on = bool(_pp_cfg.get("enabled", False))
+    _min_comp = PP.min_component_config(cfg) if _pp_on else {r: 0 for r in REGIONS}
+    logger.info("post-processing: %s  min component voxels %s",
+                "ON" if _pp_on else "OFF", _min_comp)
+
     val_pairs = ME.collect_probs(agent, ds, "val")
+    if _pp_on:
+        val_pairs = PP.apply_to_pairs(val_pairs, {r: 0.5 for r in REGIONS},
+                                      _min_comp)
     thresholds = ME.tune_thresholds(val_pairs) if tune else {r: 0.5 for r in REGIONS}
     test_pairs = ME.collect_probs(agent, ds, "test")
+    if _pp_on:
+        test_pairs = PP.apply_to_pairs(test_pairs, thresholds, _min_comp)
     test_05 = ME.score(test_pairs, {r: 0.5 for r in REGIONS})
     test = ME.score(test_pairs, thresholds)
 
