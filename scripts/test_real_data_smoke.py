@@ -92,7 +92,10 @@ def main() -> int:
     from src.experiment.config import load_config
     from src.experiment.datasource import discover_cases
     from src.experiment.postprocess import apply_to_pairs, min_component_config
-    from src.models.Model_GLO_NCA_V3 import build_v3_from_config
+    # The runner selects build_glo_nca_global_context when the config has a
+    # model.global_context block, which production does. Mirror that here so
+    # the gate verifies the model that actually trains.
+    from src.experiment.runner import _build_production_model
 
     print("=" * 74)
     print("REAL-DATA SMOKE -- GLO-NCA Production")
@@ -126,7 +129,7 @@ def main() -> int:
           f"{len(train_ids)} train, {len(val_ids)} val")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_v3_from_config(cfg, device=device).to(device)
+    model = _build_production_model(cfg, device).to(device)
     total = sum(p.numel() for p in model.parameters())
     aux_n = sum(p.numel() for p in model.aux_heads.parameters()) \
         if getattr(model, "aux_heads", None) else 0

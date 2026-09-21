@@ -40,14 +40,17 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def main() -> int:
     from src.experiment.config import load_config
     from src.experiment.postprocess import min_component_config
-    from src.models.Model_GLO_NCA_V3 import build_v3_from_config
+    # The runner selects build_glo_nca_global_context when the config has a
+    # model.global_context block, which production does. Mirror that here so
+    # the gate verifies the model that actually trains.
+    from src.experiment.runner import _build_production_model
 
     print("=" * 74)
     print("ARCHITECTURE IDENTITY -- GLO-NCA Production")
     print("=" * 74)
 
     cfg = load_config(os.path.join(_HERE, "configs", "glo_nca_production.yaml"))
-    model = build_v3_from_config(cfg, device=torch.device("cpu"))
+    model = _build_production_model(cfg, torch.device("cpu"))
     mcfg = cfg.section("model")
 
     total = sum(p.numel() for p in model.parameters())

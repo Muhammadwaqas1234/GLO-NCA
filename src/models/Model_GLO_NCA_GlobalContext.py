@@ -231,6 +231,16 @@ class GLO_NCA_GlobalContext(GLO_NCA_V3_MultiLevel):
             else:
                 fused_cf = torch.stack(fused, dim=0).sum(dim=0)
             logits = self.seg_head(fused_cf)
+            if self.deep_supervision and self.training and self.aux_heads:
+                aux = []
+                for i, head in enumerate(self.aux_heads):
+                    s_i = level_states[i]
+                    if i < self.global_levels and self.global_levels < len(self.levels):
+                        s_i = crop_batch(s_i)
+                    s_i = self.level_to_fine[i](s_i)
+                    s_i = self._resize_cl(s_i, fine_res, mode="nearest")
+                    aux.append(head(_to_cf(s_i)))
+                return logits, aux
         return logits
 
 
@@ -292,7 +302,7 @@ def build_glo_nca_global_context(cfg, input_channels=4, output_channels=3,
     roi = 1.0 if force_full_volume else float(gc_cfg.get("roi_fraction", 1.0))
     return GLO_NCA_GlobalContext(
         input_channels=input_channels, output_channels=output_channels,
-        levels=[lvl("level1", 32), lvl("level2", 96), lvl("level3", 128)],
+        levels=[lvl("level1", 48), lvl("level2", 64), lvl("level3", 128)],
         fire_rate=float(m.get("fire_rate", 0.6)),
         use_attention=bool(m.get("use_attention", True)),
         use_spatial=bool(m.get("use_spatial", True)),
@@ -305,5 +315,7 @@ def build_glo_nca_global_context(cfg, input_channels=4, output_channels=3,
         # own mechanism, so it is stated by the config rather than hardcoded.
         # Default 7 reproduces the original value for any config that omits it.
         spatial_kernel_size=int(m.get("spatial_kernel_size", 7)),
+        deep_supervision=bool((m.get("deep_supervision", {}) or {})
+                              .get("enabled", False)),
         roi_fraction=roi,
         global_levels=int(gc_cfg.get("global_levels", 1)))
