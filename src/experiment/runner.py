@@ -197,7 +197,7 @@ def _is_v3(cfg: Config) -> bool:
 
 
 GLO_NCA_PRODUCTION_IDENTITY = {
-    "working_volume": 96,
+    "working_volume": 128,
     "level1_resolution": 48,
     "level2_resolution": 64,
     "level1_channels": 24,

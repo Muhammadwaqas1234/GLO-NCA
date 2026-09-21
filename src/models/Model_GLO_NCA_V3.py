@@ -5,8 +5,11 @@ GLO-NCA V3 -- Multi-Level GLO-NCA (NEW architecture; V2 is untouched baseline).
 A single UNIFIED model with three GLO-NCA levels connected by LEARNABLE feature
 fusion, in strict information flow:
 
-    Level 1 (global, low-res)  ->  Level 2 (96^3 regional)  ->  Level 3 (128^3
-    fine)  ->  learnable multi-level fusion  ->  WT/TC/ET logits.
+    Level 1 (global, low-res)  ->  Level 2 (high-res)  ->  optional Level 3
+    ->  learnable multi-level fusion  ->  WT/TC/ET logits.
+
+    GLO-NCA production runs two levels: L1 48^3 and L2 64^3, from a 128^3
+    working volume, with level 3 disabled.
 
 Design principles (all verified against the V2 code):
   * Each level is the EXISTING ``BasicNCA3D`` (SE + spatial GC, channels-last
@@ -270,7 +273,10 @@ def build_v3_from_config(cfg, input_channels=4, output_channels=3, device=None):
             kernel_size=int(s.get("kernel_size", 3)),
         )
     m = cfg.raw.get("model", {})
-    levels = [lvl("level1", 32), lvl("level2", 96), lvl("level3", 128)]
+    # Fallbacks match the GLO-NCA production geometry. The production config
+    # states every value explicitly, so these apply only to a config that
+    # omits a level.
+    levels = [lvl("level1", 48), lvl("level2", 64), lvl("level3", 128)]
     # Memory-only opt-in flag; default OFF. Read from `memory.gradient_checkpointing`
     # (top-level) so the production config stays unchanged unless it opts in.
     gc = bool((cfg.raw.get("memory", {}) or {}).get("gradient_checkpointing", False))

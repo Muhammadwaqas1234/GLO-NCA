@@ -77,8 +77,10 @@ def main() -> int:
 
     check("config level3 disabled",
           bool(mcfg["level3"]["enabled"]) is False)
-    check("working volume 96^3",
-          int((cfg.section("data") or {})["training_patch"]["working_volume"]) == 96,
+    wv = int(cfg.get("training", "patch_size"))
+    check("working volume 128^3", wv == 128, f"{wv}^3")
+    check("training_patch.working_volume consistent",
+          int((cfg.section("data") or {})["training_patch"]["working_volume"]) == wv,
           str((cfg.section("data") or {})["training_patch"]["working_volume"]))
     check("spatial global-context kernel 5",
           int(mcfg["spatial_kernel_size"]) == 5, str(mcfg["spatial_kernel_size"]))
@@ -150,6 +152,33 @@ def main() -> int:
           f"{len(train_out[1])} auxiliary head(s)" if isinstance(train_out, tuple) else "bare tensor")
     check("eval() returns primary logits only",
           isinstance(eval_out, torch.Tensor), type(eval_out).__name__)
+
+    check("output at the finest level resolution",
+          tuple(eval_out.shape[2:]) == (64, 64, 64), str(tuple(eval_out.shape[2:])))
+
+    # Global context must read the WHOLE working volume: change only the outer
+    # rim and require the output to move.
+    a = torch.zeros(1, wv, wv, wv, 4)
+    q = wv // 4
+    a[:, q:wv - q, q:wv - q, q:wv - q, :] = 1.0
+    b = a.clone()
+    b[:, :q, :, :, :] = 5.0
+    with torch.no_grad():
+        delta = (model(a) - model(b)).abs().max().item()
+    check("global context reads the full working volume",
+          delta > 1e-6, f"max|delta|={delta:.6f} when only the rim changes")
+
+    ds_w = float((mcfg.get("deep_supervision") or {}).get("weight", 0.0))
+    check("deep-supervision weight 0.4", abs(ds_w - 0.4) < 1e-9, str(ds_w))
+    check("gradient checkpointing enabled",
+          bool((cfg.raw.get("memory", {}) or {}).get("gradient_checkpointing",
+               (cfg.section("performance") or {}).get("gradient_checkpointing", False))),
+          "memory/performance.gradient_checkpointing")
+    check("preprocessing cache enabled",
+          bool(((cfg.section("data") or {}).get("cache") or {}).get("enabled", False)))
+    check("epoch budget 300",
+          int(cfg.get("training", "epochs")) == 300,
+          str(cfg.get("training", "epochs")))
 
     failed = [n for n, ok, _ in RESULTS if not ok]
     print("=" * 74)
