@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+load_config
 
 GPU="${GPU_TYPE:-nvidia-l4}"
 MACHINE="${MACHINE_TYPE:-g2-standard-8}"
@@ -29,7 +30,7 @@ mapfile -t ZONES < <(
   gcloud compute accelerator-types list \
     --filter="name=${GPU}" \
     --format="value(zone)" \
-    --project="${GCP_PROJECT_ID}" 2>/dev/null | sort -u
+    --project="${GCP_PROJECT_ID}" 2>/dev/null | tr -d '\r' | sort -u
 )
 
 if [ "${#ZONES[@]}" -eq 0 ]; then
@@ -38,8 +39,9 @@ if [ "${#ZONES[@]}" -eq 0 ]; then
 fi
 
 for z in "${ZONES[@]}"; do
-  mark=" "
-  [ "${z}" = "${GCP_ZONE:-}" ] && mark="*"
+  # if/else, not `[ ] && x=y`: under `set -e` a failed test makes the && chain
+  # return non-zero and the marker is silently never applied.
+  if [ "${z}" = "${GCP_ZONE:-}" ]; then mark="*"; else mark=" "; fi
   printf "  %s %s\n" "${mark}" "${z}"
 done
 echo
