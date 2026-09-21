@@ -43,6 +43,7 @@ from .data_quality import (load_policy as dq_load_policy,
                            DataQualityPolicyError)
 from .run_diagnosis import diagnose
 from . import postprocess as PP
+from . import per_case_diagnostics as PCD
 from src.profiling import configure as _configure_profiler
 from src.profiling.memory import MemorySampler
 from .logutil import CSVLogger, TensorBoard, get_logger
@@ -216,6 +217,25 @@ GLO_NCA_PRODUCTION_IDENTITY = {
     "seed": 42,
     "patchify": False,
 }
+
+
+def _case_ids_for_state(exp, state: str):
+    """Ordered case ids for a split, matching collect_probs' iteration order."""
+    try:
+        paths = exp.data_split.get_images(state)
+    except Exception:
+        return []
+    ids = []
+    for p in paths:
+        base = os.path.basename(str(p))
+        if base.endswith(".nii.gz"):
+            base = base[:-len(".nii.gz")]
+        for suffix in ("-t1n", "-t1c", "-t2w", "-t2f", "-seg"):
+            if base.endswith(suffix):
+                base = base[:-len(suffix)]
+                break
+        ids.append(base)
+    return ids
 
 
 def _build_production_model(cfg: Config, device):
@@ -1231,6 +1251,33 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         test_pairs = PP.apply_to_pairs(test_pairs, thresholds, _min_comp)
     test_05 = ME.score(test_pairs, {r: 0.5 for r in REGIONS})
     test = ME.score(test_pairs, thresholds)
+
+    # Per-case diagnostics. Validation and test are written to SEPARATE files
+    # so a validation artifact can never be mistaken for frozen-test evidence.
+    # Metrics come from the primary logits; auxiliary deep-supervision heads
+    # are training-only and never reach an evaluation path.
+    try:
+        _val_rows = PCD.build_rows(val_pairs, _case_ids_for_state(exp, "val"),
+                                   "validation", {r: 0.5 for r in REGIONS})
+        PCD.write_csv(ws.path("reports", "validation_per_case.csv"), _val_rows)
+        _val_summary = PCD.summarise(_val_rows)
+        _test_rows = PCD.build_rows(test_pairs, _case_ids_for_state(exp, "test"),
+                                    "test", thresholds)
+        PCD.write_csv(ws.path("reports", "test_per_case.csv"), _test_rows)
+        _test_summary = PCD.summarise(_test_rows)
+        for _split, _sm in (("validation", _val_summary), ("test", _test_summary)):
+            for _r in REGIONS:
+                _reg = _sm["regions"][_r]
+                logger.info("per-case %s %s: HD95 valid %d / invalid %d %s",
+                            _split, _r, _reg["hd95_valid_cases"],
+                            _reg["hd95_invalid_cases"],
+                            _reg["hd95_invalid_reasons"] or "")
+        _diag_summary = {"validation": _val_summary, "test": _test_summary}
+    except Exception as _exc:
+        logger.warning("per-case diagnostics NOT written: %s: %s",
+                       type(_exc).__name__, _exc)
+        _diag_summary = {"status": "NOT MEASURED",
+                         "reason": f"{type(_exc).__name__}: {_exc}"}
 
     _log_table(logger, f"FINAL TEST @ 0.5 (best @ epoch {bw['ep']})", test_05)
     _log_table(logger, "FINAL TEST @ tuned thresholds "

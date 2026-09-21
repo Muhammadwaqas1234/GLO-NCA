@@ -9,7 +9,7 @@ established from measurement rather than assumption.
 DESIGN NOTES
 ------------
 * **Real model.** Uses ``GLO_NCA_V3_MultiLevel`` built from the production config
-  (``configs/v3_multilevel_ckpt.yaml``): production channels (24/24/16), hidden
+  (``configs/historical/v3_multilevel_ckpt.yaml``): production channels (24/24/16), hidden
   128, fire rate 0.6, SE + spatial GC, gradient checkpointing ON, batch 1.
   No toy model, no architecture change.
 

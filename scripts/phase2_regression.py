@@ -55,7 +55,7 @@ def _torch():
 # --------------------------------------------------------------------------- #
 def t_production_config():
     import yaml
-    cfg = yaml.safe_load(open(os.path.join(_ROOT, "configs/v3_multilevel_ckpt.yaml")))
+    cfg = yaml.safe_load(open(os.path.join(_ROOT, "configs/historical/v3_multilevel_ckpt.yaml")))
     want = {
         ("experiment", "seed"): 42,
         ("training", "epochs"): 300,
@@ -88,7 +88,7 @@ def t_param_count():
     torch = _torch()
     from src.experiment.config import load_config
     from src.models.Model_GLO_NCA_V3 import build_v3_from_config
-    cfg = load_config(os.path.join(_ROOT, "configs/v3_multilevel_ckpt.yaml"))
+    cfg = load_config(os.path.join(_ROOT, "configs/historical/v3_multilevel_ckpt.yaml"))
     m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
     n = m.parameter_report()["total_parameters"]
     return n == 40656, f"{n} parameters (want 40656)"
@@ -103,7 +103,7 @@ def t_v3_forward_backward():
     # The former v3_smoke_1epoch.yaml only shortened the epoch count while keeping
     # full resolutions (32/96/128), so it would have run the whole 128^3 workload
     # here; it was removed in the final cleanup.
-    cfg = load_config(os.path.join(_ROOT, "configs/smoke_test_v3.yaml"))
+    cfg = load_config(os.path.join(_ROOT, "configs/historical/smoke_test_v3.yaml"))
     m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
     x = torch.randn(1, 16, 16, 16, 4)
     y = m(x)
@@ -240,7 +240,7 @@ def t_no_v2_production_default():
         bad.append("Dockerfile CMD still defaults to V2")
     rt = io.open(os.path.join(_ROOT, "cloud/scripts/run_training.sh"),
                  encoding="utf-8").read()
-    if '${1:-configs/gcp_full.yaml}' in rt:
+    if '${1:-configs/historical/gcp_full.yaml}' in rt:
         bad.append("run_training.sh still defaults to V2")
     sg = io.open(os.path.join(_ROOT, "cloud/scripts/setup_gcp.sh"),
                  encoding="utf-8").read()

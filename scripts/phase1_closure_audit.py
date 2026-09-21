@@ -132,7 +132,7 @@ def t_citations_preserved():
 # --------------------------------------------------------------------------- #
 # STEP 5/6 -- methodology fingerprint + single authoritative config
 # --------------------------------------------------------------------------- #
-PROD = "configs/v3_multilevel_ckpt.yaml"
+PROD = "configs/historical/v3_multilevel_ckpt.yaml"
 
 FINGERPRINT = {
     ("experiment", "seed"): 42,
@@ -186,15 +186,16 @@ def t_methodology_fingerprint():
 
 
 def t_single_production_config():
-    """Exactly one config may describe itself as THE production config."""
+    """Exactly one ACTIVE config, and it is the production config.
+
+    Legacy configurations live under configs/historical/ and are excluded:
+    the active namespace must contain one obvious authority.
+    """
     import glob
-    claims = []
-    for p in sorted(glob.glob(os.path.join(_ROOT, "configs", "*.yaml"))):
-        t = io.open(p, encoding="utf-8").read()
-        if re.search(r"THIS IS THE PRODUCTION CONFIG", t, re.I):
-            claims.append(os.path.basename(p))
-    return (claims == ["v3_multilevel_ckpt.yaml"]), \
-        f"configs claiming production: {claims or 'none'}"
+    active = sorted(os.path.basename(p) for p in
+                    glob.glob(os.path.join(_ROOT, "configs", "*.yaml")))
+    return (active == ["glo_nca_production.yaml"]), \
+        f"active configs: {active or 'none'}"
 
 
 def t_no_contradictory_production_docs():
@@ -219,7 +220,7 @@ def t_f01_tracked():
     r = subprocess.run(["git", "ls-files", "--error-unmatch",
                         "src/models/Model_GLO_NCA_V3.py",
                         "src/agents/Agent_GLO_NCA_V3.py",
-                        "configs/v3_multilevel_ckpt.yaml",
+                        "configs/historical/v3_multilevel_ckpt.yaml",
                         "split/master_split.json"],
                        capture_output=True, cwd=_ROOT)
     return r.returncode == 0, "V3 model, agent, production config and split are tracked"
@@ -292,7 +293,7 @@ def t_v2_fallback_blocked():
         bad.append("resume falls back to --config")
     if any(l.startswith("CMD") and "gcp_full" in l for l in code_lines("Dockerfile")):
         bad.append("Dockerfile CMD")
-    if "${1:-configs/gcp_full.yaml}" in read("cloud/scripts/run_training.sh"):
+    if "${1:-configs/historical/gcp_full.yaml}" in read("cloud/scripts/run_training.sh"):
         bad.append("run_training.sh default")
     if "clone -b v2 " in read("cloud/scripts/setup_gcp.sh"):
         bad.append("setup_gcp.sh branch")

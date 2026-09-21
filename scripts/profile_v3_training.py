@@ -11,7 +11,7 @@ change the training methodology and is never invoked by train.py.
 Usage (on a GPU box, e.g. Kaggle H100):
     python scripts/profile_v3_training.py --cases 4 --resolution 128 \
         --workers 4 --checkpointing true [--data-root /path/to/BraTS] \
-        [--config configs/v3_smoke_5epoch.yaml]
+        [--config configs/historical/v3_smoke_5epoch.yaml]
 
 If --data-root is omitted (or no data found) it profiles on SYNTHETIC volumes of
 the requested resolution so the MODEL/checkpointing cost can still be measured

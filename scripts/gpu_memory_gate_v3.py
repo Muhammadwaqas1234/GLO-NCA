@@ -14,7 +14,7 @@ chosen GPU, that is reported as a hardware-capacity result (pick a larger GPU),
 never silently worked around.
 
 Usage (on the GPU VM):
-    python scripts/gpu_memory_gate_v3.py --config configs/v3_multilevel.yaml
+    python scripts/gpu_memory_gate_v3.py --config configs/historical/v3_multilevel.yaml
     python scripts/gpu_memory_gate_v3.py --resolutions 96,128     # production only
 """
 import argparse

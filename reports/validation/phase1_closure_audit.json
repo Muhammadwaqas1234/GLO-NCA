@@ -9,7 +9,7 @@
     "section": "STEP 4  GLO-NCA naming",
     "name": "GLO-NCA naming used across active files",
     "status": "PASS",
-    "detail": "56 active files carry GLO-NCA naming"
+    "detail": "66 active files carry GLO-NCA naming"
   },
   {
     "section": "STEP 4  GLO-NCA naming",
@@ -27,7 +27,7 @@
     "section": "STEP 5/6  methodology fingerprint + authoritative config",
     "name": "exactly one config claims to be production",
     "status": "PASS",
-    "detail": "configs claiming production: ['v3_multilevel_ckpt.yaml']"
+    "detail": "active configs: ['glo_nca_production.yaml']"
   },
   {
     "section": "STEP 5/6  methodology fingerprint + authoritative config",
@@ -207,13 +207,13 @@
     "section": "STEP 14/15  container, cloud scripts, security",
     "name": "cloud shell scripts parse",
     "status": "PASS",
-    "detail": "19 cloud scripts parse"
+    "detail": "20 cloud scripts parse"
   },
   {
     "section": "STEP 14/15  container, cloud scripts, security",
     "name": "production docker image built",
-    "status": "SKIP",
-    "detail": "docker daemon not reachable"
+    "status": "PASS",
+    "detail": "image present (16750a3fa7ce)"
   },
   {
     "section": "STEP 15  dead files / references / report integrity",
