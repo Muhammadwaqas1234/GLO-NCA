@@ -218,6 +218,17 @@ GLO_NCA_PRODUCTION_IDENTITY = {
 }
 
 
+def _build_production_model(cfg: Config, device):
+    """Construct the model exactly as the runner does for a given config."""
+    if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
+        from src.models.Model_GLO_NCA_GlobalContext import (
+            build_glo_nca_global_context)
+        return build_glo_nca_global_context(cfg, input_channels=4,
+                                            output_channels=3, device=device)
+    return build_v3_from_config(cfg, input_channels=4, output_channels=3,
+                                device=device)
+
+
 GLO_NCA_PRODUCTION_NAME = "glo_nca_production"
 
 
@@ -352,13 +363,7 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
     # (`roi_fraction`). With the default `roi_fraction: 1.0` this is
     # mathematically identical to the reference forward, so configs without the
     # block -- including the frozen thesis reference -- are unaffected.
-    if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
-        from src.models.Model_GLO_NCA_GlobalContext import build_glo_nca_global_context
-        v3_model = build_glo_nca_global_context(cfg, input_channels=4,
-                                                output_channels=3, device=device)
-    else:
-        v3_model = build_v3_from_config(cfg, input_channels=4, output_channels=3,
-                                        device=device)
+    v3_model = _build_production_model(cfg, device)
     ca = [v3_model]  # presented as a one-element list to the shared runner
     agent = Agent_GLO_NCA_V3(ca)
     exp = Experiment(config, ds, ca, agent)

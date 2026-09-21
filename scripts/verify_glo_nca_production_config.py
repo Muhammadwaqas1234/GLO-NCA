@@ -53,8 +53,10 @@ EXPECTED = {
     "level3_enabled": False,
     "total_nca_steps": 30,
     "spatial_kernel_size": 5,   # the thesis contribution's receptive field
-    "parameters": 29337,
-    "working_volume": 96,
+    "inference_parameters": 29337,
+    "auxiliary_parameters": 75,
+    "training_parameters": 29412,
+    "working_volume": 128,
     "patchify_enabled": False,
     "roi_fraction": 1.0,
     "use_attention": True,      # SE channel global context
@@ -149,7 +151,14 @@ def main(argv) -> int:
     tp = data.get("training_patch") or {}
     chk("data.training_patch.enabled", bool(tp.get("enabled", False)),
         EXPECTED["patchify_enabled"])
-    chk("working volume", int(tp.get("working_volume", 0)), EXPECTED["working_volume"])
+    # The working volume is training.patch_size: the dataset resamples to it
+    # and the model receives it whole. data.training_patch.working_volume
+    # applies only when patchify is enabled, which production forbids.
+    chk("working volume",
+        int((raw.get("training") or {}).get("patch_size", 0)),
+        EXPECTED["working_volume"])
+    chk("training_patch.working_volume consistent",
+        int(tp.get("working_volume", 0)), EXPECTED["working_volume"])
     chk("data.split_file", data.get("split_file"), EXPECTED["split_file"])
     chk("performance.precision",
         str((raw.get("performance") or {}).get("precision", "")).lower(),
@@ -161,7 +170,12 @@ def main(argv) -> int:
     model = build_glo_nca_global_context(cfg, input_channels=4, output_channels=3,
                                          device=torch.device("cpu"))
     n_params = sum(p.numel() for p in model.parameters())
-    chk("BUILT parameter count", n_params, EXPECTED["parameters"])
+    n_aux = (sum(p.numel() for p in model.aux_heads.parameters())
+             if getattr(model, "aux_heads", None) else 0)
+    chk("BUILT inference parameters", n_params - n_aux,
+        EXPECTED["inference_parameters"])
+    chk("BUILT auxiliary parameters", n_aux, EXPECTED["auxiliary_parameters"])
+    chk("BUILT training parameters", n_params, EXPECTED["training_parameters"])
     chk("BUILT level count (no level3)", len(model.levels), 2)
     chk("BUILT total NCA steps", sum(l.nca_steps for l in model.levels),
         EXPECTED["total_nca_steps"])
@@ -196,15 +210,17 @@ def main(argv) -> int:
         return 2
 
     print("  RESULT: PASS -- configuration IS the GLO-NCA production candidate.")
-    print(f"          GLO-NCA | 96^3 working volume | "
+    print(f"          GLO-NCA | {EXPECTED['working_volume']}^3 working volume | "
           f"L1 48^3 k{EXPECTED['level1_kernel_size']} | "
           f"L2 64^3 k{EXPECTED['level2_kernel_size']} | "
           f"{EXPECTED['level1_nca_steps']}+{EXPECTED['level2_nca_steps']} steps "
           f"| spatial GC k{EXPECTED['spatial_kernel_size']}")
-    print(f"          {n_params:,} parameters | global context ON | patchify OFF | bf16")
+    print(f"          {n_params - n_aux:,} inference | {n_aux} auxiliary | "
+          f"{n_params:,} training parameters")
+    print("          global context ON | patchify OFF | deep supervision ON | bf16")
     print()
-    print("  NOTE: identity verified, NOT scientific approval. 48^3/64^3 remains a")
-    print("        Category C decision vs the frozen 32/96/128 reference.")
+    print("  NOTE: identity verified, NOT scientific approval. No Dice/IoU/HD95")
+    print("        evidence exists for this architecture until the thesis run.")
     print("=" * 74)
     return 0
 
