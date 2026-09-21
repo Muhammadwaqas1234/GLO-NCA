@@ -3,7 +3,7 @@ r"""Standalone dataset validator.
 
 Usage:
     python scripts/validate_dataset.py --root /path/to/BraTS
-    python scripts/validate_dataset.py --config configs/gcp_full.yaml
+    python scripts/validate_dataset.py --config configs/historical/gcp_full.yaml
     python scripts/validate_dataset.py --root /path/to/BraTS --report out.json
 
 Exits 0 on PASS, 1 on FAIL -- so it can gate a CI or a training launcher.

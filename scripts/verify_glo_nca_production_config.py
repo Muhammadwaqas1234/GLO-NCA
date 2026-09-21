@@ -4,7 +4,7 @@ Purpose
 -------
 Fail CLOSED unless the supplied configuration IS the intended production
 candidate. This exists because the repository deliberately keeps the FROZEN
-thesis reference (``configs/v3_multilevel_ckpt.yaml``, 32/96/128) alongside the
+thesis reference (``configs/historical/v3_multilevel_ckpt.yaml``, 32/96/128) alongside the
 current production candidate (``configs/glo_nca_production.yaml``, 48/64), and a
 300-epoch cloud run started with the wrong one would burn days of GPU time on
 the wrong architecture before anyone noticed.
@@ -102,7 +102,9 @@ def main(argv) -> int:
 
     import torch
     from src.experiment.config import load_config
-    from src.models.Model_GLO_NCA_GlobalContext import build_glo_nca_global_context
+    # Build through the SAME entry point the runner uses; a gate that picks
+    # its own builder can certify a model that never trains.
+    from src.experiment.runner import _build_production_model
 
     cfg = load_config(path)
     raw = cfg.raw
@@ -167,8 +169,7 @@ def main(argv) -> int:
         EXPECTED["seed"])
 
     # ---- §9/§32: verify the ARCHITECTURE THAT IS BUILT, not just the YAML ----
-    model = build_glo_nca_global_context(cfg, input_channels=4, output_channels=3,
-                                         device=torch.device("cpu"))
+    model = _build_production_model(cfg, torch.device("cpu"))
     n_params = sum(p.numel() for p in model.parameters())
     n_aux = (sum(p.numel() for p in model.aux_heads.parameters())
              if getattr(model, "aux_heads", None) else 0)

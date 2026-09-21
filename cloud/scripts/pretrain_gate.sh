@@ -43,7 +43,7 @@ check() {
 cd "${REPO_DIR}"
 
 # Config under test. Phase 4: there is deliberately NO DEFAULT. The previous
-# default (configs/v3_multilevel_ckpt.yaml) is the FROZEN 32/96/128 thesis
+# default (configs/historical/v3_multilevel_ckpt.yaml) is the FROZEN 32/96/128 thesis
 # reference, so a bare `pretrain_gate.sh` silently validated the WRONG
 # architecture and reported PASS for a config nobody intended to train.
 # Fail closed instead: the caller must name the configuration explicitly.
@@ -51,7 +51,7 @@ GATE_CFG="${1:-}"
 if [[ -z "${GATE_CFG}" ]]; then
   die "usage: pretrain_gate.sh <config>
        production : ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
-       reference  : ./cloud/scripts/pretrain_gate.sh configs/v3_multilevel_ckpt.yaml   (FROZEN 32/96/128)
+       reference  : ./cloud/scripts/pretrain_gate.sh configs/historical/v3_multilevel_ckpt.yaml   (FROZEN 32/96/128)
        No default is applied: gating the wrong architecture wastes days of GPU time."
 fi
 IS_V3=$("${PYBIN}" - "${GATE_CFG}" <<'PY'

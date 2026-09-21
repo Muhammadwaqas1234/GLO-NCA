@@ -103,8 +103,7 @@ def main() -> int:
     import torch
     import yaml
     from src.experiment.config import Config
-    from src.models.Model_GLO_NCA_GlobalContext import \
-        build_glo_nca_global_context
+    from src.experiment.runner import _build_production_model
     from src.losses.LossFunctions import FocalTverskyCELoss
 
     cfg_path = os.path.join(_ROOT, args.config)
@@ -129,8 +128,10 @@ def main() -> int:
         print("      RATIO between precisions remains the usable result. ***")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_glo_nca_global_context(cfg, 4, 3, device).to(device)
+    model = _build_production_model(cfg, device).to(device)
     n_params = sum(p.numel() for p in model.parameters())
+    n_aux = (sum(p.numel() for p in model.aux_heads.parameters())
+             if getattr(model, "aux_heads", None) else 0)
 
     # Identity first: a benchmark of the wrong model is worse than none.
     m_ = raw.get("model", {})
@@ -152,8 +153,9 @@ def main() -> int:
           f"L1 {ident['level1'][0]}^3 k{ident['level1'][3]} | "
           f"L2 {ident['level2'][0]}^3 k{ident['level2'][3]} | "
           f"{ident['total_nca_steps']} steps | GC k{ident['spatial_gc_kernel']}")
-    if n_params != 29337:
-        print(f"\nFAILED: expected 29,337 parameters, built {n_params:,}.")
+    if (n_params - n_aux, n_aux) != (29337, 75):
+        print(f"\nFAILED: expected 29,337 inference + 75 auxiliary parameters, "
+              f"built {n_params - n_aux:,} + {n_aux}.")
         print("Refusing to benchmark a model that is not the production one.")
         return 3
 

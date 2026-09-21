@@ -52,10 +52,10 @@ def _parse_args():
     ap = argparse.ArgumentParser(
         description="GLO-NCA V2 training (config-driven, reproducible).")
     # Phase 2: no default config. V3 is the production architecture, and the old
-    # default (configs/gcp_full.yaml) was the V2 baseline -- a bare
+    # default (configs/historical/gcp_full.yaml) was the V2 baseline -- a bare
     # `python train.py` silently trained the wrong model. Be explicit.
     ap.add_argument("--config", default=None,
-                    help="path to a YAML config, e.g. configs/v3_multilevel_ckpt.yaml "
+                    help="path to a YAML config, e.g. configs/historical/v3_multilevel_ckpt.yaml "
                          "(required unless --resume is given)")
     ap.add_argument("--resume", metavar="EXPERIMENT_DIR", default=None,
                     help="resume an existing experiment directory")
@@ -111,7 +111,7 @@ def main() -> int:
     # the successful training path is reordered.
     if not args.resume and not args.config:
         print("FAILED: --config is required (or use --resume <dir>).\n"
-              "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+              "  production V3: python train.py --config configs/historical/v3_multilevel_ckpt.yaml")
         return 2
     # Final audit (B-02): a mistyped --config path previously paid the ~13 s torch
     # import and then died with a raw FileNotFoundError traceback (rc=1). A wrong
@@ -119,7 +119,7 @@ def main() -> int:
     # before the heavy imports -- and report it the same way as the other guards.
     if args.config and not os.path.isfile(args.config):
         print(f"FAILED: config not found: {args.config}\n"
-              "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+              "  production V3: python train.py --config configs/historical/v3_multilevel_ckpt.yaml")
         return 2
     if args.resume:
         _cfg_probe = os.path.join(args.resume, "config", "config.yaml")
@@ -163,7 +163,7 @@ def main() -> int:
         cfg_path = ws.path("config", "config.yaml")
         if not os.path.exists(cfg_path):
             # Phase 2 (P0): NEVER fall back to --config here. Its default is the
-            # V2 baseline (configs/gcp_full.yaml), so the old fallback could
+            # V2 baseline (configs/historical/gcp_full.yaml), so the old fallback could
             # resume a V3 experiment under a V2 configuration. A resume without
             # its own saved config is unreproducible -- fail loudly instead.
             print(f"FAILED: cannot resume {args.resume}: missing {cfg_path}.\n"
@@ -175,7 +175,7 @@ def main() -> int:
     else:
         if not args.config:
             print("FAILED: --config is required (or use --resume <dir>).\n"
-                  "  production V3: python train.py --config configs/v3_multilevel_ckpt.yaml")
+                  "  production V3: python train.py --config configs/historical/v3_multilevel_ckpt.yaml")
             return 2
         cfg = load_config(args.config)
         # Final audit (B-03): an invalid --device previously failed only once the

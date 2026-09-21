@@ -759,7 +759,7 @@ def t_no_v2_in_production_path():
           if not l.strip().startswith("#")]
     if any(l.startswith("CMD") and "gcp_full" in l for l in df):
         bad.append("Dockerfile CMD")
-    for rel, pat in [("cloud/scripts/run_training.sh", "${1:-configs/gcp_full.yaml}"),
+    for rel, pat in [("cloud/scripts/run_training.sh", "${1:-configs/historical/gcp_full.yaml}"),
                      ("cloud/scripts/setup_gcp.sh", "clone -b v2 ")]:
         if pat in io.open(os.path.join(_ROOT, rel), encoding="utf-8").read():
             bad.append(rel)
