@@ -565,6 +565,34 @@ EPOCHS = 50
 EARLY_STOPPING_ENABLED = True
 EARLY_STOPPING_PATIENCE = 20      # consecutive non-improving validations
 EARLY_STOPPING_MIN_DELTA = 0.01   # smaller gains count as noise
+# SCALE SAFETY -- min_delta must sit ABOVE the validation noise floor, and
+# that floor depends on how many validation cases there are:
+#
+#     val n= 31 (this notebook): sampling SEM ~0.036  -> 0.01 is BELOW it
+#     val n=200 (thesis split) : sampling SEM ~0.014  -> 0.01 is below it
+#
+# A fixed 0.01 is therefore too permissive here and comparatively strict
+# there, which on a 40-hour run risks stopping while still improving.
+# Deriving it from the validation size keeps the meaning constant: stop only
+# when the gain is smaller than the measurement error.
+#
+# Set EARLY_STOPPING_MIN_DELTA_AUTO = False to pin the constant above.
+EARLY_STOPPING_MIN_DELTA_AUTO = True
+EARLY_STOPPING_PER_CASE_SD = 0.20     # measured: test Dice sd 0.14-0.28
+
+
+def derive_min_delta(n_val: int) -> float:
+    """min_delta = one standard error of the validation mean.
+
+    A gain smaller than the measurement error is not evidence of
+    improvement, so that is exactly the threshold below which patience
+    should tick. Clamped to [0.002, 0.02]: below 0.002 any fluctuation
+    resets patience, above 0.02 real late-stage gains are discarded.
+    """
+    if not EARLY_STOPPING_MIN_DELTA_AUTO:
+        return float(EARLY_STOPPING_MIN_DELTA)
+    sem = EARLY_STOPPING_PER_CASE_SD / max(1.0, float(n_val) ** 0.5)
+    return float(min(0.02, max(0.002, sem)))
 # STABILITY FIX 2 -- min_delta 0.001 -> 0.01, patience 15 -> 20.
 #
 # Measured on the 50-epoch T4 run: over epochs 25-44 the validation mean
@@ -587,7 +615,18 @@ MIN_LR = 0.00001
 # The 50-epoch T4 run collapsed at epoch 3 (TC 0.499->0.316) and recovered:
 # the signature of a full-rate LR before the batch-1 normalisation statistics
 # have settled. Set WARMUP_EPOCHS = 0 to restore the previous schedule.
-WARMUP_EPOCHS = 3                 # ITEM 3: 3-epoch linear ramp; 0 disables
+WARMUP_EPOCHS = 3                 # 3-epoch linear ramp; 0 disables
+# SCALE SAFETY -- warmup is expressed in EPOCHS, and an epoch is 7x longer on
+# the 898-case split than on this 129-case one. Cap it in OPTIMIZER STEPS so
+# the ramp means the same thing on both, instead of silently becoming 7x
+# longer. None = no cap (pure epoch-based, the previous behaviour).
+# 150 is chosen so the cap actually BINDS on the large split:
+#     129 cases ->  16 opt-steps/epoch -> 3 epochs =  48 steps (uncapped)
+#     898 cases -> 112 opt-steps/epoch -> 1 epoch  = 112 steps (capped)
+# Without it the 898 run would warm up for 336 steps, 7x the ramp this
+# notebook was tuned with. One epoch is the floor, because the scheduler
+# steps per epoch, so the residual difference is 2.3x rather than 7x.
+WARMUP_MAX_STEPS = 150            # optimizer steps; None = no cap
 WARMUP_START_DIV = 20.0           # start at LR/20, ramp linearly to LR
 WEIGHT_DECAY = 0.0001
 BETAS = (0.9, 0.99)
@@ -3415,14 +3454,28 @@ def main() -> int:
     # past warmup is unchanged from the certified schedule.
     #
     # WARMUP_EPOCHS = 0 restores the previous no-warmup behaviour exactly.
+    # SCALE SAFETY -- cap the ramp in OPTIMIZER STEPS. The scheduler steps
+    # once per epoch, so WARMUP_EPOCHS is an epoch count; on a 7x larger
+    # split those epochs contain 7x the updates and the ramp silently
+    # stretches. Convert the cap back to whole epochs so the schedule stays
+    # epoch-stepped while its LENGTH IN UPDATES stays comparable.
+    _steps_per_ep = max(1, len(train_loader) // max(1, GRAD_ACCUM_STEPS))
+    _warm_ep = WARMUP_EPOCHS
+    if WARMUP_MAX_STEPS:
+        _warm_ep = max(1, min(WARMUP_EPOCHS,
+                              int(WARMUP_MAX_STEPS // _steps_per_ep) or 1))
+        if _warm_ep != WARMUP_EPOCHS:
+            LOG(f"  LR warmup capped: {WARMUP_EPOCHS} -> {_warm_ep} epochs "
+                f"({_warm_ep * _steps_per_ep} optimizer steps, "
+                f"cap {WARMUP_MAX_STEPS})")
     if WARMUP_EPOCHS > 0:
         _warm = torch.optim.lr_scheduler.LinearLR(
             opt, start_factor=1.0 / WARMUP_START_DIV, end_factor=1.0,
-            total_iters=WARMUP_EPOCHS)
+            total_iters=_warm_ep)
         _cos = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=max(1, args.epochs - WARMUP_EPOCHS), eta_min=MIN_LR)
+            opt, T_max=max(1, args.epochs - _warm_ep), eta_min=MIN_LR)
         sched = torch.optim.lr_scheduler.SequentialLR(
-            opt, schedulers=[_warm, _cos], milestones=[WARMUP_EPOCHS])
+            opt, schedulers=[_warm, _cos], milestones=[_warm_ep])
     else:
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs,
                                                            eta_min=MIN_LR)
@@ -3557,7 +3610,16 @@ def main() -> int:
     run_state = TrainingState(OUT_DIR, run_id=os.path.basename(OUT_DIR))
     run_state.transition(S_PREFLIGHT, "identity and data gates passed")
     run_state.set_metadata(**FINGERPRINT, epochs_planned=args.epochs)
-    stopper = EarlyStopping()
+    # SCALE SAFETY -- min_delta derived from the VALIDATION size, so "a gain
+    # smaller than the measurement error" means the same thing on 31 cases
+    # and on 200. A fixed value tuned here would be the wrong strictness on
+    # the thesis split, and on a 40-hour run a premature stop is expensive.
+    _md = derive_min_delta(len(split["validation"]))
+    stopper = EarlyStopping(min_delta=_md)
+    LOG(f"  early stopping: min_delta {_md:.4f} "
+        f"({'derived from' if EARLY_STOPPING_MIN_DELTA_AUTO else 'pinned; val'} "
+        f"{len(split['validation'])} validation cases), "
+        f"patience {EARLY_STOPPING_PATIENCE}")
     gpu_diag = GPUDiagnostics(enabled=True, min_interval_s=10.0)
     best_smooth, best_epoch = -1.0, 0
     best_meta: Optional[dict] = None
