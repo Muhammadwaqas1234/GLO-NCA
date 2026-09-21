@@ -43,14 +43,27 @@ measured at ~0.01 s, so the frequency is effectively free.
 
 ---
 
-## 2. Provisioning (intended — not executed)
+## 2. Provisioning
+
+Set in `cloud/config/gcp.env`:
+
+```
+PROVISIONING_MODEL=SPOT
+```
+
+`cloud/scripts/start_vm.sh` then passes:
 
 ```
 --machine-type       g2-standard-8
 --accelerator        type=nvidia-l4,count=1
 --provisioning-model SPOT
---instance-termination-action DELETE
+--instance-termination-action STOP
 ```
+
+STOP, not DELETE. On preemption the instance and its boot disk survive, so
+`start_vm.sh` restarts the SAME VM and `resume_training.sh` continues from
+`last.pth`. DELETE would discard the experiment directory and force a full
+re-download from GCS, and would lose anything written since the last sync.
 
 Attach a **persistent disk** for the experiment directory. The boot disk is
 deleted with the VM; anything only on the boot disk is lost on preemption.

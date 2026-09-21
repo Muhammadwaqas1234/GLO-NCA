@@ -24,19 +24,37 @@ else
   log "VM ${VM_NAME} does not exist -- creating it"
   log "  machine=${MACHINE_TYPE} gpu=${GPU_TYPE}x${GPU_COUNT} disk=${DISK_SIZE_GB}GB"
   log "  image=${IMAGE_FAMILY}/${IMAGE_PROJECT} zone=${GCP_ZONE}"
+  # PROVISIONING_MODEL: SPOT (preemptible, ~3x cheaper) or STANDARD
+  # (on-demand). Spot is safe for this workload because checkpoints are
+  # written every epoch, periodic snapshots every 5, and a background watcher
+  # rsyncs the experiment directory to GCS every GLO_SYNC_INTERVAL seconds, so
+  # a preemption costs at most one sync interval of progress.
+  #
+  # Termination action is STOP, not DELETE: the VM and its boot disk survive a
+  # preemption so `start_vm.sh` restarts the SAME instance and training resumes
+  # from last.pth. DELETE would discard anything not yet synced to GCS.
+  PROVISIONING_MODEL="${PROVISIONING_MODEL:-STANDARD}"
+  spot_flags=()
+  if [ "${PROVISIONING_MODEL}" = "SPOT" ]; then
+    spot_flags=(--provisioning-model=SPOT --instance-termination-action=STOP)
+    log "  provisioning=SPOT (preemptible; terminate action STOP)"
+  else
+    log "  provisioning=STANDARD (on-demand)"
+  fi
   confirm "Creating a GPU VM starts billing while it is RUNNING. Continue?"
   # shellcheck disable=SC2086
   gcloud compute instances create "${VM_NAME}" $(vm_flags) \
     --machine-type="${MACHINE_TYPE}" \
     --accelerator="type=${GPU_TYPE},count=${GPU_COUNT}" \
     --maintenance-policy=TERMINATE \
+    "${spot_flags[@]}" \
     --image-family="${IMAGE_FAMILY}" \
     --image-project="${IMAGE_PROJECT}" \
     --boot-disk-size="${DISK_SIZE_GB}GB" \
     --boot-disk-type=pd-ssd \
     --scopes=cloud-platform \
     --metadata="install-nvidia-driver=True"
-  pass "VM ${VM_NAME} created and starting"
+  pass "VM ${VM_NAME} created and starting (${PROVISIONING_MODEL})"
 fi
 
 echo
