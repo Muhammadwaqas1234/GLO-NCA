@@ -48,8 +48,8 @@ SE channel attention, the spatial global-context block, learnable inter-level
 projections, learnable multi-level fusion, the WT/TC/ET head, parameter count,
 channels, hidden size, fire rate, dropout and NCA step counts.
 
-SCIENTIFIC CONSEQUENCE (Category C)
------------------------------------
+SCIENTIFIC CONSEQUENCE
+---------------------
 With ``roi_fraction < 1`` the high-resolution level's SE / spatial-GC pool over
 the ROI rather than the whole field. The GLOBAL level still pools over the entire
 volume, which is what preserves the global-context contribution. This is a
