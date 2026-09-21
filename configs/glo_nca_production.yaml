@@ -130,6 +130,14 @@ model:
   hidden: 128
   dropout: 0.1
 
+  # One 1x1 auxiliary head per non-final level, active during TRAINING only.
+  # eval() returns the primary seg_head alone, so every reported metric comes
+  # from the 29,337-parameter inference model.
+  #   inference 29,337   training 29,412 (75 auxiliary parameters)
+  deep_supervision:
+    enabled: true
+    weight: 0.4
+
 training:
   # MAXIMUM training budget, not a target. Early stopping below ends the run
   # once validation has plateaued; there is no evidence that 300 epochs are

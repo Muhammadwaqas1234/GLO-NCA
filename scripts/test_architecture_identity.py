@@ -130,9 +130,26 @@ def main() -> int:
           total - aux == EXPECTED_INFERENCE_PARAMS, f"{total - aux:,}")
     check("training parameters == inference + aux",
           trainable == (total - aux) + aux, f"{trainable:,}")
-    check("deep supervision absent from production",
-          aux == 0,
-          "production model has no auxiliary heads (Kaggle-only feature)")
+    check("training parameters == 29,412",
+          trainable == 29412, f"{trainable:,}")
+    check("deep supervision active, 75 auxiliary parameters",
+          aux == 75, f"{aux} aux parameters")
+
+    ds_cfg = (mcfg.get("deep_supervision") or {})
+    check("deep supervision enabled in config",
+          bool(ds_cfg.get("enabled", False)), f"weight={ds_cfg.get('weight')}")
+
+    x = torch.randn(1, 96, 96, 96, 4)
+    model.train()
+    train_out = model(x)
+    model.eval()
+    with torch.no_grad():
+        eval_out = model(x)
+    check("train() returns (logits, aux)",
+          isinstance(train_out, tuple) and len(train_out[1]) == 1,
+          f"{len(train_out[1])} auxiliary head(s)" if isinstance(train_out, tuple) else "bare tensor")
+    check("eval() returns primary logits only",
+          isinstance(eval_out, torch.Tensor), type(eval_out).__name__)
 
     failed = [n for n, ok, _ in RESULTS if not ok]
     print("=" * 74)

@@ -109,7 +109,8 @@ class _EpochSampler(torch.utils.data.Sampler):
 # --------------------------------------------------------------------------- #
 def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
                         empty_weight: float = 0.1,
-                        amp_dtype=None) -> Dict[int, float]:
+                        amp_dtype=None,
+                        ds_weight: float = 0.0) -> Dict[int, float]:
     """One training iteration.
 
     ``amp_dtype`` (``torch.bfloat16`` / ``torch.float16`` / ``None``) enables
@@ -154,6 +155,23 @@ def _clipped_batch_step(agent, data, loss_f, grad_clip: float,
                     prob, targets[..., m], reduction="mean")
             loss = loss + loss_loc
             loss_ret[m] = loss_loc.item()
+
+        # Deep supervision: the same region loss on each auxiliary head,
+        # averaged and scaled. `loss_ret` keeps the PRIMARY head only, so the
+        # reported training curve stays comparable to runs without it.
+        aux_logits = getattr(agent, "last_aux_logits", None) or []
+        if aux_logits and ds_weight > 0:
+            aux_total = 0
+            for a_cf in aux_logits:
+                a_cl = a_cf.float().permute(0, 2, 3, 4, 1).contiguous()
+                for m in range(a_cl.shape[-1]):
+                    if 1 in targets[..., m]:
+                        aux_total = aux_total + loss_f(a_cl[..., m], targets[..., m])
+                    else:
+                        prob = torch.sigmoid(a_cl[..., m]).clamp(1e-6, 1. - 1e-6)
+                        aux_total = aux_total + empty_weight *                             torch.nn.functional.binary_cross_entropy(
+                                prob, targets[..., m], reduction="mean")
+            loss = loss + ds_weight * (aux_total / len(aux_logits))
     if loss != 0:
         # Backward is timed separately from forward on purpose: with gradient
         # checkpointing ON, each NCA step is RECOMPUTED here, so backward is
@@ -677,6 +695,10 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         for m, r in zip(ca, raw):
             m.load_state_dict(r)
 
+    _ds_cfg = (cfg.section("model") or {}).get("deep_supervision") or {}
+    _ds_weight = (float(_ds_cfg.get("weight", 0.0))
+                  if bool(_ds_cfg.get("enabled", False)) else 0.0)
+
     grad_clip = (float(cfg.get("gradient", "max_norm"))
                  if bool(cfg.get("gradient", "clipping_enabled")) else 0.0)
     best_window = int(cfg.get("evaluation", "smoothing_window"))
@@ -968,7 +990,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
             _prof.mark_iteration(_batch_idx)
             with _prof.section("total/iteration", cuda=True):
                 r = _clipped_batch_step(agent, data, loss_f, grad_clip, empty_weight,
-                                        amp_dtype=amp_dtype)
+                                        amp_dtype=amp_dtype,
+                                        ds_weight=_ds_weight)
                 with _prof.section("train/ema", cuda=True):
                     ema_update()
             if _prof.enabled and _mem is not None and _prof.is_profiled_iteration():

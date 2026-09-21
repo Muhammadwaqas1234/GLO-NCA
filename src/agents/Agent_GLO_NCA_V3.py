@@ -81,6 +81,13 @@ class Agent_GLO_NCA_V3(Agent_NCA):
         id, inputs, targets = data
         model = self.model[0]
         logits_cf = model(inputs)                      # (B, 3, X, Y, Z)
+        # With deep supervision the model returns (logits, [aux...]) while
+        # training and a bare tensor in eval(). The (outputs, targets) contract
+        # is unchanged for every caller; the auxiliary logits are stashed for
+        # the training step, which is the only consumer.
+        self.last_aux_logits = []
+        if isinstance(logits_cf, tuple):
+            logits_cf, self.last_aux_logits = logits_cf
         outputs_cl = logits_cf.permute(0, 2, 3, 4, 1).contiguous()  # -> channels-last
 
         # --- ROI-AWARE TARGET ALIGNMENT -------------------------------------

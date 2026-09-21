@@ -90,7 +90,8 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
                  dropout: float = 0.0, fusion: str = "concat",
                  hidden_size: int = 128, device=None,
                  gradient_checkpointing: bool = False,
-                 spatial_kernel_size: int = 7):
+                 spatial_kernel_size: int = 7,
+                 deep_supervision: bool = False):
         super().__init__()
         assert len(levels) >= 2, "V3 needs at least 2 levels"
         self.input_channels = input_channels
@@ -147,6 +148,15 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
             ])
             self.fuse = nn.Identity()
         self.seg_head = nn.Conv3d(fine_ch, output_channels, kernel_size=1)
+
+        # Deep supervision: one 1x1 auxiliary head per non-final level, used
+        # during TRAINING only. forward() returns them alongside the primary
+        # logits while self.training is set; eval() returns the primary logits
+        # alone, so every reported metric comes from seg_head.
+        self.deep_supervision = bool(deep_supervision)
+        self.aux_heads = (nn.ModuleList([
+            nn.Conv3d(fine_ch, output_channels, kernel_size=1)
+            for _ in range(n_levels - 1)]) if self.deep_supervision else None)
 
         self.to(self.device)
 
@@ -220,6 +230,13 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
             else:
                 fused_cf = torch.stack(fused, dim=0).sum(dim=0)
             logits = self.seg_head(fused_cf)                         # (B,3,X,Y,Z)
+            if self.deep_supervision and self.training and self.aux_heads:
+                aux = []
+                for i, head in enumerate(self.aux_heads):
+                    s_i = self.level_to_fine[i](level_states[i])
+                    s_i = self._resize_cl(s_i, fine_res, mode="nearest")
+                    aux.append(head(_to_cf(s_i)))
+                return logits, aux
         return logits
 
     # ------------------------------------------------------------ introspection
@@ -232,8 +249,13 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
         by_level["fusion+head"] = (sum(p.numel() for m in self.level_to_fine for p in m.parameters())
                                    + sum(p.numel() for p in self.fuse.parameters())
                                    + sum(p.numel() for p in self.seg_head.parameters()))
+        aux = (sum(p.numel() for p in self.aux_heads.parameters())
+               if self.aux_heads is not None else 0)
+        by_level["deep_supervision_aux"] = aux
         return {"total_parameters": total, "trainable_parameters": trainable,
-                "non_trainable_parameters": total - trainable, "by_level": by_level}
+                "non_trainable_parameters": total - trainable,
+                "auxiliary_parameters": aux,
+                "inference_parameters": total - aux, "by_level": by_level}
 
 
 def build_v3_from_config(cfg, input_channels=4, output_channels=3, device=None):
@@ -264,4 +286,6 @@ def build_v3_from_config(cfg, input_channels=4, output_channels=3, device=None):
         # Receptive field of the spatial global-context block. Default 7
         # reproduces the original hardcoded value for any config that does
         # not state it.
-        spatial_kernel_size=int(m.get("spatial_kernel_size", 7)))
+        spatial_kernel_size=int(m.get("spatial_kernel_size", 7)),
+        deep_supervision=bool(
+            (m.get("deep_supervision", {}) or {}).get("enabled", False)))
