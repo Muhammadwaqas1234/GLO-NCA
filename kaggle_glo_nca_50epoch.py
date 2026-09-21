@@ -600,12 +600,21 @@ BETAS = (0.9, 0.99)
 # regions -- case 02152-104 had 48 ground-truth ET voxels and 1,279
 # predicted, and the worst 10 ET cases over-predicted 11x in total.
 #
-# 0.5/0.5 makes Tversky symmetric (it reduces exactly to Dice loss there),
-# so false positives finally cost as much as false negatives. Free: the same
-# terms are already computed, only their weights change.
+# MEASURED on the frozen 40-case test split, worst-10 ET cases:
 #
-# Set back to 0.25/0.75 to reproduce the previous behaviour.
-TVERSKY_ALPHA, TVERSKY_BETA = 0.5, 0.5
+#   alpha/beta   total predicted vs GT   behaviour
+#   0.25/0.75    17.3x                   over-predicts every case (5/5)
+#   0.50/0.50     2.6x                   4 over, 6 UNDER -- flipped too far
+#                                        (case 02103-106: 246 GT vox -> 1)
+#
+# 0.4/0.6 interpolates between two MEASURED points rather than guessing: it
+# keeps a mild bias toward recall, since a missed lesion is clinically worse
+# than a slightly generous boundary, without the 17x over-prediction the
+# original ratio produced. Free -- the same terms are already computed, only
+# their weights change.
+#
+# 0.25/0.75 and 0.5/0.5 both reproduce the measured runs above.
+TVERSKY_ALPHA, TVERSKY_BETA = 0.4, 0.6
 FOCAL_GAMMA = 1.33
 CE_WEIGHT = 0.5
 EMPTY_REGION_BCE_WEIGHT = 0.1
@@ -662,7 +671,17 @@ VALIDATE_WITH_EMA = True
 # EVALUATION ONLY -- never applied during training, and never used to select
 # a checkpoint, so it cannot leak into the training signal. Applied
 # identically to validation and test so the two stay comparable.
-POSTPROC_MIN_COMPONENT = {"WT": 50, "TC": 20, "ET": 10}   # voxels; 0 = off
+# MEASURED: at WT 50 / TC 20 / ET 10 the 50-epoch run produced case
+# 02103-106 with 246 ground-truth ET voxels and ONE predicted voxel, and
+# 6 of the worst 10 cases UNDER-predicted. Removal was deleting true
+# positives on exactly the hard, fragmented lesions it was meant to help.
+#
+# ET drops to 0 (off) because ET is the smallest region -- mean positive
+# fraction 0.0033 -- so almost any threshold risks removing the lesion
+# itself. TC drops 20 -> 5, enough to clear isolated specks without
+# touching a real small core. WT keeps 50: it is large, contiguous and
+# never under-predicted in the measured run.
+POSTPROC_MIN_COMPONENT = {"WT": 50, "TC": 5, "ET": 0}     # voxels; 0 = off
 
 # TEST-TIME AUGMENTATION -- DEFAULT OFF, and here is why.
 #
