@@ -41,7 +41,7 @@ from .dataset_validation import (validate_dataset, summarize,
                                  ALLOWED_SEG_LABELS as BASE_ALLOWED_SEG_LABELS)
 from .data_quality import (load_policy as dq_load_policy,
                            DataQualityPolicyError)
-from .diagnostics import diagnose
+from .run_diagnosis import diagnose
 from src.profiling import configure as _configure_profiler
 from src.profiling.memory import MemorySampler
 from .logutil import CSVLogger, TensorBoard, get_logger
@@ -177,6 +177,41 @@ def _is_v3(cfg: Config) -> bool:
     return str(cfg.get("model", "version", "")).lower() == "v3"
 
 
+GLO_NCA_PRODUCTION_IDENTITY = {
+    "working_volume": 96,
+    "level1_resolution": 48,
+    "level2_resolution": 64,
+    "level1_channels": 24,
+    "level2_channels": 24,
+    "level1_nca_steps": 15,
+    "level2_nca_steps": 15,
+    "level1_kernel": 5,
+    "level2_kernel": 5,
+    "spatial_kernel_size": 5,
+    "level3_enabled": False,
+    "use_attention": True,
+    "use_spatial": True,
+    "fusion_type": "concat",
+    "hidden": 128,
+    "batch_size": 1,
+    "seed": 42,
+    "patchify": False,
+}
+
+
+GLO_NCA_PRODUCTION_NAME = "glo_nca_production"
+
+
+def _production_identity(cfg: Config) -> bool:
+    """True only for the single authoritative GLO-NCA production experiment.
+
+    Matched on the EXACT experiment name, not a prefix: other configs are also
+    named "GLO-NCA-..." and must not inherit production invariants.
+    """
+    raw = str(cfg.get("experiment", "name", "") or getattr(cfg, "name", ""))
+    return raw.lower().replace("-", "_") == GLO_NCA_PRODUCTION_NAME
+
+
 def _build_dispatch(cfg: Config, data_root: str, device, epochs: int,
                     out_model_dir: str):
     """Version-aware construction. V2 (default) and V3 share the SAME dataset,
@@ -202,6 +237,13 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
     # Flat config for the Experiment/dataset. V3 does its own seeding/upscaling
     # inside the model, so NCA-specific keys are given safe, inert values; the V3
     # agent never reads inference_steps/channel_n/input_size.
+    # Patchify is configuration-driven. `data.training_patch.enabled` is the
+    # single switch: when false no train patch size is set, so the dataset's
+    # crop degenerates to the full working volume.
+    _patchify_enabled = bool(
+        ((cfg.section("data") or {}).get("training_patch") or {})
+        .get("enabled", False))
+
     config = [{
         "img_path": data_root, "label_path": data_root,
         "model_path": out_model_dir,
@@ -223,9 +265,8 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "foreground_crop": True, "nonzero_norm": True,
         "augment": aug != "none", "augment_level": ("light" if aug == "light" else "heavy"),
-        # Phase 2 (§5): ET-aware patch sampling is a thesis choice; surfaced into
-        # config (defaults = the historical hard-coded 0.7 / region 2 = ET).
-        "patchify": True,
+        # ET-aware patch sampling is a thesis choice, surfaced into config.
+        "patchify": _patchify_enabled,
         "priotize_masks": float(cfg.get("sampling", "prioritize_probability", 0.7)),
         "prioritize_region": int(cfg.get("sampling", "prioritize_region", 2)),
     }]
@@ -252,6 +293,13 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
                 f"than working_volume ({_work}); otherwise the crop is a no-op.")
         config[0]["input_size"] = [[_work, _work, _work]]   # -> dataset.size
         ds.set_train_patch_size(_pat)
+
+    if _production_identity(cfg) and _patchify_enabled:
+        raise ValueError(
+            "PRODUCTION IDENTITY VIOLATION: data.training_patch.enabled is true. "
+            "The GLO-NCA production path trains on the full working volume; a "
+            "crop would restrict the global-context level to part of the brain "
+            "during training while it sees the whole brain at evaluation.")
 
     # --- optional deterministic preprocessing cache (DEFAULT OFF) ------------
     # Caches ONLY the deterministic head of __getitem__ (load -> crop ->
@@ -328,7 +376,9 @@ def _build(cfg: Config, data_root: str, device, epochs: int, out_model_dir: str)
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "foreground_crop": True, "nonzero_norm": True,
         "augment": aug != "none", "augment_level": ("light" if aug == "light" else "heavy"),
-        "patchify": True, "priotize_masks": 0.7, "prioritize_region": 2,
+        "patchify": bool(((cfg.section("data") or {}).get("training_patch")
+                          or {}).get("enabled", False)),
+        "priotize_masks": 0.7, "prioritize_region": 2,
     }]
 
     ds = Dataset_NiiGz_3D_BraTS()
@@ -604,6 +654,27 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
             for k, v in m.state_dict().items():
                 if v.dtype.is_floating_point:
                     e[k].mul_(ema_decay).add_(v.detach(), alpha=1 - ema_decay)
+
+    def _swap_in_ema():
+        """Load EMA weights into the live models; return the raw states.
+
+        Validation must score the SAME weights that are saved as best, so the
+        selected checkpoint is the model that produced the selected metric.
+        """
+        if ema is None:
+            return None
+        raw = [{k: v.detach().clone() for k, v in m.state_dict().items()}
+               for m in ca]
+        for m, e in zip(ca, ema):
+            m.load_state_dict({k: v.to(m.state_dict()[k].dtype)
+                               for k, v in e.items()})
+        return raw
+
+    def _restore_raw(raw):
+        if raw is None:
+            return
+        for m, r in zip(ca, raw):
+            m.load_state_dict(r)
 
     grad_clip = (float(cfg.get("gradient", "max_norm"))
                  if bool(cfg.get("gradient", "clipping_enabled")) else 0.0)
@@ -929,6 +1000,7 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
             _prof.flush()
         gpu_diag.set_phase(diag.VALIDATION)
         gpu_diag.sample(epoch=ep + 1, step=-1)
+        _raw_states = _swap_in_ema()
         with _prof.section("validation/total", cuda=True):
             # HD95 is ~97% of validation scoring cost. Dice and mIoU are computed
             # EVERY epoch (model selection and threshold tuning are untouched);
@@ -957,6 +1029,8 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
                     val[r] = {"dice": float(np.mean(_d)), "iou": float(np.mean(_i)),
                               "hd95": _last_hd95.get(r, float("nan"))}
                 del _pairs
+        _restore_raw(_raw_states)
+        _raw_states = None
         vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
         hist["epoch"].append(ep + 1)
         hist["loss"].append(float(np.mean(losses)) if losses else 0.0)
