@@ -1,43 +1,45 @@
 # =============================================================================
-# GLO-NCA - PRODUCTION CONFIGURATION  (THE single active training config)
+# GLO-NCA PRODUCTION CONFIGURATION  (the single active training config)
 #
-# Architecture: GLO-NCA with GLOBAL CONTEXT + MULTI-LEVEL FUSION
-#   level1 = global-context level  - sees the whole input volume
+# Architecture: GLO-NCA with global context + multi-level fusion
+#   level1 = global-context level, sees the whole working volume
 #   level2 = high-resolution segmentation level
-#   SE (channel) + spatial global context at EVERY NCA step
+#   SE (channel) + spatial global context at every NCA step
 #   learnable inter-level projection + learnable fusion Conv3d(48 -> 24)
-#   29,337 parameters (verified from the constructed model, not from docs)
+#
+# Parameters, verified from the constructed model rather than from docs:
+#   29,337 at inference
+#   29,412 during training, including 75 training-only deep-supervision
+#          auxiliary parameters that are not used for inference
 #
 # -----------------------------------------------------------------------------
-# CATEGORY-C ARCHITECTURE DECISION - READ THIS FIRST
+# ARCHITECTURE PROVENANCE
 #
-# This configuration was CHANGED from the previous production architecture by
-# an explicit, recorded decision. It is a SCIENTIFIC change, not an
-# engineering optimisation, and it has NO segmentation-quality evidence.
+# The geometry below replaced an earlier configuration by explicit decision.
+# That was a scientific change, not an engineering optimisation:
 #
-#                        previous          current
+#                        earlier           production
 #   level1 kernel        k=7               k=5
 #   level2 kernel        k=3               k=5
 #   NCA steps            20+20 = 40        15+15 = 30
 #   spatial GC kernel    k=7               k=5
-#   parameters           33,089            29,337
+#   parameters           33,089            29,337 (inference)
 #
-# The spatial global-context kernel IS the thesis contribution. Reducing it
-# from 7 to 5 shrinks that mechanism's receptive field. No Dice/IoU/HD95
-# evidence exists for this architecture at the time of writing: the change
-# was approved on speed grounds and must be validated by the thesis training
-# run before any quality claim is made.
+# The spatial global-context kernel is the thesis contribution, and reducing
+# it from 7 to 5 shrinks that mechanism's receptive field. The change was
+# approved on speed grounds and carries no Dice/IoU/HD95 evidence: the thesis
+# training run must establish that before any quality claim is made.
 #
-# The previous 33,089-parameter configuration remains fully recoverable from
-# git history (see reports/audit/ for its measured evidence).
+# The earlier 33,089-parameter configuration remains recoverable from git
+# history; reports/audit/ holds its measured evidence.
 #
 # -----------------------------------------------------------------------------
-# PATCHIFY - EXPLICITLY RESOLVED AS OFF
+# PATCHIFY - RESOLVED AS OFF
 #
-# With training_patch ENABLED the DATASET crops a 64^3 patch out of the 96^3
-# working volume BEFORE the model is called. level1 - the GLOBAL-CONTEXT
-# level, i.e. the thesis contribution - would then cover only ~30% of the
-# brain during training while covering the whole brain at evaluation.
+# With training_patch enabled the dataset crops a 64^3 patch out of the 96^3
+# working volume before the model is called. level1, the global-context level,
+# would then cover roughly 30% of the brain during training while covering the
+# whole brain at evaluation.
 #
 # MEASURED (RTX 3050, bf16, batch 1, matched conditions; see
 # reports/benchmarks/glo_nca_phase2/patchify_speed.json):
@@ -45,11 +47,12 @@
 #     patchify OFF (model gets 96^3): 8191.0 ms/iter, 1416 MB peak
 #     difference: -9.6 ms/iter (-0.1%), +10 MB
 #
-# Patchify buys NO speed here: both settings run the SAME NCA grids, and those
-# grids dominate cost. It only changes WHICH anatomy the grid covers. So it
+# Patchify buys no speed here: both settings run the same NCA grids, and those
+# grids dominate cost. It only changes which anatomy the grid covers, so it
 # would cost the thesis contribution and return nothing.
 #
-# DECISION: OFF. This is not left ambiguous.
+# The runner reads this flag from config and refuses to start a production run
+# with patchify enabled.
 # =============================================================================
 
 experiment:
