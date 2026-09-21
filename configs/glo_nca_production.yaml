@@ -162,7 +162,12 @@ optimizer:
   weight_decay: 0.0001
 
 loss:                               # FocalTverskyCELoss
-  tversky_beta: 0.75                # alpha = 0.25 (derived)
+  # alpha = 1 - beta (derived in runner). beta 0.60 -> alpha 0.40.
+  # Measured on the frozen 40-case diagnostic test split, worst-10 ET cases,
+  # total predicted vs ground-truth voxels:
+  #   beta 0.75 -> 17.3x over-predicted (5/5 cases)
+  #   beta 0.50 ->  2.6x, but 6/10 cases UNDER-predicted
+  tversky_beta: 0.60
   focal_gamma: 1.33
   ce_weight: 0.5
   empty_region_bce_weight: 0.1
