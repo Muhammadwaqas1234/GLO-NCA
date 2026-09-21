@@ -189,6 +189,18 @@ evaluation:
   tune_thresholds: true             # VALIDATION ONLY — test stays frozen
   smoothing_window: 3
 
+  # Connected-component filtering applied to PREDICTIONS at evaluation only.
+  # Never touches training targets, loss or backpropagation.
+  # Measured on the frozen diagnostic split: an ET threshold of 10 reduced a
+  # real 246-voxel scattered lesion to 1 voxel, so ET is disabled; TC 5 clears
+  # 1-4 voxel specks while preserving the larger connected body.
+  postprocessing:
+    enabled: true
+    min_component_voxels:
+      WT: 50
+      TC: 5
+      ET: 0
+
 logging:
   tensorboard: true
   # Periodic recovery snapshot, kept INDEPENDENTLY of the best checkpoint.
