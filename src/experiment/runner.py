@@ -1286,9 +1286,9 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     logger.info("train time %.0fs | peak VRAM %.2f GB | params %d",
                 train_time, peak, info["total_parameters"])
 
-    diag = diagnose(hist, bw["ep"], test_05, test, thresholds, peak)
-    logger.info("DIAGNOSTIC: %s", diag["verdict"])
-    for line in diag["lines"]:
+    run_diag = diagnose(hist, bw["ep"], test_05, test, thresholds, peak)
+    logger.info("DIAGNOSTIC: %s", run_diag["verdict"])
+    for line in run_diag["lines"]:
         logger.info("  %s", line)
 
     # ------------------------------------------------------------- packaging
@@ -1300,16 +1300,16 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     CSVLogger(ws.path("metrics", "test.csv"), list(metrics_test.keys())).append(metrics_test)
 
     results = {"test": test, "test_at_0.5": test_05, "thresholds": thresholds,
-               "history": hist, "best_epoch": bw["ep"], "diagnostics": diag,
+               "history": hist, "best_epoch": bw["ep"], "diagnostics": run_diag,
                "params": info["total_parameters"], "train_time": train_time,
                "peak_vram": peak}
     ws.write_json(os.path.join("reports", "results.json"), results)
     ws.write_json(os.path.join("reports", "diagnostic_report.json"), diag)
     with open(ws.path("reports", "diagnostic_report.txt"), "w", encoding="utf-8") as fh:
         fh.write("GLO-NCA V2 DIAGNOSTIC REPORT\n" + "=" * 40 + "\n")
-        for line in diag["lines"]:
+        for line in run_diag["lines"]:
             fh.write(line + "\n")
-        fh.write("-" * 40 + "\nVERDICT: " + diag["verdict"] + "\n")
+        fh.write("-" * 40 + "\nVERDICT: " + run_diag["verdict"] + "\n")
     _write_thesis_csv(ws, test, test_05, thresholds, info)
 
     # --- per-case metrics + statistical summary (thesis stats) --------------
