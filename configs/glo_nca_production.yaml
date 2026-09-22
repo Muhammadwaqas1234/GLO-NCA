@@ -170,7 +170,11 @@ training:
     monitor: validation mean foreground Dice
     mode: max                       # higher Dice is better
     patience: 15                    # consecutive non-improving validations
-    min_delta: 0.001                # smaller gains count as noise
+    # A gain smaller than the validation measurement error is not evidence of
+    # improvement. With 200 validation cases and a per-case Dice spread around
+    # 0.20, one standard error is ~0.014, so 0.001 sat an order of magnitude
+    # BELOW the noise floor and would have reset patience on chance alone.
+    min_delta: 0.01
 
 optimizer:
   learning_rate: 0.0016
