@@ -8,6 +8,7 @@ original train.py -- this layer only adds experiment management around it.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
@@ -237,6 +238,64 @@ def _case_ids_for_state(exp, state: str):
                 break
         ids.append(base)
     return ids
+
+
+def _dataset_validation_key(data_root, modalities, limit, policy) -> str:
+    """Fingerprint the inputs a validation verdict depends on.
+
+    Covers every case file's path, size and mtime, so a changed, added or
+    removed file produces a different key and forces a rescan.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    h.update(str(data_root).encode())
+    h.update(",".join(sorted(modalities)).encode())
+    h.update(str(limit or 0).encode())
+    h.update(str(getattr(policy, "policy_version", None) or "").encode())
+    try:
+        from src.experiment.datasource import discover_cases
+        cases = discover_cases(data_root)
+    except Exception:
+        return "unavailable"
+    if limit:
+        cases = cases[:limit]
+    for cid, rel in cases:
+        folder = os.path.join(data_root, rel)
+        h.update(cid.encode())
+        try:
+            for name in sorted(os.listdir(folder)):
+                st = os.stat(os.path.join(folder, name))
+                h.update(f"{name}:{st.st_size}:{int(st.st_mtime)}".encode())
+        except OSError:
+            return "unavailable"
+    return h.hexdigest()
+
+
+def _load_cached_validation(cache_dir: str, key: str):
+    """Return a cached PASS report for this key, or None."""
+    if not key or key == "unavailable":
+        return None
+    path = os.path.join(cache_dir, f"{key}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            report = json.load(fh)
+    except Exception:
+        return None
+    return report if report.get("result") == "PASS" else None
+
+
+def _store_cached_validation(cache_dir: str, key: str, report) -> None:
+    if not key or key == "unavailable":
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, f"{key}.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(report, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _build_production_model(cfg: Config, device):
@@ -560,13 +619,30 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         logger.info("data-quality: no policy file; validator fail-closed on "
                     "any label outside %s", sorted(BASE_ALLOWED_SEG_LABELS))
 
-    try:
-        report = validate_dataset(data_root,
-                                  modalities=list(cfg.get("dataset", "modalities")),
-                                  limit=n_pat, policy=dq_policy)
-    except DataQualityPolicyError as exc:
-        return _fail(ws, logger, "data-quality policy does not match the dataset",
-                     str(exc))
+    # The scan is deterministic: the same files, modalities, limit and policy
+    # always produce the same verdict. A PASS is therefore reusable, keyed on a
+    # fingerprint of those inputs plus every file's size and mtime, so any edit,
+    # addition or removal invalidates it. A FAIL is never cached.
+    _val_key = _dataset_validation_key(
+        data_root, list(cfg.get("dataset", "modalities")), n_pat, dq_policy)
+    _val_cache = os.path.join(
+        os.path.expanduser(str((cfg.section("data") or {}).get("cache", {})
+                               .get("directory", ".cache/preprocessed"))),
+        "dataset_validation")
+    report = _load_cached_validation(_val_cache, _val_key)
+    if report is not None:
+        logger.info("dataset validation: reusing cached PASS (fingerprint %s); "
+                    "delete %s to force a rescan", _val_key[:12], _val_cache)
+    else:
+        try:
+            report = validate_dataset(
+                data_root, modalities=list(cfg.get("dataset", "modalities")),
+                limit=n_pat, policy=dq_policy)
+        except DataQualityPolicyError as exc:
+            return _fail(ws, logger, "data-quality policy does not match the dataset",
+                         str(exc))
+        if report.get("result") == "PASS":
+            _store_cached_validation(_val_cache, _val_key, report)
     ws.write_json(os.path.join("reports", "dataset_validation_report.json"), report)
     logger.info(summarize(report))
     if report["result"] != "PASS":
