@@ -41,6 +41,7 @@ from .dataset_validation import (validate_dataset, summarize,
                                  ALLOWED_SEG_LABELS as BASE_ALLOWED_SEG_LABELS)
 from .data_quality import (load_policy as dq_load_policy,
                            DataQualityPolicyError)
+from . import diagnostics as diag
 from .run_diagnosis import diagnose
 from . import postprocess as PP
 from . import per_case_diagnostics as PCD
