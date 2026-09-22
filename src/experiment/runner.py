@@ -1377,7 +1377,10 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
 
     manifest = _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
                          bw["ep"], test, train_time, peak, "completed",
-                         dataset_identity=dataset_identity, split_meta=split_meta)
+                         dataset_identity=dataset_identity,
+                         split_meta=split_meta, epochs_run=epochs_run,
+                         stopper=stopper, extend_to=extend_to,
+                         ext_plan=ext_plan)
     ws.write_manifest(manifest)
     ws.write_status("completed", progress=1.0, best_epoch=bw["ep"],
                     best_score=best, test_mean=metrics_test["dice_mean"])
@@ -1481,7 +1484,9 @@ def _write_threshold_comparison(ws, val_pairs, test_pairs, thresholds,
 
 def _manifest(cfg, ws, env_summary, info, tr, va, te, data_root,
               best_epoch, test, train_time, peak, status,
-              dataset_identity=None, split_meta=None) -> Dict[str, Any]:
+              dataset_identity=None, split_meta=None,
+              epochs_run=None, stopper=None, extend_to=None,
+              ext_plan=None) -> Dict[str, Any]:
     return {
         "experiment_id": ws.experiment_id,
         "name": cfg.name,
