@@ -1062,7 +1062,6 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         ep_start = time.time()
         losses = []
         gpu_diag.set_phase(diag.ACTIVE_GPU)
-        gpu_diag.sample(epoch=ep + 1, step=0)
         # Epoch travels to the workers via the sampler's yielded indices, so it
         # reaches worker dataset copies even when they persist across epochs.
         sampler.set_epoch(ep)
@@ -1102,6 +1101,10 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
                         _prof.record(f"memory/{_k}", float(_v))
             if r:
                 losses.append(sum(r.values()))
+            # Sample WHILE compute is in flight. Taken at the top of the epoch
+            # it read an idle card and reported 0.1% ACTIVE_GPU for a run whose
+            # VALIDATION phase measured 100% on the same device.
+            gpu_diag.sample(epoch=ep + 1, step=_batch_idx)
             if _tp is not None:
                 _tp.step()
             _batch_idx += 1
