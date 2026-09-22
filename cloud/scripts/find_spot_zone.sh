@@ -26,17 +26,29 @@ log "configured zone: ${GCP_ZONE:-<unset>}"
 echo
 
 log "zones offering ${GPU}:"
+_zone_err="$(mktemp)"
 mapfile -t ZONES < <(
   gcloud compute accelerator-types list \
     --filter="name=${GPU}" \
     --format="value(zone)" \
-    --project="${GCP_PROJECT_ID}" 2>/dev/null | tr -d '\r' | sort -u
+    --project="${GCP_PROJECT_ID}" 2>"${_zone_err}" | tr -d '\r' | sort -u
 )
 
 if [ "${#ZONES[@]}" -eq 0 ]; then
+  # Distinguish "no capacity offered" from "the API call failed". Swallowing
+  # stderr once reported a quota problem when the real cause was an expired
+  # auth token.
+  if [ -s "${_zone_err}" ]; then
+    fail "gcloud could not list accelerator types:"
+    sed 's/^/    /' "${_zone_err}" >&2
+    rm -f "${_zone_err}"
+    exit 1
+  fi
+  rm -f "${_zone_err}"
   fail "no zones report ${GPU}. Check the GPU name and project quota."
   exit 1
 fi
+rm -f "${_zone_err}"
 
 for z in "${ZONES[@]}"; do
   # if/else, not `[ ] && x=y`: under `set -e` a failed test makes the && chain
