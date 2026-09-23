@@ -46,6 +46,7 @@ from . import diagnostics as diag
 from .run_diagnosis import diagnose
 from . import postprocess as PP
 from . import per_case_diagnostics as PCD
+from . import lesion_strata as LS
 from src.profiling import configure as _configure_profiler
 from src.profiling.memory import MemorySampler
 from .logutil import CSVLogger, TensorBoard, get_logger
@@ -1340,10 +1341,14 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
         _val_rows = PCD.build_rows(val_pairs, _case_ids_for_state(exp, "val"),
                                    "validation", {r: 0.5 for r in REGIONS})
         PCD.write_csv(ws.path("reports", "validation_per_case.csv"), _val_rows)
+        LS.write_csv(ws.path("reports", "validation_by_lesion_size.csv"),
+                     LS.stratify(_val_rows))
         _val_summary = PCD.summarise(_val_rows)
         _test_rows = PCD.build_rows(test_pairs, _case_ids_for_state(exp, "test"),
                                     "test", thresholds)
         PCD.write_csv(ws.path("reports", "test_per_case.csv"), _test_rows)
+        LS.write_csv(ws.path("reports", "test_by_lesion_size.csv"),
+                     LS.stratify(_test_rows))
         _test_summary = PCD.summarise(_test_rows)
         for _split, _sm in (("validation", _val_summary), ("test", _test_summary)):
             for _r in REGIONS:

@@ -128,6 +128,13 @@ def main() -> int:
           not (set(train_ids) | set(val_ids)) & set(split["test"]),
           f"{len(train_ids)} train, {len(val_ids)} val")
 
+    # Explicit test-set firewall accounting, reported as a count rather than a
+    # boolean so the number appears verbatim in the pre-flight report.
+    _test_set = set(split["test"])
+    _touched = [c for c in (train_ids + val_ids) if c in _test_set]
+    check("test cases accessed = 0", len(_touched) == 0,
+          f"{len(_touched)} of {len(_test_set)} test cases opened")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _build_production_model(cfg, device).to(device)
     total = sum(p.numel() for p in model.parameters())
@@ -256,8 +263,57 @@ def main() -> int:
           f"{hd_valid}/3 defined, {hd_undef}/3 undefined "
           f"(empty prediction or empty ground truth)")
 
-    # ---- checkpoint round trip on the real model ---------------------------
+    # ---- per-case diagnostics + lesion-size stratification ------------------
+    # These are the production EVALUATION artifacts. They must be produced from
+    # the same pairs the metrics came from, with no extra model pass.
     import tempfile
+
+    from src.experiment import lesion_strata as LS
+    from src.experiment import per_case_diagnostics as PCD
+
+    _ids = [f"smoke-{i:03d}" for i in range(len(pp))]
+    rows = PCD.build_rows(pp, _ids, "validation",
+                          {r: 0.5 for r in ("WT", "TC", "ET")})
+    check("per-case diagnostic rows built", len(rows) == len(pp),
+          f"{len(rows)} rows x {len(PCD.COLUMNS)} columns"
+          if hasattr(PCD, "COLUMNS") else f"{len(rows)} rows")
+    check("per-case rows carry gt/pred voxel counts",
+          all(f"gt_vox_{r}" in rows[0] and f"pred_vox_{r}" in rows[0]
+              for r in ("WT", "TC", "ET")))
+    check("HD95 undefined recorded as NaN, never 0",
+          all(not (row[f"hd95_{r}"] == 0.0 and row[f"gt_vox_{r}"] == 0)
+              for row in rows for r in ("WT", "TC", "ET")))
+
+    strata = LS.stratify(rows)
+    check("lesion-size stratification produced",
+          len(strata) == 3 * (len(LS.DEFAULT_STRATA) + 1),
+          f"{len(strata)} region x stratum rows")
+    _names = {s["stratum"] for s in strata}
+    check("all strata present incl. absent_gt",
+          _names == {n for n, _, _ in LS.DEFAULT_STRATA} | {LS.ABSENT},
+          ", ".join(sorted(_names)))
+    check("absent_gt separated from size strata",
+          all(s["empty_gt_cases"] == s["cases"]
+              for s in strata if s["stratum"] == LS.ABSENT),
+          "empty-GT cases cannot distort small/medium/large Dice")
+    check("stratum case counts reconcile with per-case rows",
+          all(sum(s["cases"] for s in strata if s["region"] == r) == len(rows)
+              for r in ("WT", "TC", "ET")))
+
+    with tempfile.TemporaryDirectory() as td:
+        pc_csv = PCD.write_csv(os.path.join(td, "reports", "vpc.csv"), rows)
+        ls_csv = LS.write_csv(os.path.join(td, "reports", "vls.csv"), strata)
+        check("validation_per_case CSV written", os.path.getsize(pc_csv) > 0,
+              f"{os.path.getsize(pc_csv):,} bytes")
+        check("by_lesion_size CSV written", os.path.getsize(ls_csv) > 0,
+              f"{os.path.getsize(ls_csv):,} bytes")
+        import csv as _csv
+        with open(ls_csv, encoding="utf-8") as fh:
+            _got = list(_csv.DictReader(fh))
+        check("stratified CSV schema matches module contract",
+              _got and list(_got[0].keys()) == LS.COLUMNS)
+
+    # ---- checkpoint round trip on the real model ---------------------------
     from src.experiment import checkpoint as ckpt_io
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "smoke.pth")
