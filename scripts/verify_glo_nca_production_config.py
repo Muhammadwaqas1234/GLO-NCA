@@ -4,7 +4,7 @@ Purpose
 -------
 Fail CLOSED unless the supplied configuration IS the intended production
 candidate. This exists because the repository deliberately keeps the FROZEN
-thesis reference (``configs/historical/v3_multilevel_ckpt.yaml``, 32/96/128) alongside the
+thesis reference (``extra/configs/historical/v3_multilevel_ckpt.yaml``, 32/96/128) alongside the
 current production candidate (``configs/glo_nca_production.yaml``, 48/64), and a
 300-epoch cloud run started with the wrong one would burn days of GPU time on
 the wrong architecture before anyone noticed.
@@ -52,7 +52,7 @@ EXPECTED = {
     "level2_nca_steps": 15,
     "level3_enabled": False,
     "total_nca_steps": 30,
-    "spatial_kernel_size": 5,   # the thesis contribution's receptive field
+    "spatial_kernel_size": 7,   # the thesis contribution's receptive field (restored 5 -> 7)
     "inference_parameters": 30209,
     "auxiliary_parameters": 75,
     "training_parameters": 30284,

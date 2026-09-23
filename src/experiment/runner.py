@@ -8,6 +8,7 @@ original train.py -- this layer only adds experiment management around it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -303,7 +304,7 @@ def _training_et_voxels(ds, exp, ws, logger):
     """ET ground-truth voxel count per TRAINING case, for the small-lesion sampler.
 
     Counted from the same deterministic preprocessing head training uses, so the
-    numbers match `scripts/analyze_et_voxels.py` and `lesion_strata` exactly:
+    numbers match `extra/scripts/analyze_et_voxels.py` and `lesion_strata` exactly:
     foreground crop, resample to the working volume, then count ET (REGIONS
     index 2). Units are RESAMPLED voxels of the working-volume grid, NOT mm^3.
 
@@ -480,7 +481,7 @@ def _build_v3(cfg: Config, data_root: str, device, epochs: int, out_model_dir: s
     # Caches ONLY the deterministic head of __getitem__ (load -> crop ->
     # resample -> label conversion). All stochastic work (patchify,
     # augmentation, per-(epoch,case) RNG) still runs every epoch, and cache
-    # lookup is RNG-neutral -- verified by scripts/test_preprocess_cache.py.
+    # lookup is RNG-neutral -- verified by extra/scripts/test_preprocess_cache.py.
     _cache_cfg = (cfg.section("data") or {}).get("cache") or {}
     if bool(_cache_cfg.get("enabled", False)):
         from src.datasets.preprocess_cache import PreprocessCache
@@ -817,6 +818,17 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     # changes. See src/experiment/warmup.py.
     _warm_ep = float(cfg.get("optimizer", "warmup_epochs", 0) or 0)
     _warm_steps = int(round(_warm_ep * spe))
+    # A run shorter than (or equal to) its warmup cannot hold a warmup AND a
+    # cosine tail, and WarmupCosineLR rejects it -- which used to crash any
+    # short debug run at startup (e.g. epochs <= 3 with warmup_epochs: 3).
+    # Cap warmup at half the run and say so. The 300-epoch production budget
+    # (2,694 warmup of 269,400 steps) is far below the cap and is unaffected.
+    if _warm_steps >= total_steps:
+        _capped = max(0, total_steps // 2)
+        logger.warning("LR warmup %d steps >= total %d steps; capping warmup "
+                       "to %d (half the run). Production is unaffected.",
+                       _warm_steps, total_steps, _capped)
+        _warm_steps = _capped
     if _warm_steps > 0:
         from .warmup import WarmupCosineLR
         agent.scheduler = [
@@ -824,9 +836,9 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
                            warmup_steps=_warm_steps, eta_min=lr_min)
             for opt in agent.optimizer
         ]
-        logger.info("LR warmup: %g epoch(s) = %d steps, then cosine to %g "
-                    "(peak %g preserved, total steps unchanged)",
-                    _warm_ep, _warm_steps, lr_min,
+        logger.info("LR warmup: %g epoch(s) configured, %d of %d steps applied, "
+                    "then cosine to %g (peak %g preserved, total steps unchanged)",
+                    _warm_ep, _warm_steps, total_steps, lr_min,
                     float(cfg.get("optimizer", "learning_rate")))
     else:
         agent.scheduler = [
@@ -981,7 +993,15 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
                      ("training", "patch_size"), ("optimizer", "learning_rate"),
                      ("optimizer", "minimum_learning_rate"),
                      ("loss", "tversky_beta"), ("loss", "focal_gamma"),
-                     ("ema", "decay"), ("experiment", "seed")]
+                     ("ema", "decay"), ("experiment", "seed"),
+                     # Schedule- and data-order-defining settings added with
+                     # the production baseline. A resume that changes any of
+                     # them would train a run matching neither config.
+                     ("optimizer", "warmup_epochs"),
+                     ("model", "spatial_kernel_size"),
+                     ("lesion_aware_sampling", "enabled"),
+                     ("lesion_aware_sampling", "boost"),
+                     ("lesion_aware_sampling", "small_lesion_voxels")]
             drift = []
             for sec, key in _crit:
                 old = (prev_cfg.get(sec) or {}).get(key)
