@@ -9,7 +9,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
     """GLO-NCA (Global Context-Aware NCA) training agent.
 
     Uses a coarse-to-fine multi-level Neural Cellular Automata with a global
-    context mechanism (the lightweight SE block in BasicNCA3D) and 3D patches
+    context mechanism (the lightweight SE block in GLO_NCA_Cell) and 3D patches
     across n-levels during training to keep VRAM low.
     """
     def initialize(self):

@@ -12,7 +12,7 @@ fusion, in strict information flow:
     working volume, with level 3 disabled.
 
 Design principles (all verified against the V2 code):
-  * Each level is the EXISTING ``BasicNCA3D`` (SE + spatial GC, channels-last
+  * Each level is the EXISTING ``GLO_NCA_Cell`` (SE + spatial GC, channels-last
     (B,X,Y,Z,C) convention), reused unchanged -- so the per-cell NCA rule,
     SE block and spatial-GC block are identical to V2. V3 adds only the
     cross-level projection + fusion, which is the new contribution.
@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models.Model_BasicNCA3D import BasicNCA3D
+from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 
 
 @dataclass
@@ -108,10 +108,10 @@ class GLO_NCA_V3_MultiLevel(nn.Module):
         # activation memory is traded for recompute. Architecture is unchanged.
         self.gradient_checkpointing = bool(gradient_checkpointing)
 
-        # One BasicNCA3D per active level. Each sees `input_channels` modalities
+        # One GLO_NCA_Cell per active level. Each sees `input_channels` modalities
         # placed into the first channels of its state (V2 seed convention).
         self.ncas = nn.ModuleList([
-            BasicNCA3D(channel_n=lv.channels, fire_rate=fire_rate,
+            GLO_NCA_Cell(channel_n=lv.channels, fire_rate=fire_rate,
                        device=self.device, hidden_size=hidden_size,
                        input_channels=input_channels, kernel_size=lv.kernel_size,
                        use_attention=use_attention, use_spatial=use_spatial,

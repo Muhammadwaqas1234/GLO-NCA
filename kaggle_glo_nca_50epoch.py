@@ -9,7 +9,7 @@ Production architecture source:
     GLO-NCA production implementation
       src/models/Model_GLO_NCA_GlobalContext.py  (GLO_NCA_GlobalContext)
       src/models/Model_GLO_NCA_V3.py             (GLO_NCA_V3_MultiLevel, FeatureProjection)
-      src/models/Model_BasicNCA3D.py             (BasicNCA3D, SEBlock3D, GCSpatialBlock3D)
+      src/models/Model_GLO_NCA_Cell.py             (GLO_NCA_Cell, SEBlock3D, GCSpatialBlock3D)
       src/losses/LossFunctions.py                (FocalTverskyCELoss)
       src/experiment/runner.py                   (_clipped_batch_step training semantics)
       configs/glo_nca_production.yaml            (hyperparameters)
@@ -122,7 +122,7 @@ import numpy as np
 #
 # A1 (fused channels-last BatchNorm) IS INCLUDED and is NOT Category C: it is
 # a proven-equivalent implementation optimisation now integrated into
-# src/models/Model_BasicNCA3D.py (1.402x measured, forward bit-identical).
+# src/models/Model_GLO_NCA_Cell.py (1.402x measured, forward bit-identical).
 #
 # ============================================================================
 # HYPERPARAMETERS
@@ -953,7 +953,7 @@ def build_model_classes():
 
     class SEBlock3D(nn.Module):
         """Channel GLOBAL context: squeeze over the WHOLE volume -> per-channel gate.
-        Verbatim from src/models/Model_BasicNCA3D.py."""
+        Verbatim from src/models/Model_GLO_NCA_Cell.py."""
 
         def __init__(self, channel_n, reduction=4):
             super().__init__()
@@ -970,7 +970,7 @@ def build_model_classes():
 
     class GCSpatialBlock3D(nn.Module):
         """Spatial GLOBAL context: attention-pooled per-voxel gate.
-        Verbatim from src/models/Model_BasicNCA3D.py."""
+        Verbatim from src/models/Model_GLO_NCA_Cell.py."""
 
         def __init__(self, kernel_size=7):
             super().__init__()
@@ -987,7 +987,7 @@ def build_model_classes():
         """BatchNorm3d(track_running_stats=False) for channels-LAST tensors.
 
         THIS IS THE A1 OPTIMISATION, AND IT IS NOW THE PRODUCTION CODE.
-        Identical to `ChannelsLastBatchNorm` in src/models/Model_BasicNCA3D.py,
+        Identical to `ChannelsLastBatchNorm` in src/models/Model_GLO_NCA_Cell.py,
         which was integrated after passing the full gate matrix (see
         reports/audit/GLO_NCA_A1_INTEGRATION_REPORT.md).
 
@@ -1066,8 +1066,8 @@ def build_model_classes():
                                     True, 0.0, self.eps)
             return flat.reshape(b, X, Y, Z, c)
 
-    class BasicNCA3D(nn.Module):
-        """Production NCA cell rule. Verbatim from src/models/Model_BasicNCA3D.py.
+    class GLO_NCA_Cell(nn.Module):
+        """Production NCA cell rule. Verbatim from src/models/Model_GLO_NCA_Cell.py.
 
         `prof` is an optional profiler used ONLY to time the global-context
         blocks; it does not alter the computation.
@@ -1217,7 +1217,7 @@ def build_model_classes():
             self.prof: Optional[Profiler] = None
 
             self.ncas = nn.ModuleList([
-                BasicNCA3D(channel_n=lv.channels, fire_rate=fire_rate,
+                GLO_NCA_Cell(channel_n=lv.channels, fire_rate=fire_rate,
                            device=self.device, hidden_size=hidden_size,
                            input_channels=input_channels, kernel_size=lv.kernel_size,
                            use_attention=use_attention, use_spatial=use_spatial,
@@ -1414,7 +1414,7 @@ def build_model_classes():
     return dict(GLO_NCA=GLO_NCA, LevelSpec=LevelSpec,
                 FocalTverskyCELoss=FocalTverskyCELoss,
                 SEBlock3D=SEBlock3D, GCSpatialBlock3D=GCSpatialBlock3D,
-                BasicNCA3D=BasicNCA3D)
+                GLO_NCA_Cell=GLO_NCA_Cell)
 
 
 class _null_ctx:

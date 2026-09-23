@@ -143,12 +143,12 @@ def t_ckpt_equivalence_gpu():
     """Gradient checkpointing must not change outputs or gradients."""
     import torch
     dev = gpu()
-    from src.models.Model_BasicNCA3D import BasicNCA3D
+    from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 
     def run(use_ckpt):
         torch.manual_seed(0)
         torch.cuda.manual_seed_all(0)
-        m = BasicNCA3D(12, 0.6, dev, 32, input_channels=4, kernel_size=3,
+        m = GLO_NCA_Cell(12, 0.6, dev, 32, input_channels=4, kernel_size=3,
                        use_attention=True, use_spatial=True)
         m.use_checkpoint = use_ckpt
         torch.manual_seed(1)

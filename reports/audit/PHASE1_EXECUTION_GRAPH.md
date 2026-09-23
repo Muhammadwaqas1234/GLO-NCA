@@ -1,5 +1,14 @@
 # PHASE 1 — EXECUTION GRAPH (V3 production path)
 
+> **NAMING NOTE (added after this report was written).**
+> `src/models/Model_BasicNCA3D.py` was renamed to
+> `src/models/Model_GLO_NCA_Cell.py`, and the class `BasicNCA3D` to
+> `GLO_NCA_Cell`. The rename was cosmetic: no behaviour, tensor shape or
+> parameter changed, and production identity stayed 29,337 / 75 / 29,412,
+> verified from the constructed model before and after. Any file path, class
+> name or line number cited below refers to that file under its former name;
+> the evidence recorded here still stands.
+
 Built from an exhaustive import grep, then traced by reading each call site.
 
 ## 1. Production execution path

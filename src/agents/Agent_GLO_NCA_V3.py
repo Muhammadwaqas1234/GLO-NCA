@@ -17,7 +17,7 @@ through the agent interface used by V2:
 This adapter presents EXACTLY that interface around the one V3 model, so the
 runner's training step, loss handling, EMA, checkpoint/resume, evaluation,
 threshold tuning, manifest and graphs are all reused UNCHANGED. Nothing about
-V2 is touched: V2 keeps using ``Agent_GLO_NCA`` with two ``BasicNCA3D`` models.
+V2 is touched: V2 keeps using ``Agent_GLO_NCA`` with two ``GLO_NCA_Cell`` models.
 
 Design notes:
   * ``self.model`` is a single-element list ``[v3_model]`` so the base

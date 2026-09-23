@@ -1,5 +1,14 @@
 # PHASE 1 — FILE-BY-FILE AUDIT RECORDS
 
+> **NAMING NOTE (added after this report was written).**
+> `src/models/Model_BasicNCA3D.py` was renamed to
+> `src/models/Model_GLO_NCA_Cell.py`, and the class `BasicNCA3D` to
+> `GLO_NCA_Cell`. The rename was cosmetic: no behaviour, tensor shape or
+> parameter changed, and production identity stayed 29,337 / 75 / 29,412,
+> verified from the constructed model before and after. Any file path, class
+> name or line number cited below refers to that file under its former name;
+> the evidence recorded here still stands.
+
 Records for every **production runtime** file. Config/cloud/script/test records
 are in CONFIG_AUDIT.md, CLOUD_AUDIT.md, TEST_AUDIT.md and
 PHASE1_REPOSITORY_INVENTORY.md. Recommendations are findings only — **nothing
