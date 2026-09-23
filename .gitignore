@@ -24,9 +24,12 @@ scratch_brats/
 Tutorial/Data/
 
 # --- Experiment outputs / checkpoints / logs (generated) ---
-experiments/
+# ROOT-ANCHORED. A bare `experiments/` also matched configs/experiments/ and
+# docs/experiments/, which silently untracked the experimental CONFIGS -- those
+# are source and thesis evidence, not generated output.
+/experiments/
 # Phase 2 profiling artifacts (traces can be large; never commit them)
-experiments/phase2_profiling/
+/experiments/phase2_profiling/
 # Deterministic preprocessing cache (regenerable; ~38 MB/case at 128^3)
 .cache/
 **/profiler/*.pt.trace.json

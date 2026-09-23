@@ -211,6 +211,17 @@ else
   warn "GCS round-trip skipped (no smoke experiment)"
 fi
 
+# The round-trip above proves the CURRENT identity can write and read. On the
+# VM that identity is the attached service account, which is the credential the
+# training job actually uses -- and the one that held only objectViewer when a
+# Phase 2 run died on a 403. This additionally proves create/list/DELETE for
+# that account, and refuses to report a pass when run as a human.
+set +e
+bash "${CLOUD_DIR}/scripts/verify_gcs_service_account.sh"
+SA_RC=$?
+set -e
+mark "${SA_RC}" "GCS service-account permissions (create/get/list/delete)"
+
 # --- Part 9-14: repository audits (config integrity, discipline, compile) -----
 step "Part 9-14  repository audits"
 check "compileall" "${PYBIN}" -m compileall -q src scripts train.py
