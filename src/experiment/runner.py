@@ -23,7 +23,7 @@ import torch
 _HERE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.datasets.Nii_Gz_Dataset_3D import Dataset_NiiGz_3D_BraTS
-from src.models.Model_BasicNCA3D import BasicNCA3D
+from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 from src.losses.LossFunctions import FocalTverskyCELoss
 from src.utils.Experiment import Experiment
 from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
@@ -299,6 +299,70 @@ def _store_cached_validation(cache_dir: str, key: str, report) -> None:
         pass
 
 
+def _training_et_voxels(ds, exp, ws, logger):
+    """ET ground-truth voxel count per TRAINING case, for the small-lesion sampler.
+
+    Counted from the same deterministic preprocessing head training uses, so the
+    numbers match `scripts/analyze_et_voxels.py` and `lesion_strata` exactly:
+    foreground crop, resample to the working volume, then count ET (REGIONS
+    index 2). Units are RESAMPLED voxels of the working-volume grid, NOT mm^3.
+
+    ISOLATION: the dataset is pinned to the training state for the duration of
+    this pass, so validation and test are never read. The result is cached in
+    the workspace, keyed on the split fingerprint, so a resume or a rerun on an
+    unchanged split does not repeat the scan.
+    """
+    import numpy as np
+
+    cache = ws.path("config", "et_voxels.json")
+    ids = _case_ids_for_state(exp, "train")
+    key = hashlib.sha256(("|".join(ids)).encode()).hexdigest()[:16]
+    try:
+        with open(cache, encoding="utf-8") as fh:
+            blob = json.load(fh)
+        if blob.get("key") == key and len(blob.get("et_voxels", [])) == len(ds):
+            logger.info("small-lesion sampler: reusing cached ET counts (%d cases)",
+                        len(blob["et_voxels"]))
+            return blob["et_voxels"]
+    except Exception:
+        pass
+
+    prev_state = getattr(ds, "state", None)
+    logger.info("small-lesion sampler: counting ET voxels over %d training "
+                "cases (once per split; cached afterwards)", len(ds))
+    counts, t0 = [], time.time()
+    try:
+        exp.set_model_state("train")
+        for i in range(len(ds)):
+            item = ds[i]
+            label = np.asarray(item[2])
+            counts.append(int((label[..., 2] > 0.5).sum()))
+            if (i + 1) % 100 == 0:
+                logger.info("  ET scan %d/%d (%.1f min elapsed)",
+                            i + 1, len(ds), (time.time() - t0) / 60)
+    finally:
+        if prev_state is not None:
+            try:
+                exp.set_model_state(prev_state)
+            except Exception:
+                pass
+
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump({"key": key, "unit": "resampled voxels (not mm^3)",
+                       "split": "train", "et_voxels": counts}, fh)
+    except Exception:
+        pass
+    pos = sum(1 for c in counts if c > 0)
+    logger.info("small-lesion sampler: %d/%d cases ET-positive, ET voxels "
+                "min %d median %d max %d (%.1f min)",
+                pos, len(counts), min(counts) if counts else 0,
+                int(np.median(counts)) if counts else 0,
+                max(counts) if counts else 0, (time.time() - t0) / 60)
+    return counts
+
+
 def _build_production_model(cfg: Config, device):
     """Construct the model exactly as the runner does for a given config."""
     if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
@@ -489,9 +553,9 @@ def _build(cfg: Config, data_root: str, device, epochs: int, out_model_dir: str)
     ds = Dataset_NiiGz_3D_BraTS()
     ds.MODALITIES = list(cfg.get("dataset", "modalities"))
     ca = [
-        BasicNCA3D(ch, fire, device, hidden, kernel_size=7, input_channels=4,
+        GLO_NCA_Cell(ch, fire, device, hidden, kernel_size=7, input_channels=4,
                    use_attention=use_attn, use_spatial=use_spatial, dropout=dropout),
-        BasicNCA3D(ch, fire, device, hidden, kernel_size=3, input_channels=4,
+        GLO_NCA_Cell(ch, fire, device, hidden, kernel_size=3, input_channels=4,
                    use_attention=use_attn, use_spatial=use_spatial, dropout=dropout),
     ]
     agent = Agent_GLO_NCA(ca)
@@ -746,10 +810,29 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     spe = max(1, math.ceil(len(tr) / batch_size))
     total_steps = epochs * spe
     lr_min = float(cfg.get("optimizer", "minimum_learning_rate"))
-    agent.scheduler = [
-        torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
-        for opt in agent.optimizer
-    ]
+    # Optional linear warmup before the cosine schedule. `optimizer.warmup_epochs`
+    # absent or 0 => plain CosineAnnealingLR, byte-identical to the previous
+    # behaviour. When set, WarmupCosineLR preserves the peak LR, the minimum LR
+    # and the total step count; only the shape of the first `warmup_epochs`
+    # changes. See src/experiment/warmup.py.
+    _warm_ep = float(cfg.get("optimizer", "warmup_epochs", 0) or 0)
+    _warm_steps = int(round(_warm_ep * spe))
+    if _warm_steps > 0:
+        from .warmup import WarmupCosineLR
+        agent.scheduler = [
+            WarmupCosineLR(opt, total_steps=total_steps,
+                           warmup_steps=_warm_steps, eta_min=lr_min)
+            for opt in agent.optimizer
+        ]
+        logger.info("LR warmup: %g epoch(s) = %d steps, then cosine to %g "
+                    "(peak %g preserved, total steps unchanged)",
+                    _warm_ep, _warm_steps, lr_min,
+                    float(cfg.get("optimizer", "learning_rate")))
+    else:
+        agent.scheduler = [
+            torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
+            for opt in agent.optimizer
+        ]
 
     # Phase 2 (§5 centralisation): ce_weight and the empty-region BCE weight are
     # thesis hyperparameters that were previously hard-coded and therefore did
@@ -1045,7 +1128,29 @@ def run(cfg: Config, ws: Workspace, *, resume: bool, device_str: str = None,
     # which works identically with or without persistent workers.
     _worker_init = _WorkerInit(cfg.seed)
 
-    sampler = _EpochSampler(len(ds), cfg.seed)
+    # Optional small-lesion-aware sampler. `lesion_aware_sampling.enabled`
+    # absent or false => the uniform _EpochSampler, byte-identical to the
+    # previous behaviour. When enabled, cases are weighted by ET VOLUME so that
+    # SMALL-lesion cases are drawn more often; epoch length (and therefore the
+    # optimiser-step count and the LR schedule) is unchanged. Validation and
+    # test always stay uniform -- this sampler is only ever given to the
+    # TRAINING loader. See src/experiment/lesion_sampler.py.
+    _las = (cfg.section("lesion_aware_sampling") or {})
+    if bool(_las.get("enabled", False)):
+        from .lesion_sampler import LesionAwareSampler
+        _et = _training_et_voxels(ds, exp, ws, logger)
+        sampler = LesionAwareSampler(
+            _et, cfg.seed,
+            boost=float(_las.get("boost", 2.0)),
+            small_lesion_voxels=int(_las.get("small_lesion_voxels", 100)))
+        _d = sampler.describe()
+        logger.info("small-lesion sampler ACTIVE: %d cases, weights [%.3f, %.3f], "
+                    "boost %.2f, small<=%d vox, %d draws/epoch (with replacement); "
+                    "validation/test remain uniform",
+                    _d["cases"], _d["weight_min"], _d["weight_max"],
+                    _d["boost"], _d["small_lesion_voxels"], _d["samples_per_epoch"])
+    else:
+        sampler = _EpochSampler(len(ds), cfg.seed)
     ds.set_augmentation_seed(cfg.seed)
 
     persistent = workers > 0

@@ -249,6 +249,12 @@ def test_warmup():
         check("rejects warmup >= total", True, "ValueError")
 
 
+def _runner_src():
+    import io as _io
+    return _io.open(os.path.join(_HERE, "src", "experiment", "runner.py"),
+                    encoding="utf-8").read()
+
+
 def test_baseline_intact():
     print("\n[4] PRODUCTION BASELINE INVARIANTS")
     prod_path = os.path.join(_HERE, "configs", "glo_nca_production.yaml")
@@ -272,10 +278,22 @@ def test_baseline_intact():
           == {"WT": 50, "TC": 5, "ET": 0})
     check("seed still 42", prod["experiment"]["seed"] == 42)
 
-    check("NO lesion_aware_sampling in production",
-          "lesion_aware_sampling" not in prod)
-    check("NO warmup_epochs in production",
-          "warmup_epochs" not in prod["optimizer"])
+    # POLICY CHANGE (explicit user decision): small-lesion sampling and LR
+    # warmup are now PART OF THE BASELINE, not experiments. These assertions
+    # therefore verify they are correctly configured rather than absent. The
+    # architecture, loss, split and seed are asserted unchanged above.
+    check("small-lesion sampling IS in production",
+          prod.get("lesion_aware_sampling", {}).get("enabled") is True)
+    check("sampler leaves validation/test uniform",
+          prod["lesion_aware_sampling"]["apply_to_validation"] is False
+          and prod["lesion_aware_sampling"]["apply_to_test"] is False)
+    check("warmup IS in production", prod["optimizer"].get("warmup_epochs") == 3,
+          f"{prod['optimizer'].get('warmup_epochs')} epochs")
+    check("warmup preserves production peak LR",
+          prod["optimizer"]["learning_rate"] == 0.0016)
+    check("runner reads warmup_epochs", "warmup_epochs" in _runner_src())
+    check("runner reads lesion_aware_sampling",
+          "lesion_aware_sampling" in _runner_src())
     check("NO dynamic loss weighting in production",
           "dynamic_weighting" not in prod["loss"])
     check("NO boundary loss in production", "boundary" not in prod["loss"])
