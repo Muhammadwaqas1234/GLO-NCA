@@ -56,7 +56,9 @@ pass "data dir ${VM_DATA_DIR}, out dir ${VM_OUT_DIR} ready"
 
 # --- build image ---
 log "building Docker image glo-nca:latest (uses the Phase 1 Dockerfile)"
-docker build -t glo-nca:latest "${VM_WORKSPACE}"
-pass "image built"
+# Stamp the image with its source commit; launchers refuse a mismatched image.
+BUILD_COMMIT="$(git -c safe.directory="${VM_WORKSPACE}" -C "${VM_WORKSPACE}" rev-parse HEAD)"
+docker build --label "glo.commit=${BUILD_COMMIT}" -t glo-nca:latest "${VM_WORKSPACE}"
+pass "image built from commit ${BUILD_COMMIT:0:12}"
 
 log "setup complete. Next: ./cloud/scripts/verify_gcp.sh"

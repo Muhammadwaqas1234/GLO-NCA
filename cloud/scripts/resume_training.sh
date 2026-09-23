@@ -39,6 +39,9 @@ pass "config present; resume will reuse the original experiment configuration."
 # --- dataset cache must be valid before GPU spend ---
 bash "${CLOUD_DIR}/scripts/cache_dataset.sh"
 
+# --- the image must be built from the current commit before relaunch ---
+assert_image_matches_repo "${VM_WORKSPACE}"
+
 # --- relaunch under systemd, in Phase 1 --resume mode ---
 UNIT=glo-nca-training
 sudo cp "${CLOUD_DIR}/systemd/glo-nca-training.service" "/etc/systemd/system/${UNIT}.service"

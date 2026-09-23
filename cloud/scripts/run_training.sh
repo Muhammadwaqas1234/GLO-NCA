@@ -40,9 +40,8 @@ pass "GPU visible: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1
 # --- 2) dataset cache valid? ---
 bash "${CLOUD_DIR}/scripts/cache_dataset.sh"
 
-# --- 3) image present? ---
-docker image inspect glo-nca:latest >/dev/null 2>&1 \
-  || die "docker image glo-nca:latest missing. Run setup_gcp.sh."
+# --- 3) image present AND built from the current commit? ---
+assert_image_matches_repo "${VM_WORKSPACE}"
 
 # --- 4) launch under systemd (persistent) ---
 mkdir -p "${VM_OUT_DIR}"
