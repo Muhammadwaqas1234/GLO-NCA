@@ -77,6 +77,8 @@ except Exception:
 PY
 )
 log "pre-training gate for config: ${GATE_CFG} (v3=${IS_V3}, global_context=${HAS_GLOBAL_CTX})"
+# Gate the IMAGE production will actually run, not only the host checkout.
+assert_image_matches_repo "${VM_WORKSPACE}"
 
 # --- Part 1-3: preflight (GPU/CUDA/PyTorch/dataset/master-split/config/disk) --
 step "Part 1-3  GPU + CUDA + dataset preflight"
@@ -171,7 +173,9 @@ sed -e 's/^  epochs: .*/  epochs: 2/' \
 # the gate cannot pass on a mount set that production does not use. The split
 # now ships inside the image, so no split mount is needed here either.
 set +e
-docker run --rm --gpus all \
+# --shm-size matches _train_entrypoint.sh: the smoke keeps training.workers: 2,
+# and Docker's 64 MB default /dev/shm kills DataLoader workers with a bus error.
+docker run --rm --gpus all --shm-size=8g \
   -v "${VM_DATA_DIR}:/data:ro" -v "${VM_OUT_DIR}:/out" \
   -v "${SMOKE_CFG}:/app/configs/_gate_smoke.yaml:ro" \
   -e DATA_ROOT=/data \
@@ -230,7 +234,11 @@ check "compileall" "${PYBIN}" -m compileall -q src scripts train.py
 if [ "${IS_V3}" = "1" ]; then
   log "skipping verify_phase3_ready (V2-specific ablation-matrix audit)"
 else
-  check "verify_phase3_ready" "${PYBIN}" extra/scripts/verify_phase3_ready.py
+  # The V2 ablation-matrix audit lives in the local, git-ignored extra/ folder
+  # and is never present on a VM. Report that plainly instead of calling a
+  # missing file; this repository ships only the V3 production path.
+  fail "V2 gate requested, but the V2 ablation audit is not part of this production repository"
+  FAILS=$((FAILS+1))
 fi
 
 # --- Gate ---------------------------------------------------------------------

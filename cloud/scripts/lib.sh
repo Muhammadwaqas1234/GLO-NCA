@@ -87,6 +87,29 @@ training_is_active() { # 0 = a training job is genuinely running
   systemctl is-active --quiet "${TRAIN_UNIT}" 2>/dev/null
 }
 
+# --- image identity guard ----------------------------------------------------
+# The training container reads its code AND its config from inside the image,
+# not from the host checkout. An image built from an older commit therefore
+# trains a DIFFERENT model with no error: a normal-looking run of the wrong
+# thesis configuration. setup_gcp.sh stamps the image with the commit it was
+# built from (label glo.commit); every launcher calls this before using it.
+# `-c safe.directory` avoids git's "dubious ownership" refusal when the
+# workspace is owned by root, which would otherwise block this check falsely.
+assert_image_matches_repo() {
+  local repo="${1:-${VM_WORKSPACE}}" img head
+  docker image inspect glo-nca:latest >/dev/null 2>&1     || die "docker image glo-nca:latest missing. Run setup_gcp.sh."
+  head="$(git -c safe.directory="${repo}" -C "${repo}" rev-parse HEAD 2>/dev/null)"
+  [[ -n "${head}" ]] || die "cannot read git HEAD in ${repo}; cannot verify the image."
+  img="$(docker image inspect -f '{{ index .Config.Labels "glo.commit" }}' glo-nca:latest 2>/dev/null)"
+  [[ -n "${img}" && "${img}" != "<no value>" ]]     || die "image glo-nca:latest has no glo.commit label (built before this guard existed).
+       Run setup_gcp.sh to rebuild it from the current commit."
+  [[ "${img}" == "${head}" ]]     || die "STALE IMAGE: built from ${img:0:12}, but the repo is at ${head:0:12}.
+       Training on it would run DIFFERENT code and config. Run setup_gcp.sh to rebuild."
+  git -c safe.directory="${repo}" -C "${repo}" diff --quiet HEAD --     || die "repo ${repo} has uncommitted changes to tracked files, so the image
+       cannot correspond to one commit. Commit or reset them, then run setup_gcp.sh."
+  pass "image glo-nca:latest matches repo commit ${head:0:12}"
+}
+
 assert_no_training_running() {
   if training_is_active; then
     die "systemd unit '${TRAIN_UNIT}' is ACTIVE -- training is already running.
