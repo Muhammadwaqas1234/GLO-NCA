@@ -77,14 +77,15 @@ d['train_count'], d['val_count'], d['test_count'])"
 # the V2 baseline).
 #
 # CONFIGURATION MAP -- these are NOT interchangeable:
-#   configs/glo_nca_production.yaml   PRODUCTION CANDIDATE
+#   configs/glo_nca_production.yaml   THE PRODUCTION CONFIG (the only one here)
 #                                     GLO-NCA global context + multi-level fusion
-#                                     96^3 working volume, L1 48^3, L2 64^3,
-#                                     no level3, 20+20 steps, 33,089 params,
+#                                     128^3 working volume, L1 48^3, L2 64^3,
+#                                     no level3, 15+15 steps, spatial GC k=7,
+#                                     30,209 inference / 30,284 training params,
+#                                     warmup 3 epochs, small-lesion sampling,
 #                                     patchify OFF, bf16
-#   configs/v3_multilevel_ckpt.yaml   FROZEN THESIS REFERENCE (historical)
-#                                     32/96/128, 50 steps -- do NOT use for the
-#                                     production campaign
+#   Historical configs live in extra/configs/historical/ and are excluded
+#   from the image by .dockerignore -- do NOT use them for production.
 #
 # Verify identity before a long run (fails closed on the wrong config):
 #   python scripts/verify_glo_nca_production_config.py configs/glo_nca_production.yaml

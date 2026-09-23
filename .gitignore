@@ -67,7 +67,7 @@ gcp-key*.json
 # -----------------------------------------------------------------------------
 # Explicitly KEEP (tracked) despite broader patterns above:
 #   - split/master_split.json  (case-IDs only; required for reproducibility)
-#   - configs/*.yaml, src/**, scripts/**, docs/**, reports/**/*.md
+#   - configs/*.yaml, src/**, scripts/**, cloud/**, extra/** (docs, reports, tests)
 # The master split is data-free (patient/case IDs only) and is committed on
 # purpose so the exact thesis split is archived in git.
 # -----------------------------------------------------------------------------

@@ -31,7 +31,7 @@
 # training run must establish that before any quality claim is made.
 #
 # The earlier 33,089-parameter configuration remains recoverable from git
-# history; reports/audit/ holds its measured evidence.
+# history; extra/reports/audit/ holds its measured evidence.
 #
 # -----------------------------------------------------------------------------
 # PATCHIFY - RESOLVED AS OFF
@@ -42,7 +42,7 @@
 # whole brain at evaluation.
 #
 # MEASURED (RTX 3050, bf16, batch 1, matched conditions; see
-# reports/benchmarks/glo_nca_phase2/patchify_speed.json):
+# extra/reports/benchmarks/glo_nca_phase2/patchify_speed.json):
 #     patchify ON  (model gets 64^3): 8200.6 ms/iter, 1406 MB peak
 #     patchify OFF (model gets 96^3): 8191.0 ms/iter, 1416 MB peak
 #     difference: -9.6 ms/iter (-0.1%), +10 MB
@@ -231,9 +231,9 @@ loss:                               # FocalTverskyCELoss
 # historical behaviour, and annotated so the thesis does not claim an ET-aware
 # sampling mechanism that does not run.
 #
-# The separate EXPERIMENT that does reweight cases is SMALL-LESION-aware
-# sampling (never the baseline) -- see
-# configs/experiments/glo_nca_small_lesion_sampling.yaml. It is not
+# Case reweighting is done by the SMALL-LESION-aware sampler configured in
+# `lesion_aware_sampling` below, which IS part of this production baseline.
+# It is not
 # "ET-positive oversampling": every measured BraTS-METS training case contains
 # enhancing tumour, so ET presence carries no signal; ET VOLUME does.
 sampling:                           # patch-level only; INERT while patchify is OFF

@@ -4,186 +4,116 @@
 > *For academic and educational use only — not a medical device (see [LICENSE](LICENSE)).*
 
 GLO-NCA is a **lightweight, global-context-aware Neural Cellular Automata (NCA)**
-architecture for **multi-modal 3D brain-tumor segmentation** on BraTS. A plain
-NCA only communicates between neighbouring cells; GLO-NCA augments it with
-**Squeeze-and-Excitation (SE) channel context** and a **spatial global-context**
-block so the model reasons about whole-volume tumor location while remaining
-extremely small (**40,656 parameters** for the V3 model).
+model for **multi-modal 3D brain-tumor segmentation** on BraTS-METS. A plain NCA
+cell only sees its local neighbourhood; GLO-NCA adds **Squeeze-and-Excitation
+(SE) channel context** and a **spatial global-context** block, applied at every
+NCA step, so each cell's update is informed by the whole volume. The production
+model has **30,209 inference parameters**.
 
 ---
 
 ## Status
 ```
-Repository:            READY FOR SUPERVISOR REVIEW
-Final architecture:    GLO-NCA V3 (multi-level, 32³ → 96³ → 128³)
-Final config:          configs/v3_multilevel_ckpt.yaml   (300 epochs)
-V3 parameters:         40,656   (measured)
-V2 baseline:           30,138   (frozen, preserved)
-Master split:          subject-disjoint, frozen (SHA256 d30d7195…09559d)
-GPU validated:         NVIDIA L4 24 GB — 128³ TRUE FIT with gradient checkpointing
-3-epoch smoke test:    PENDING (blocked on dataset transfer to the training node)
+Production config:     configs/glo_nca_production.yaml   (the only config)
+Parameters:            30,209 inference / 75 auxiliary / 30,284 training
+Split:                 898 train / 200 val / 198 test, subject-disjoint, frozen
+GCP pipeline:          validated on an NVIDIA L4 (10-epoch engineering run)
 Final 300-epoch run:   NOT STARTED
 ```
-No scientific segmentation results (Dice/mIoU/HD95 on the test set) are claimed
-until the final 300-epoch run defined in
-[`docs/thesis/FINAL_TRAINING_PROTOCOL.md`](docs/thesis/FINAL_TRAINING_PROTOCOL.md)
-is executed. Engineering/operational validation to date is recorded under
-[`reports/validation/`](reports/validation/).
+No test-set segmentation result is claimed. The 10-epoch GCP run was an
+engineering validation of the pipeline, not a thesis result.
 
----
+## Production architecture
 
-## Research objective
-Deep 3D segmentation networks (U-Net, nnU-Net, Swin-UNETR, UNETR) achieve strong
-BraTS accuracy but carry millions of parameters and heavy compute, limiting use
-on low-resource hardware. **GLO-NCA investigates whether a tiny NCA, given an
-inexpensive global-context mechanism and a hierarchical multi-scale refinement,
-can produce competitive multi-region tumor segmentation at a fraction of the
-parameter budget.**
+Every value below is verified from the constructed model, not only from the
+config text.
 
-## Scientific contribution
-- A **global-context-aware NCA cell** — SE channel attention (`use_attention`)
-  plus a spatial global-context block (`use_spatial`) injecting whole-volume
-  context at negligible parameter cost.
-- **GLO-NCA V3**, a *single unified* model with **three nested NCA levels**
-  (global → regional → fine) connected by **learnable feature projections** and a
-  **learnable concatenation fusion** head — not an ensemble.
-- A reproducible, thesis-grade experiment harness (fixed subject-disjoint split,
-  validation-only threshold tuning, single-pass frozen-test evaluation).
+| Component | Value |
+|---|---|
+| Working volume | 128³ |
+| Level 1 (global) | 48³ · 24 channels · 15 NCA steps · kernel 5 |
+| Level 2 (fine) | 64³ · 24 channels · 15 NCA steps · kernel 5 |
+| Level 3 | absent |
+| SE channel attention | ON, at every NCA step |
+| Spatial global context | ON, kernel 7, at every NCA step |
+| Fusion | learned `Conv3d(48 → 24)` |
+| Deep supervision | ON, weight 0.4 (training only) |
+| Loss | Focal Tversky (α 0.40, β 0.60, γ 1.33) + CE 0.5, empty-region BCE 0.1 |
+| Precision | BF16 forward, FP32 loss |
+| Optimiser | AdamW, LR 0.0016 → 1e-5 cosine, weight decay 1e-4 |
+| Warmup | 3 epochs (2,694 of 269,400 steps) |
+| Sampling | small-lesion-aware (boost 2.0, ET ≤ 100 resampled voxels), training only |
+| EMA / gradient clip | 0.999 / 1.0 |
+| Batch / seed | 1 / 42 |
+| Budget | 300 epochs max, early stopping patience 15, min_delta 0.01 |
+| Post-processing | min component voxels WT 50 · TC 5 · ET 0 |
+
+Model code: `src/models/Model_GLO_NCA_GlobalContext.py` (production model),
+`src/models/Model_GLO_NCA_V3.py` (multi-level base, fusion, deep supervision),
+`src/models/Model_GLO_NCA_Cell.py` (NCA cell, SE block, spatial GC block).
 
 ## Dataset
-**BraTS-MET 2025 (MICCAI-LH BraTS-MET Challenge, Training set).** Enumerated by
-recursive, files-validated case discovery (`src/experiment/datasource.py`):
-- **1,296 valid cases** across **810 subjects** (287 subjects have >1 timepoint).
-- Two cohorts: 650 top-level cases + 646 in a nested `UCSD - Training/` sub-cohort.
-- **Subject-disjoint** master split (no timepoint of a subject leaks across
-  partitions): **train 898 / val 200 / test 198 cases** (567 / 121 / 122 subjects).
-- Split fingerprint (SHA256): `d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d`.
+**BraTS-MET 2025 (MICCAI-LH BraTS-MET Challenge, Training set).**
+- **1,296 cases** across **810 subjects**: 650 top-level + 646 in the nested
+  `UCSD - Training/` cohort. Case discovery is recursive.
+- **Subject-disjoint** split: **898 / 200 / 198 cases** (567 / 121 / 122 subjects).
+- Split fingerprint (SHA256):
+  `d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d`.
+- The test split is never used for training, thresholds, checkpoint selection
+  or early stopping.
 
-Input modalities (BraTS-MET naming): **t1n (T1), t1c (T1ce), t2w (T2), t2f (FLAIR)**.
-Output regions (nested, multi-label sigmoid): **WT** (Whole Tumor),
-**TC** (Tumor Core), **ET** (Enhancing Tumor).
-
-## GLO-NCA V3 architecture
-```
-Multi-modal MRI (T1, T1ce, T2, FLAIR)
-        │
-        ▼
-Level 1 — Global      (low-resolution full-volume context; GLO-NCA + SE + spatial GC)
-        │  learnable projection + upsample
-        ▼
-Level 2 — Regional    (96³; GLO-NCA context refinement)
-        │  learnable projection + upsample
-        ▼
-Level 3 — Fine        (128³; GLO-NCA boundary refinement)
-        │
-        ▼
-Learnable feature fusion (per-level projection → concat → 1×1×1 fuse conv)
-        │
-        ▼
-WT / TC / ET
-```
-Full detail: [`docs/architecture/GLO_NCA_V3_ARCHITECTURE.md`](docs/architecture/GLO_NCA_V3_ARCHITECTURE.md).
-**Measured parameter count: 40,656.**
-
-## Memory optimization (implementation-level, not architectural)
-The 128³ level's backward pass is activation-heavy. GLO-NCA V3 supports **opt-in
-gradient checkpointing** (`memory.gradient_checkpointing`, default **OFF**) that
-recomputes each NCA step's activations during backprop instead of storing them.
-
-> Gradient checkpointing is **not** an architectural contribution. The model,
-> layers, channels, NCA steps, resolutions, inputs, outputs, loss and optimizer
-> are **unchanged**; only backward-pass activation memory is reduced. Verified
-> **bit-identical** outputs/gradients OFF vs ON, ~22.5× activation-memory
-> reduction, and a measured **128³ TRUE FIT at 9.07 GB on an NVIDIA L4 24 GB**
-> (see [`reports/validation/V3_GRADIENT_CHECKPOINTING_GPU_GATE.md`](reports/validation/V3_GRADIENT_CHECKPOINTING_GPU_GATE.md)).
-
-## Training configuration
-- **Final training target: 300 epochs** — `configs/v3_multilevel_ckpt.yaml`
-  (batch 1, seed 42, light augmentation, checkpointing ON).
-- **3-epoch smoke test: operational validation only** —
-  `configs/v3_smoke_3epoch.yaml` (derived from the final config, `epochs: 3`).
-  Its metrics are **not** scientific results and do not indicate convergence.
-
-Loss **Focal-Tversky + BCE** (β=0.75, γ=1.33); optimizer **AdamW**; **cosine LR**;
-**EMA**; **gradient-norm clipping**. Values in
-[`docs/thesis/FINAL_TRAINING_PROTOCOL.md`](docs/thesis/FINAL_TRAINING_PROTOCOL.md).
-
-## Evaluation
-Per-region **Dice**, **mIoU**, **HD95**. **HD95 is reported in voxels on the
-resampled grid** (no physical-space/mm conversion is implemented). Multi-label
-sigmoid (WT/TC/ET), single clean inference — **no ensemble, no TTA**.
-
-## Experimental discipline
-Fixed subject-disjoint master split (never regenerated); **validation-only**
-threshold tuning; **frozen test set** evaluated **once** after thresholds are
-frozen; no test leakage; smoothed best-epoch model selection; EMA; full
-checkpoint/resume (model, optimizer, scheduler, EMA, epoch, best score, RNG).
-
-## Hardware (validated)
-- Local **RTX 3050 6 GB**: sufficient for CPU-level software validation only;
-  cannot fit the production 96³/128³ backward pass (expected).
-- **NVIDIA L4 24 GB (GCP)**: directly validated. Unchanged V3 at 128³ needs
-  ~87–101 GB (OOM on L4); **with gradient checkpointing the 128³ training step
-  fits at ~9.07 GB peak** — no A100/H100/H200 required. This is a measured
-  result, not an estimate.
-
-## Documentation map
-```
-README.md                                   ← you are here
-CODE_GUIDE.md                               ← code walkthrough
-docs/thesis/PROJECT_OVERVIEW.md             ← academic overview
-docs/thesis/FINAL_TRAINING_PROTOCOL.md      ← exact final experiment
-docs/architecture/GLO_NCA_V3_ARCHITECTURE.md← architecture detail
-docs/reproducibility/                       ← runbook & reproducibility notes
-reports/validation/                         ← development/pre-flight records (historical)
-cloud/README.md                             ← GCP operations
-split/README.md                             ← master-split policy
-archive/                                    ← historical experiment scripts (not used)
-```
-
-## Reproducibility (quick start)
-
-**Verified environment: Python 3.12.9 · PyTorch 2.5.1+cu121 · CUDA 12.1.**
-Local development GPU: RTX 3050 6GB (profiling/correctness only — production
-training is **not** local).
-
-> **Invoke the interpreter explicitly.** A bare `python` picks whichever
-> interpreter is first on `PATH`, which on a machine with several installs may
-> not be 3.12. Because `train.py` imports torch before it can report anything,
-> the wrong interpreter fails at `import torch` (exit 1) instead of giving a
-> clear message. Use `py -3.12`, an activated 3.12.9 venv, or the full path.
+## Quick start
 
 ```bash
-# 0. confirm the interpreter, GPU stack and production invariants FIRST
-py -3.12 scripts/check_environment.py
-
-# 1. (optional) project-local environment, created with 3.12 explicitly
-py -3.12 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+# install (Python 3.10+, CUDA 12.1)
 pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements-docker.txt
 
-# software validation (synthetic; no dataset needed)
-py -3.12 scripts/validate_v3_local.py --device cpu
+# verify the production config before a long run (fails closed on a wrong config)
+python scripts/verify_glo_nca_production_config.py configs/glo_nca_production.yaml
 
-# with the real dataset available, verify the frozen split:
-py -3.12 scripts/check_split.py --split split/master_split.json --data-root /path/to/BraTS-MET
+# verify the frozen split against the dataset
+python scripts/check_split.py --split split/master_split.json --data-root /path/to/BraTS-MET
+
+# train
+DATA_ROOT=/path/to/BraTS-MET python train.py --config configs/glo_nca_production.yaml
+
+# resume
+python train.py --resume experiments/<experiment-id>
 ```
-Full protocol and GCP workflow: `docs/thesis/FINAL_TRAINING_PROTOCOL.md` and
-`cloud/README.md`.
 
-## Limitations (honest)
-- No final segmentation accuracy is available yet — the 300-epoch run has not been
-  executed; do not read development/pre-flight reports as scientific results.
-- HD95 is in voxels on the resampled grid, not millimeters.
-- Real-data training requires a ≥~10 GB GPU with checkpointing (validated on L4);
-  the local 6 GB GPU is for software checks only.
-- GLO-NCA targets parameter/compute efficiency; it is not claimed to beat large
-  U-Net/Transformer models on absolute accuracy.
+On GCP, use `cloud/scripts/` — `setup_gcp.sh`, `pretrain_gate.sh`,
+`run_training.sh`, `resume_training.sh`. Training runs in Docker (see
+`Dockerfile`); the entrypoint sets `--shm-size=8g`, which DataLoader workers
+require.
+
+## Repository layout
+```
+train.py                  production entry point
+configs/                  glo_nca_production.yaml (the production config)
+split/                    frozen subject-disjoint split + data-quality policy
+src/                      model, agents, datasets, losses, experiment runner
+cloud/                    GCP setup, training, sync, resume, systemd unit
+scripts/                  production gate scripts used by cloud/scripts/
+extra/                    NOT production: tests, audits, reports, docs,
+                          historical configs, Kaggle notebook, optional ops tools
+```
+`extra/` is excluded from the Docker image by `.dockerignore`. Tests live in
+`extra/scripts/test_*.py` and run from the repository root, for example
+`python extra/scripts/test_architecture_identity.py`.
+
+## Limitations
+- No final segmentation accuracy yet: the 300-epoch run has not been executed.
+- No ablation run exists, so the individual contribution of the spatial
+  global-context block, warmup, or small-lesion sampling is not measured.
+- HD95 and lesion sizes are in voxels on the resampled 128³ grid, not mm.
+- GLO-NCA targets parameter and compute efficiency; it is not claimed to beat
+  large U-Net or Transformer models on absolute accuracy.
 
 ## Acknowledgements & references
 Built on the open-source **Med-NCA / M3D-NCA** framework by John Kalkhof et al.
-(MIT-licensed). The global-context design, the V3 multi-level architecture, the
-BraTS multi-modal/multi-label pipeline, and the evaluation are the thesis
+(MIT-licensed). The global-context design, the multi-level architecture, the
+BraTS multi-modal/multi-label pipeline and the evaluation are the thesis
 contributions.
 - Kalkhof et al., *Med-NCA: Robust and Lightweight Segmentation with Neural Cellular Automata*, IPMI 2023.
 - Kalkhof & Mukhopadhyay, *M3D-NCA: Robust 3D Segmentation with Built-In Quality Control*, MICCAI 2023.
