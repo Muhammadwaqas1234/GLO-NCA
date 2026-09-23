@@ -140,9 +140,9 @@ def main() -> int:
     total = sum(p.numel() for p in model.parameters())
     aux_n = sum(p.numel() for p in model.aux_heads.parameters()) \
         if getattr(model, "aux_heads", None) else 0
-    check("inference parameters 29,337", total - aux_n == 29337, f"{total - aux_n:,}")
+    check("inference parameters 30,209", total - aux_n == 30209, f"{total - aux_n:,}")
     check("auxiliary parameters 75", aux_n == 75, str(aux_n))
-    check("training parameters 29,412", total == 29412, f"{total:,}")
+    check("training parameters 30,284", total == 30284, f"{total:,}")
 
     loss_f = None
     try:

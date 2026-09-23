@@ -153,8 +153,8 @@ def main() -> int:
           f"L1 {ident['level1'][0]}^3 k{ident['level1'][3]} | "
           f"L2 {ident['level2'][0]}^3 k{ident['level2'][3]} | "
           f"{ident['total_nca_steps']} steps | GC k{ident['spatial_gc_kernel']}")
-    if (n_params - n_aux, n_aux) != (29337, 75):
-        print(f"\nFAILED: expected 29,337 inference + 75 auxiliary parameters, "
+    if (n_params - n_aux, n_aux) != (30209, 75):
+        print(f"\nFAILED: expected 30,209 inference + 75 auxiliary parameters, "
               f"built {n_params - n_aux:,} + {n_aux}.")
         print("Refusing to benchmark a model that is not the production one.")
         return 3

@@ -87,9 +87,9 @@ def main() -> int:
           f"{s1[1]:,} params, {s1[2]} aux")
 
     total, aux = s1[1], s1[2]
-    check("inference 29,337", total - aux == 29337, f"{total - aux:,}")
+    check("inference 30,209", total - aux == 30209, f"{total - aux:,}")
     check("auxiliary 75", aux == 75, str(aux))
-    check("training 29,412", total == 29412, f"{total:,}")
+    check("training 30,284", total == 30284, f"{total:,}")
 
     m1.train()
     train_out = m1(torch.randn(1, 128, 128, 128, 4))

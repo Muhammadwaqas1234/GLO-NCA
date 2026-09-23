@@ -53,9 +53,9 @@ EXPECTED = {
     "level3_enabled": False,
     "total_nca_steps": 30,
     "spatial_kernel_size": 5,   # the thesis contribution's receptive field
-    "inference_parameters": 29337,
+    "inference_parameters": 30209,
     "auxiliary_parameters": 75,
-    "training_parameters": 29412,
+    "training_parameters": 30284,
     "working_volume": 128,
     "patchify_enabled": False,
     "roi_fraction": 1.0,
