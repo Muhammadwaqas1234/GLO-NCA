@@ -1,0 +1,65 @@
+{
+  "samples": 791,
+  "phases": {
+    "ACTIVE_GPU": {
+      "samples": 789,
+      "gpu_util_pct": {
+        "mean": 99.9,
+        "min": 9,
+        "max": 100
+      },
+      "sm_clock_mhz": {
+        "mean": 1478.5,
+        "min": 1425,
+        "max": 2025
+      },
+      "temperature_c": {
+        "mean": 77.3,
+        "min": 52,
+        "max": 83
+      },
+      "power_w": {
+        "mean": 68.7,
+        "min": 47.94,
+        "max": 74.41
+      },
+      "torch_allocated_mb": {
+        "mean": 18.4,
+        "min": 18.4,
+        "max": 18.4
+      }
+    },
+    "CHECKPOINT": {
+      "samples": 2,
+      "gpu_util_pct": {
+        "mean": 0.5,
+        "min": 0,
+        "max": 1
+      },
+      "sm_clock_mhz": {
+        "mean": 2040,
+        "min": 2040,
+        "max": 2040
+      },
+      "temperature_c": {
+        "mean": 73,
+        "min": 73,
+        "max": 73
+      },
+      "power_w": {
+        "mean": 34.8,
+        "min": 34.63,
+        "max": 34.88
+      },
+      "torch_allocated_mb": {
+        "mean": 16.9,
+        "min": 16.9,
+        "max": 16.9
+      }
+    }
+  },
+  "active_gpu_utilization_mean_pct": 99.9,
+  "utilization_note": "Measured DURING forward/backward only. Samples taken in DATA_WAIT, CHECKPOINT or IDLE are excluded: an idle reading describes the pause, not the computation.",
+  "active_clock_pct_of_max": 72.5,
+  "throttle_warning": "SM clock averaged 72% of maximum during active compute: absolute timings are inflated by roughly 1.4x. Ratios remain valid."
+}

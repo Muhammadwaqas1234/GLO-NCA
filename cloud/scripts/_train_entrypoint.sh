@@ -64,14 +64,24 @@ trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 # --- run training in Docker; container writes into $OUT (mounted) -----------
 # Resume mode (GLO_RESUME_DIR set) reuses the existing experiment dir and the
 # Phase 1 --resume path; otherwise a fresh --config run.
+#
+# --shm-size=8g is LOAD-BEARING, not a tuning knob. Docker defaults
+# /dev/shm to 64 MB. PyTorch DataLoader workers pass whole 128^3 volumes
+# between processes through shared memory, so with `training.workers: 2`
+# that default is exhausted and a worker dies with:
+#     ERROR: Unexpected bus error ... insufficient shared memory (shm)
+#     RuntimeError: DataLoader worker (pid ...) exited unexpectedly
+# Observed on the L4 during Phase 2 validation: the run crashed at first
+# data load, AFTER the full dataset-validation scan had already been paid
+# for. BOTH invocations need it -- a resumed run loads data identically.
 set +e
 if [[ -n "${GLO_RESUME_DIR:-}" ]]; then
   echo "[entrypoint] RESUME mode for experiment ${EXP_ID}"
-  docker run --rm --gpus all \
+  docker run --rm --gpus all --shm-size=8g \
     -v "${DATA}:/data:ro" -v "${OUT}:/out" -e DATA_ROOT=/data \
     glo-nca:latest --resume "/out/${EXP_ID}"
 else
-  docker run --rm --gpus all \
+  docker run --rm --gpus all --shm-size=8g \
     -v "${DATA}:/data:ro" -v "${OUT}:/out" -e DATA_ROOT=/data \
     glo-nca:latest --config "${CONFIG}" --output /out \
     --experiment-id "${EXP_ID}"
