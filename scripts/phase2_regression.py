@@ -120,11 +120,11 @@ def t_v3_forward_backward():
 def t_checkpointing_equivalence():
     """ckpt ON vs OFF must give identical output AND identical gradients."""
     torch = _torch()
-    from src.models.Model_BasicNCA3D import BasicNCA3D
+    from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 
     def run(use_ckpt):
         torch.manual_seed(0)
-        m = BasicNCA3D(8, 0.6, torch.device("cpu"), 16, input_channels=4,
+        m = GLO_NCA_Cell(8, 0.6, torch.device("cpu"), 16, input_channels=4,
                        kernel_size=3, use_attention=True, use_spatial=True)
         m.use_checkpoint = use_ckpt
         torch.manual_seed(1)

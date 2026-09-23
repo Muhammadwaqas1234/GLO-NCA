@@ -30,7 +30,7 @@ if _REPO not in sys.path:
 import numpy as np
 import torch
 
-from src.models.Model_BasicNCA3D import BasicNCA3D
+from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 from src.losses.LossFunctions import FocalTverskyCELoss
 
 # V2 model defaults (resolved from the canonical config, not hard-coded here).
@@ -85,9 +85,9 @@ def build_real_model(device, cfg):
     spatial = bool(cfg.get("model", "use_spatial"))
     dropout = float(cfg.get("model", "dropout"))
     ca = [
-        BasicNCA3D(ch, fire, device, hidden, kernel_size=7, input_channels=4,
+        GLO_NCA_Cell(ch, fire, device, hidden, kernel_size=7, input_channels=4,
                    use_attention=attn, use_spatial=spatial, dropout=dropout),
-        BasicNCA3D(ch, fire, device, hidden, kernel_size=3, input_channels=4,
+        GLO_NCA_Cell(ch, fire, device, hidden, kernel_size=3, input_channels=4,
                    use_attention=attn, use_spatial=spatial, dropout=dropout),
     ]
     return ca, ch

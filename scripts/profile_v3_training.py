@@ -79,18 +79,18 @@ def main() -> int:
     print(f"cases            : {args.cases}")
 
     # ---- instrument the NCA update to COUNT calls (proves no duplicate passes) --
-    from src.models import Model_BasicNCA3D as M
+    from src.models import Model_GLO_NCA_Cell as M
     counts = {"update": 0, "forward": 0}
-    _orig_update = M.BasicNCA3D.update
-    _orig_forward = M.BasicNCA3D.forward
+    _orig_update = M.GLO_NCA_Cell.update
+    _orig_forward = M.GLO_NCA_Cell.forward
     def _cu(self, *a, **k):
         counts["update"] += 1
         return _orig_update(self, *a, **k)
     def _cf(self, *a, **k):
         counts["forward"] += 1
         return _orig_forward(self, *a, **k)
-    M.BasicNCA3D.update = _cu
-    M.BasicNCA3D.forward = _cf
+    M.GLO_NCA_Cell.update = _cu
+    M.GLO_NCA_Cell.forward = _cf
 
     # ---- build model (respect checkpointing flag override) --------------------
     # Force the requested checkpointing regardless of the config's memory flag.

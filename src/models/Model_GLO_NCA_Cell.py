@@ -1,3 +1,26 @@
+"""GLO-NCA cell rule -- the per-voxel update applied at every NCA step.
+
+RENAMED. This file was ``Model_BasicNCA3D.py`` and the class was
+``BasicNCA3D``; both were renamed to GLO-NCA naming by explicit decision. The
+rename is PURELY COSMETIC: no behaviour, no tensor shape and no parameter
+changed. Production parameter identity is unchanged at 29,337 inference /
+75 auxiliary / 29,412 training, verified from the constructed model before and
+after.
+
+Audit reports written before the rename cite ``Model_BasicNCA3D.py`` and
+``BasicNCA3D`` by name, sometimes with line numbers. Those citations refer to
+this file under its former name; the evidence they record still stands.
+
+WHAT LIVES HERE
+  ChannelsLastBatchNorm  channels-last BatchNorm wrapper
+  SEBlock3D              squeeze-and-excitation channel attention
+  GCSpatialBlock3D       spatial global context -- the thesis contribution
+  GLO_NCA_Cell           the NCA update rule that composes the above
+
+GLO_NCA_Cell is the per-level cell. ``GLO_NCA_V3_MultiLevel`` stacks two of
+them (L1 48^3, L2 64^3) and ``GLO_NCA_GlobalContext`` adds the global-context
+path on top; that is the production model.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -167,7 +190,7 @@ class GCSpatialBlock3D(nn.Module):
         return x * attn
 
 
-class BasicNCA3D(nn.Module):
+class GLO_NCA_Cell(nn.Module):
     def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False, dropout=0.0, spatial_kernel_size=7):
         r"""Init function
             #Args:
@@ -185,7 +208,7 @@ class BasicNCA3D(nn.Module):
                     global-context-aware model.
                 se_reduction: bottleneck reduction ratio for the SE block
         """
-        super(BasicNCA3D, self).__init__()
+        super(GLO_NCA_Cell, self).__init__()
 
         self.device = device
         self.channel_n = channel_n

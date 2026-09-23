@@ -78,7 +78,7 @@ def core_checks(device):
 
     # --- V2 baseline preserved (files unchanged) ---
     v2_ok = all(os.path.exists(os.path.join(_REPO, f)) for f in
-                ["configs/historical/gcp_full.yaml", "src/models/Model_BasicNCA3D.py"])
+                ["configs/historical/gcp_full.yaml", "src/models/Model_GLO_NCA_Cell.py"])
     mark("V2 baseline preserved", "PASS" if v2_ok else "FAIL")
 
     # --- imports / construction ---
