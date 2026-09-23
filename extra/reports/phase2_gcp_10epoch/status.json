@@ -1,8 +1,0 @@
-{
-  "experiment_id": "PHASE2-10EP-VALIDATION",
-  "state": "evaluating",
-  "timestamp": "2026-09-23T13:02:08",
-  "progress": 1.0,
-  "best_epoch": 10,
-  "best_score": 0.3768291292442465
-}

@@ -95,12 +95,11 @@ split/                    frozen subject-disjoint split + data-quality policy
 src/                      model, agents, datasets, losses, experiment runner
 cloud/                    GCP setup, training, sync, resume, systemd unit
 scripts/                  production gate scripts used by cloud/scripts/
-extra/                    NOT production: tests, audits, reports, docs,
-                          historical configs, Kaggle notebook, optional ops tools
 ```
-`extra/` is excluded from the Docker image by `.dockerignore`. Tests live in
-`extra/scripts/test_*.py` and run from the repository root, for example
-`python extra/scripts/test_architecture_identity.py`.
+This repository contains production code only. Tests, audits, reports, docs,
+historical configs and optional ops tools are kept in a local `extra/` folder
+that is git-ignored and excluded from the Docker image. They remain available
+in the git history of earlier commits.
 
 ## Limitations
 - No final segmentation accuracy yet: the 300-epoch run has not been executed.
