@@ -29,7 +29,7 @@ if _HERE not in sys.path:
 
 RESULTS: list[tuple[str, bool, str]] = []
 
-EXPECTED_INFERENCE_PARAMS = 29337
+EXPECTED_INFERENCE_PARAMS = 30209
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -85,8 +85,12 @@ def main() -> int:
     check("training_patch.working_volume consistent",
           int((cfg.section("data") or {})["training_patch"]["working_volume"]) == wv,
           str((cfg.section("data") or {})["training_patch"]["working_volume"]))
-    check("spatial global-context kernel 5",
-          int(mcfg["spatial_kernel_size"]) == 5, str(mcfg["spatial_kernel_size"]))
+    # RESTORED TO 7 by explicit decision. It had been reduced 7 -> 5 on speed
+    # grounds with no quality evidence; since this kernel IS the thesis
+    # contribution, the larger receptive field was restored. This also moves
+    # inference parameters 29,337 -> 30,209 (+872).
+    check("spatial global-context kernel 7",
+          int(mcfg["spatial_kernel_size"]) == 7, str(mcfg["spatial_kernel_size"]))
     check("SE (use_attention) enabled", bool(mcfg["use_attention"]))
     check("spatial global context enabled", bool(mcfg["use_spatial"]))
     check("ROI fraction 1.0",
@@ -131,12 +135,12 @@ def main() -> int:
     print(f"  MEASURED trainable parameters : {trainable:,}")
     print(f"  MEASURED auxiliary parameters : {aux:,}")
     print()
-    check("inference parameters == 29,337",
+    check("inference parameters == 30,209",
           total - aux == EXPECTED_INFERENCE_PARAMS, f"{total - aux:,}")
     check("training parameters == inference + aux",
           trainable == (total - aux) + aux, f"{trainable:,}")
-    check("training parameters == 29,412",
-          trainable == 29412, f"{trainable:,}")
+    check("training parameters == 30,284",
+          trainable == 30284, f"{trainable:,}")
     check("deep supervision active, 75 auxiliary parameters",
           aux == 75, f"{aux} aux parameters")
 

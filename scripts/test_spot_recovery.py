@@ -143,7 +143,7 @@ def main() -> int:
     tot = sum(p.numel() for p in model.parameters())
     aux = sum(p.numel() for p in model.aux_heads.parameters()) \
         if getattr(model, "aux_heads", None) else 0
-    check("parameter identity before interruption", tot - aux == 29337,
+    check("parameter identity before interruption", tot - aux == 30209,
           f"{tot - aux:,} / {aux} / {tot:,}")
 
     # ------------------------------------------------------- phase 2: to GCS
@@ -233,7 +233,7 @@ def main() -> int:
     t2 = sum(p.numel() for p in m2.parameters())
     a2 = sum(p.numel() for p in m2.aux_heads.parameters()) \
         if getattr(m2, "aux_heads", None) else 0
-    check("parameter identity after recovery", t2 - a2 == 29337,
+    check("parameter identity after recovery", t2 - a2 == 30209,
           f"{t2 - a2:,} / {a2} / {t2:,}")
     check("optimizer state resumed",
           len(o2.state_dict()["state"]) == len(ck["optimizer"]["state"]),

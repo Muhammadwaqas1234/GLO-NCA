@@ -302,30 +302,25 @@ def test_baseline_intact():
     check("dead sampling keys annotated as INERT",
           "INERT IN PRODUCTION" in open(prod_path, encoding="utf-8").read())
 
+    # Warmup and small-lesion sampling are PRODUCTION mechanisms by explicit
+    # decision, not experiments. The two configs that existed only to isolate
+    # them were removed: a config whose sole difference was a mechanism now in
+    # the baseline no longer differs from it, and both had drifted to a stale
+    # spatial_kernel_size. There is deliberately no ablation arm.
     exp_dir = os.path.join(_HERE, "configs", "experiments")
-    present = sorted(f for f in os.listdir(exp_dir) if f.endswith(".yaml"))
-    check("only IMPLEMENTED experiments have configs",
-          present == ["glo_nca_lr_warmup.yaml",
-                      "glo_nca_small_lesion_sampling.yaml"],
-          ", ".join(present))
+    present = (sorted(f for f in os.listdir(exp_dir) if f.endswith(".yaml"))
+               if os.path.isdir(exp_dir) else [])
+    check("no stale experiment configs remain", present == [],
+          ", ".join(present) if present else "none")
 
-    for fn, key in (("glo_nca_small_lesion_sampling.yaml", "lesion_aware_sampling"),
-                    ("glo_nca_lr_warmup.yaml", None)):
-        e = yaml.safe_load(open(os.path.join(exp_dir, fn), encoding="utf-8"))
-        same = all([
-            e["training"]["patch_size"] == prod["training"]["patch_size"],
-            e["loss"] == prod["loss"],
-            e["model"] == prod["model"],
-            e["experiment"]["seed"] == prod["experiment"]["seed"],
-            e["data"]["training_patch"]["enabled"] is False,
-            e["training"]["epochs"] == prod["training"]["epochs"],
-            e["ema"] == prod["ema"],
-        ])
-        check(f"{fn}: differs from baseline ONLY by its mechanism", same)
-        if key:
-            check(f"{fn}: validation/test stay uniform",
-                  e[key]["apply_to_validation"] is False
-                  and e[key]["apply_to_test"] is False)
+    # The production config must carry both mechanisms itself.
+    check("production carries warmup", prod["optimizer"].get("warmup_epochs") == 3,
+          f"{prod['optimizer'].get('warmup_epochs')} epochs")
+    check("production carries small-lesion sampling",
+          prod.get("lesion_aware_sampling", {}).get("enabled") is True)
+    check("production sampler leaves validation/test uniform",
+          prod["lesion_aware_sampling"]["apply_to_validation"] is False
+          and prod["lesion_aware_sampling"]["apply_to_test"] is False)
 
 
 def main():

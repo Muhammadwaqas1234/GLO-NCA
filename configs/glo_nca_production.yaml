@@ -126,7 +126,22 @@ model:
   use_spatial: true                 # spatial global context
   # Receptive field of the spatial global-context block. This IS the thesis
   # contribution's kernel, so it is stated here rather than hardcoded.
-  spatial_kernel_size: 5
+  #
+  # RESTORED TO 7 (was 5). An earlier change reduced this 7 -> 5 purely on
+  # speed grounds, with NO Dice/IoU/HD95 evidence that the smaller receptive
+  # field was as good. Since this kernel IS the contribution, it is restored to
+  # the larger field by explicit decision.
+  #
+  # Cost, measured: the block is Conv3d(2, 1, k) applied at EVERY NCA step
+  # (15 steps x 2 levels = 30 times per forward). 7^3/5^3 = 2.74x the work of
+  # that conv. Isolated CPU timing put the conv itself at 505.9 ms (k=5) vs
+  # 1154.7 ms (k=7) per forward, but CPU OVERSTATES a small 2->1 channel conv
+  # on an L4; the GPU epoch penalty was NOT measured and is expected to be far
+  # smaller. Measure it on the first production epoch rather than assuming.
+  #
+  # Parameter identity changes: 29,337 -> 30,209 inference (+872), so the
+  # 29,337 figure in older reports refers to the k=5 configuration.
+  spatial_kernel_size: 7
   hidden: 128
   dropout: 0.1
 
