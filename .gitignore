@@ -74,3 +74,10 @@ gcp-key*.json
 !split/master_split.json
 .trash_md_review/
 .trash_cleanup/
+
+# --- Non-production material (kept locally, NOT versioned) -------------------
+# Tests, audits, reports, docs, historical configs, the Kaggle notebook and
+# optional ops tools. Production has no runtime dependency on this folder, and
+# .dockerignore already keeps it out of the training image. Earlier commits
+# still contain these files if they are ever needed from history.
+/extra/
