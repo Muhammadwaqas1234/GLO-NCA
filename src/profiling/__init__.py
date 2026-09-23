@@ -17,7 +17,7 @@ Typical use::
     with prof.section("model/level1"):
         ...
 
-See ``reports/PHASE2_PROFILING_REPORT.md`` for the generated analysis.
+See ``extra/reports/PHASE2_PROFILING_REPORT.md`` for the generated analysis.
 """
 from .timer import (Profiler, NullProfiler, get_profiler, configure,
                     set_profiler, reset_profiler)

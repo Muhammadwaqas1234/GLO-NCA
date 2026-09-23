@@ -14,7 +14,7 @@ chosen GPU, that is reported as a hardware-capacity result (pick a larger GPU),
 never silently worked around.
 
 Usage (on the GPU VM):
-    python scripts/gpu_memory_gate_v3.py --config configs/historical/v3_multilevel.yaml
+    python scripts/gpu_memory_gate_v3.py --config configs/glo_nca_production.yaml
     python scripts/gpu_memory_gate_v3.py --resolutions 96,128     # production only
 """
 import argparse
@@ -37,7 +37,7 @@ from src.losses.LossFunctions import FocalTverskyCELoss
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=os.path.join("configs", "v3_multilevel.yaml"))
+    ap.add_argument("--config", default=os.path.join("configs", "glo_nca_production.yaml"))
     ap.add_argument("--resolutions", default="32,48,64,96,128",
                     help="comma list of level3 resolutions to probe")
     ap.add_argument("--batch", type=int, default=1)

@@ -5,7 +5,7 @@ WHAT THIS ACTUALLY DOES -- read this before citing the mechanism.
   It oversamples cases whose ENHANCING-TUMOUR VOLUME IS SMALL. It is NOT
   "ET-positive oversampling", and must not be described as such.
 
-  MEASURED on the BraTS-METS training split (scripts/analyze_et_voxels.py):
+  MEASURED on the BraTS-METS training split (extra/scripts/analyze_et_voxels.py):
   every measured case contains enhancing tumour, so the ET-positive share is
   already 1.0 under uniform sampling and cannot be increased. ET presence is
   definitional in a metastases cohort, unlike BraTS-GLIOMA where ET is often
