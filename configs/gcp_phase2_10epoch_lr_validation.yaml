@@ -1,0 +1,258 @@
+# =============================================================================
+# PHASE 2 GCP VALIDATION -- 10-EPOCH ENGINEERING RUN  (NOT a thesis experiment)
+#
+# PURPOSE
+#   Prove the GCP/GCS/Spot/checkpoint/recovery pipeline works end to end on the
+#   real L4 before committing to the 300-epoch production run. This is
+#   ENGINEERING validation. Its Dice numbers are NOT a performance result, are
+#   NOT converged, and must NOT be extrapolated to 300 epochs.
+#
+# DERIVED FROM configs/glo_nca_production.yaml. The architecture, loss, split,
+# seed, precision, EMA, clipping, post-processing and evaluation path are
+# IDENTICAL. Exactly two training values differ:
+#
+#                       production      this file
+#   epochs              300             10
+#   learning_rate       0.0016          0.0004
+#
+# THE PRODUCTION LEARNING RATE REMAINS 0.0016.
+#   The reduced 0.0004 exists only for this controlled 10-epoch validation, at
+#   the user's explicit instruction. Because LR differs, the loss/Dice curve
+#   here is NOT comparable to a production run and NOT comparable to the
+#   earlier 10-epoch reference, which used a different LR. Any comparison must
+#   state this.
+#
+# NOT ENABLED (each remains an experiment or a deferred mechanism):
+#   small-lesion sampling, LR warmup, boundary loss, dynamic loss weighting,
+#   hard-case mining, gradient accumulation.
+#   The sampler here is the PRODUCTION uniform sampler.
+#
+# The 198-case test split is NOT evaluated by this run.
+# =============================================================================
+
+experiment:
+  name: GLO-NCA-PHASE2-10EPOCH-VALIDATION
+  seed: 42
+
+dataset:
+  root: null                        # supplied by --data-root / cloud entrypoint
+  number_of_patients: 0             # 0 = use the full canonical split
+  modalities: [t1n, t1c, t2w, t2f]
+  split_seed: 42
+
+data:
+  # CANONICAL SPLIT - frozen, never modified. 898 / 200 / 198.
+  # SHA d30d71956ee9267017010e5ad71fc033158da818f4af53569e8a65289209559d
+  split_file: split/master_split.json
+  quality_policy_file: split/data_quality_policy.json
+
+  # Deterministic preprocessing cache. Caches ONLY the deterministic head of
+  # __getitem__ (load -> foreground crop -> resample -> label conversion).
+  # All stochastic work (patchify, augmentation, per-(epoch,case) RNG) still
+  # runs every epoch, and cache lookup is RNG-neutral.
+  # Measured: 29.7x faster per case (2876.6 ms -> 96.7 ms warm), 4.75 MB/case
+  # (~4.3 GB for 898 training cases). Changes NO scientific definition.
+  cache:
+    enabled: true                   # ENABLED: 29.7x faster preprocessing per case
+    directory: .cache/preprocessed
+
+  # See the methodology warning in the header before enabling.
+  training_patch:
+    enabled: false                  # patchify OFF; the runner refuses true here
+    working_volume: 128             # resample target when enabled
+    patch_size: 64                  # MUST be strictly < working_volume
+
+model:
+  version: v3
+  name: GLO-NCA-PRODUCTION
+
+  # ROI is an INTERNAL EFFICIENCY MECHANISM ONLY — never a methodology claim.
+  # roi_fraction 1.0 == reference-identical mathematics (no cropping at all).
+  # Evaluation is ALWAYS full-volume: the ROI path is structurally unreachable
+  # outside training mode (`frac = self.roi_fraction if self.training else 1.0`).
+  global_context:
+    roi_fraction: 1.0
+    global_levels: 1
+
+  level1:                           # GLOBAL-CONTEXT level
+    enabled: true
+    resolution: 48
+    channels: 24
+    nca_steps: 15
+    kernel_size: 5
+  level2:                           # HIGH-RESOLUTION segmentation level
+    enabled: true
+    resolution: 64
+    channels: 24
+    nca_steps: 15
+    kernel_size: 5
+  level3:
+    enabled: false                  # structurally NOT instantiated
+    resolution: 128
+    channels: 16
+    nca_steps: 10
+
+  feature_fusion:
+    enabled: true
+    type: concat                    # concat -> LEARNED Conv3d(48->24), not naive
+
+  fire_rate: 0.6
+  use_attention: true               # SE channel global context
+  use_spatial: true                 # spatial global context
+  # Receptive field of the spatial global-context block. This IS the thesis
+  # contribution's kernel, so it is stated here rather than hardcoded.
+  spatial_kernel_size: 5
+  hidden: 128
+  dropout: 0.1
+
+  # One 1x1 auxiliary head per non-final level, active during TRAINING only.
+  # eval() returns the primary seg_head alone, so every reported metric comes
+  # from the 29,337-parameter inference model.
+  #   inference 29,337   training 29,412 (75 auxiliary parameters)
+  deep_supervision:
+    enabled: true
+    weight: 0.4
+
+training:
+  # MAXIMUM training budget, not a target. Early stopping below ends the run
+  # once validation has plateaued; there is no evidence that 300 epochs are
+  # scientifically necessary.
+  # 10, not 300: this is the Phase 2 engineering validation.
+  epochs: 10
+  batch_size: 1                     # 2 and 4 verified working; 1 is the default
+
+  # WORKING VOLUME. The dataset resamples each case to this size and the model
+  # receives it whole; GLO_NCA_V3_MultiLevel.forward then resamples internally
+  # to each level's resolution. It is therefore the global-context source, and
+  # the only place the working volume is set.
+  patch_size: 128
+  augmentation: light
+  workers: 2
+
+  # --- overfitting protection --------------------------------------------
+  # Monitors the VALIDATION split only. Training loss is deliberately not
+  # monitored: a falling training loss is exactly what overfitting looks
+  # like. The test split is never used for stopping or model selection.
+  #
+  # The monitored value is the same one used to pick the best checkpoint:
+  # the 3-epoch rolling mean (evaluation.smoothing_window) of validation mean
+  # foreground Dice, averaged over WT/TC/ET. Smoothing prevents one lucky
+  # epoch from being selected.
+  #
+  # Stopping never overwrites the best checkpoint; evaluation always loads
+  # the best, never the final, weights.
+  early_stopping:
+    enabled: true
+    monitor: validation mean foreground Dice
+    mode: max                       # higher Dice is better
+    patience: 15                    # consecutive non-improving validations
+    # A gain smaller than the validation measurement error is not evidence of
+    # improvement. With 200 validation cases and a per-case Dice spread around
+    # 0.20, one standard error is ~0.014, so 0.001 sat an order of magnitude
+    # BELOW the noise floor and would have reset patience on chance alone.
+    min_delta: 0.01
+
+optimizer:
+  # PHASE 2 VALIDATION ONLY. Production remains 0.0016 (see header).
+  learning_rate: 0.0004
+  minimum_learning_rate: 0.00001
+  weight_decay: 0.0001
+
+loss:                               # FocalTverskyCELoss
+  # alpha = 1 - beta (derived in runner). beta 0.60 -> alpha 0.40.
+  # Measured on the frozen 40-case diagnostic test split, worst-10 ET cases,
+  # total predicted vs ground-truth voxels:
+  #   beta 0.75 -> 17.3x over-predicted (5/5 cases)
+  #   beta 0.50 ->  2.6x, but 6/10 cases UNDER-predicted
+  tversky_beta: 0.60
+  focal_gamma: 1.33
+  ce_weight: 0.5
+  empty_region_bce_weight: 0.1
+
+# INERT IN PRODUCTION -- READ BEFORE CITING THIS BLOCK.
+#
+# These keys are consumed ONLY by `patchify_multimodal` in
+# src/datasets/Nii_Gz_Dataset_3D.py, inside a branch gated on
+# `patchify is True and self.state == "train"`. Patchify is OFF in production
+# (data.training_patch.enabled: false) and the runner refuses to start with it
+# enabled, so this block is UNREACHABLE on the production training path.
+#
+# The production sampler is `_EpochSampler` (src/experiment/runner.py): a
+# deterministic per-epoch shuffle. The production baseline is therefore
+# UNIFORM CASE-LEVEL SAMPLING, with no ET prioritisation of any kind.
+#
+# The keys are retained rather than deleted so that enabling patchify keeps its
+# historical behaviour, and annotated so the thesis does not claim an ET-aware
+# sampling mechanism that does not run.
+#
+# The separate EXPERIMENT that does reweight cases is SMALL-LESION-aware
+# sampling (never the baseline) -- see
+# configs/experiments/glo_nca_small_lesion_sampling.yaml. It is not
+# "ET-positive oversampling": every measured BraTS-METS training case contains
+# enhancing tumour, so ET presence carries no signal; ET VOLUME does.
+sampling:                           # patch-level only; INERT while patchify is OFF
+  prioritize_probability: 0.7
+  prioritize_region: 2              # 2 = ET (hardest region)
+
+ema:
+  enabled: true
+  decay: 0.999
+
+gradient:
+  clipping_enabled: true
+  max_norm: 1.0
+
+evaluation:
+  threshold: 0.5
+  tune_thresholds: true             # VALIDATION ONLY — test stays frozen
+  smoothing_window: 3
+
+  # Connected-component filtering applied to PREDICTIONS at evaluation only.
+  # Never touches training targets, loss or backpropagation.
+  # Measured on the frozen diagnostic split: an ET threshold of 10 reduced a
+  # real 246-voxel scattered lesion to 1 voxel, so ET is disabled; TC 5 clears
+  # 1-4 voxel specks while preserving the larger connected body.
+  # Lesion-size stratified reporting (ANALYSIS ONLY). Groups the existing
+  # per-case rows by ground-truth lesion size and re-reports the SAME metrics
+  # per stratum; it adds no model passes and cannot affect training, threshold
+  # tuning, checkpoint selection or early stopping. Sizes are counted in
+  # RESAMPLED voxels of the 128^3 grid (per-case scale factor, no spacing is
+  # carried through the pipeline), so the bins are ANALYSIS bins, NOT clinical
+  # categories. Outputs reports/{validation,test}_by_lesion_size.csv.
+
+  postprocessing:
+    enabled: true
+    min_component_voxels:
+      WT: 50
+      TC: 5
+      ET: 0
+
+logging:
+  tensorboard: true
+  # Periodic recovery snapshot, kept INDEPENDENTLY of the best checkpoint.
+  # 5 (not 10) so a preemption on a Spot/preemptible VM costs at most five
+  # epochs of work. A checkpoint is 0.546 MB and the write was measured at
+  # ~0.01 s, so the extra frequency is free.
+  checkpoint_frequency: 5
+
+  # Ranked best checkpoints (best_1 .. best_k) under checkpoints/top_k/,
+  # selected on the SAME validation metric as best.pth, so best_1 and
+  # best.pth always agree. Weights are NEVER averaged and no SWA is
+  # performed: the ranked files are for inspection and for a later,
+  # explicitly approved experiment. 1 = single best only (previous
+  # behaviour).
+  top_k_checkpoints: 3
+
+memory:
+  # LOAD-BEARING, not an optimization: training OOMs without it. Calls `update`
+  # twice per step (forward + backward recompute), use_reentrant=False.
+  gradient_checkpointing: true
+
+performance:
+  # bf16 applies to the MODEL FORWARD ONLY. The loss stays FP32 because PyTorch
+  # refuses to autocast binary_cross_entropy. fp16 is explicitly REFUSED by the
+  # runner with a hard error rather than silently falling back.
+  precision: bf16
+  # Dice/mIoU every epoch; HD95 (expensive surface distance) every 10th.
+  # Model selection and final test evaluation are unaffected.
+  hd95_every_epochs: 10
