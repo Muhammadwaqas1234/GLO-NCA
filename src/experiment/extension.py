@@ -238,11 +238,19 @@ def apply_lr_policy(schedulers: List[Any], plan: ExtensionPlan,
         note["effect"] = ("learning rate held constant for the extension; "
                           "the scheduler is not stepped")
     elif plan.lr_policy == "continue":
-        note["effect"] = ("saved scheduler stepped onward; for a periodic "
-                          "cosine this RAISES the learning rate past T_max")
-        note["warning"] = ("CosineAnnealingLR is periodic. The extension does "
-                           "NOT train at eta_min: the LR climbs (measured "
-                           "1.00e-05 at epoch 300 -> 1.17e-04 at epoch 350).")
+        # The behaviour past the horizon depends on WHICH scheduler the run
+        # used, so describe the one actually present rather than assuming.
+        periodic = any(type(s).__name__ == "CosineAnnealingLR" for s in schedulers)
+        if periodic:
+            note["effect"] = ("saved scheduler stepped onward; for a periodic "
+                              "cosine this RAISES the learning rate past T_max")
+            note["warning"] = ("CosineAnnealingLR is periodic. The extension does "
+                               "NOT train at eta_min: the LR climbs (measured "
+                               "1.00e-05 at epoch 300 -> 1.17e-04 at epoch 350).")
+        else:
+            note["effect"] = ("saved scheduler stepped onward; WarmupCosineLR "
+                              "clamps progress at the horizon, so the learning "
+                              "rate HOLDS at eta_min for the whole extension")
     else:  # rebuild
         note["effect"] = ("cosine rebuilt over the new horizon; the LR curve "
                           "for the ORIGINAL epochs no longer matches the "
