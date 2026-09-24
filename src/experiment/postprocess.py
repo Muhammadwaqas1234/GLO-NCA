@@ -1,14 +1,7 @@
-r"""Connected-component post-processing for GLO-NCA evaluation.
+r"""Connected-component post-processing, applied at evaluation only.
 
-Applied to predictions at EVALUATION only. It never touches training targets,
-the training loss, or backpropagation.
-
-Per-region minimum component sizes come from the production configuration
-(``evaluation.postprocessing``). The measured production values are
-WT 50 / TC 5 / ET 0 (ET disabled): on the frozen diagnostic split an ET
-threshold of 10 reduced a real 246-voxel scattered lesion to a single voxel,
-so ET filtering is off, while TC 5 removes 1-4 voxel specks without touching
-the larger connected body.
+Production minimum component sizes: WT 50 / TC 5 / ET 0. ET filtering is off
+because a threshold of 10 reduced a real scattered ET lesion to one voxel.
 """
 from __future__ import annotations
 
@@ -32,12 +25,7 @@ def min_component_config(cfg=None) -> Dict[str, int]:
 
 
 def remove_small_components(mask: np.ndarray, min_voxels: int) -> np.ndarray:
-    """Drop connected components smaller than ``min_voxels``.
-
-    The largest component is always kept, so post-processing can never empty a
-    prediction. If SciPy's labeller is unavailable the mask is returned
-    unchanged rather than half-processed.
-    """
+    """Drop components smaller than ``min_voxels``; the largest is always kept. No-op without SciPy."""
     if min_voxels <= 0 or not mask.any():
         return mask
     try:
@@ -59,12 +47,7 @@ def remove_small_components(mask: np.ndarray, min_voxels: int) -> np.ndarray:
 
 def postprocess_probs(prob: np.ndarray, thresholds: Dict[str, float],
                       min_component: Dict[str, int]) -> np.ndarray:
-    """Zero the probabilities of removed components, per region.
-
-    ``prob`` is (X, Y, Z, R) in ``REGIONS`` order. Only voxels belonging to a
-    removed component are zeroed; everything else keeps its probability, so
-    threshold behaviour elsewhere is unchanged.
-    """
+    """Zero probabilities of removed components per region; ``prob`` is (X, Y, Z, R)."""
     if not any(int(min_component.get(r, 0)) > 0 for r in REGIONS):
         return prob
     out = prob.copy()

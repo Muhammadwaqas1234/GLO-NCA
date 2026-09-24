@@ -1,10 +1,4 @@
-r"""Professional dataset validation for BraTS-style data.
-
-Checks every patient BEFORE expensive training: presence and readability of all
-four modalities + segmentation, dimension consistency, NaN/Inf, unexpected
-segmentation labels, duplicates and empty/corrupt files. Returns a PASS/FAIL
-report and never silently skips a corrupted patient.
-"""
+r"""Dataset validation before training: files, readability, dimensions, NaN/Inf, labels and duplicates."""
 from __future__ import annotations
 
 import os
@@ -44,14 +38,7 @@ def _load(path: str):
 def validate_patient(folder: str, patient: str,
                      modalities: List[str],
                      allowed_seg_labels: Optional[set] = None) -> Dict[str, Any]:
-    """Validate a single patient folder. Returns a dict with ok/errors/info.
-
-    ``allowed_seg_labels`` lets the caller widen the accepted label set for THIS
-    case only, from the explicit operational data-quality policy
-    (``split/data_quality_policy.json``). It defaults to the universal
-    ``ALLOWED_SEG_LABELS``, so the validator stays fail-closed unless a human has
-    listed this exact case with these exact stray labels.
-    """
+    """Validate one patient folder; ``allowed_seg_labels`` widens labels for this case only (per policy)."""
     allowed = allowed_seg_labels or ALLOWED_SEG_LABELS
     errors: List[str] = []
     shapes: Dict[str, Tuple[int, ...]] = {}
@@ -76,9 +63,7 @@ def validate_patient(folder: str, patient: str,
             bad = uniq - allowed
             if bad:
                 errors.append(f"unexpected seg labels: {sorted(bad)}")
-            # Recorded separately (NOT in `shapes`, which feeds the dimension
-            # check) so the report shows exactly which stray labels were
-            # accepted, on which case, under the explicit policy.
+            # Record accepted stray labels separately from the dimension-check shapes.
             tolerated_labels.extend(sorted((uniq - ALLOWED_SEG_LABELS) & allowed))
         else:
             if np.isnan(vol).any():
@@ -116,24 +101,13 @@ def validate_dataset(root: str,
                      modalities: Optional[List[str]] = None,
                      limit: Optional[int] = None,
                      policy: Optional[Any] = None) -> Dict[str, Any]:
-    """Validate every patient under ``root``. Returns a full report dict with a
-    top-level ``result`` of "PASS" or "FAIL".
-
-    ``policy`` is an optional :class:`~src.experiment.data_quality.DataQualityPolicy`.
-    When given, it may widen the accepted label set for SPECIFIC, explicitly
-    listed case ids only (see split/data_quality_policy.json). Without it the
-    validator behaves exactly as before: fail-closed on any label outside
-    ``ALLOWED_SEG_LABELS``.
-    """
+    """Validate every patient under ``root``; returns a report with ``result`` PASS or FAIL."""
     modalities = modalities or DEFAULT_MODALITIES
     if not root or not os.path.isdir(root):
         return {"result": "FAIL", "root": root,
                 "fatal": f"dataset root not found: {root}", "patients": []}
 
-    # Recursive, files-validated case discovery (shared with the loader/split), so
-    # nested cohorts (e.g. BraTS-MET's 'UCSD - Training/') are found and container
-    # folders are never mistaken for cases. Falls back to a flat top-level scan if
-    # discovery is unavailable, preserving the original behaviour.
+    # Recursive case discovery (finds nested cohorts); falls back to a flat scan.
     try:
         from src.experiment.datasource import discover_cases
         cases = discover_cases(root)  # [(case_id, rel_path)] sorted by id
@@ -146,7 +120,7 @@ def validate_dataset(root: str,
     top_level = sum(1 for _cid, rel in cases if "/" not in rel)
     nested = len(cases) - top_level
 
-    # Duplicate case IDs (case-insensitive) -- a real risk on merged cohorts.
+    # Duplicate case ids (case-insensitive).
     lowered = [cid.lower() for cid, _ in cases]
     dups = sorted({c for c in lowered if lowered.count(c) > 1})
 
@@ -156,10 +130,7 @@ def validate_dataset(root: str,
     todo = [(cid, rel) for cid, rel in cases
             if policy is None or not policy.is_excluded(cid)]
 
-    # Every case is validated independently and the result order is restored
-    # below, so the report is identical to the serial version. The scan is I/O
-    # and header-parse bound: 1296 cases x 5 files took ~95 min single-threaded
-    # on an 8-vCPU VM.
+    # Validate cases in parallel; result order is restored, so the report matches a serial scan.
     workers = _validation_workers()
     if workers > 1 and len(todo) > 1:
         from concurrent.futures import ThreadPoolExecutor

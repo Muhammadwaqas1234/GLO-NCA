@@ -4,11 +4,7 @@ from src.utils.helper import dump_json_file, load_json_file, dump_pickle_file, l
 from torch.utils.tensorboard import SummaryWriter
 
 class Experiment():
-    r"""This class handles:
-            - Interactions with the experiment folder
-            - Loading / Saving experiments
-            - Datasets
-    """
+    r"""Experiment folder, config load/save and dataset split handling."""
     def __init__(self, config, dataset, model, agent):
         self.projectConfig = config
         self.add_required_to_config()
@@ -25,8 +21,7 @@ class Experiment():
         self.set_current_config()
 
     def add_required_to_config(self):
-        r"""Fills config with basic setup if not defined otherwise
-        """
+        r"""Fill in default config values."""
         if 'Persistence' not in self.projectConfig[0]:
             self.projectConfig[0]['Persistence'] = False
         if 'batch_duplication' not in self.projectConfig[0]:
@@ -41,9 +36,7 @@ class Experiment():
             self.projectConfig[0]['cell_fire_rate'] = 0.5
         if 'output_channels' not in self.projectConfig[0]:
             self.projectConfig[0]['output_channels'] = 1
-        # Multi-modal BraTS defaults: 4 input modalities (T1/T1ce/T2/FLAIR),
-        # 3 output regions (WT/TC/ET). Kept here so older single-modality
-        # configs still behave as before unless overridden.
+        # BraTS defaults: 4 modalities (T1/T1ce/T2/FLAIR), 3 regions (WT/TC/ET).
         if 'input_channels' not in self.projectConfig[0]:
             self.projectConfig[0]['input_channels'] = 1
         if 'patchify' not in self.projectConfig[0]:
@@ -52,14 +45,12 @@ class Experiment():
             self.projectConfig[0]['priotize_masks'] = None
         if 'use_attention' not in self.projectConfig[0]:
             self.projectConfig[0]['use_attention'] = False
-        # Swin-UNETR-style preprocessing (the v4 winning config). Default False
-        # so older experiments are unchanged; the BraTS train script turns them on.
+        # Foreground crop + non-zero z-norm; default off here, enabled by the runner.
         if 'foreground_crop' not in self.projectConfig[0]:
             self.projectConfig[0]['foreground_crop'] = False
         if 'nonzero_norm' not in self.projectConfig[0]:
             self.projectConfig[0]['nonzero_norm'] = False
-        # On-the-fly train-time augmentation (flips / 90-deg rotations / small
-        # intensity jitter). Default off so older configs are unchanged.
+        # Train-time augmentation; default off here.
         if 'augment' not in self.projectConfig[0]:
             self.projectConfig[0]['augment'] = False
         # 'light' (flips/rot/intensity) or 'heavy' (+ elastic/gamma/noise/blur).
@@ -70,8 +61,7 @@ class Experiment():
             self.projectConfig[0]['prioritize_region'] = 0
 
     def setup(self):
-        r"""Initial experiment setup when first started
-        """
+        r"""Create the experiment folders and initial config."""
         # Create dirs
         os.makedirs(self.config['model_path'], exist_ok=True)
         os.makedirs(os.path.join(self.config['model_path'], 'models'), exist_ok=True)
@@ -85,9 +75,7 @@ class Experiment():
         return DataSplit(self.config['img_path'], self.config['label_path'], data_split = self.config['data_split'], dataset = self.dataset)
 
     def temporarly_overwrite_config(self, config):
-        r"""This function is useful for evaluation purposes where you want to change the config, e.g. data paths or similar.
-            It does not save the config and should NEVER be used during training.
-        """
+        r"""Override config values for evaluation only; not saved, never used during training."""
         print("WARNING: NEVER USE \'temporarly_overwrite_config\' FUNCTION DURING TRAINING.")
         self.projectConfig = config
         self.set_current_config()
@@ -95,15 +83,11 @@ class Experiment():
         self.set_size()
 
     def get_max_steps(self):
-        r"""Get max defined training steps of experiment
-        """
+        r"""Maximum training steps from config."""
         return self.projectConfig[-1]['n_epoch']
 
     def reload(self):
-        r"""Reload old experiment to continue training
-            TODO: Add functionality to load any previous saved step
-        """
-        # TODO: Proper reload
+        r"""Reload a saved experiment."""
         print(os.path.join(self.config['model_path'], 'data_split.dt'))
         self.data_split = load_pickle_file(os.path.join(self.config['model_path'], 'data_split.dt'))
         self.projectConfig = load_json_file(os.path.join(self.config['model_path'], 'config.dt'))
@@ -115,12 +99,8 @@ class Experiment():
             self.agent.load_state(model_path)
     
     def set_size(self):
-        # A multi-level config gives input_size as a list of per-level sizes,
-        # e.g. [(32,32,26), (64,64,52)]; a single-level config gives one size,
-        # e.g. (64,64). JSON save/reload turns tuples into lists, so detect the
-        # multi-level case by "first element is itself a sequence" rather than
-        # by tuple-ness (the original isinstance(..., tuple) check broke on
-        # reload). Use the highest-resolution (last) level for the dataset.
+        # Legacy V2 multi-level input_size is a list of per-level sizes (lists after JSON
+        # reload); the dataset uses the last (finest) level.
         first = self.config['input_size'][0]
         if isinstance(first, (tuple, list)):
             self.dataset.set_size(self.config['input_size'][-1])
@@ -129,8 +109,7 @@ class Experiment():
             self.dataset.set_size(self.config['input_size'])
 
     def general(self):
-        r"""General experiment configurations needed after setup or loading
-        """
+        r"""Config set-up needed after creating or loading."""
         self.currentStep = self.current_step()
         self.set_size()
         self.writer = SummaryWriter(log_dir=os.path.join(self.get_from_config('model_path'), 'tensorboard', os.path.basename(self.get_from_config('model_path'))))
@@ -145,9 +124,7 @@ class Experiment():
 
 
     def reload_model(self):
-        r"""Reload model
-            TODO: Move to a more logical position. Probably to the model and then call directly from the agent
-        """
+        r"""Reload the model."""
         model_path = os.path.join(self.config['model_path'], 'models', 'epoch_' + str(self.currentStep), 'model.pth')
         if os.path.exists(model_path):
             self.agent.load_model(model_path)
@@ -183,17 +160,8 @@ class Experiment():
                 m.eval()
 
         
-    # ------------------------------------------------------------- pickling
-    # The dataset holds a reference to this Experiment, and PyTorch pickles the
-    # dataset when it SPAWNS DataLoader workers (the default on Windows). A
-    # SummaryWriter owns a thread lock and is not picklable, so spawning any
-    # worker raised "TypeError: cannot pickle '_thread.lock' object" before this
-    # was added -- a latent defect independent of profiling.
-    #
-    # The writer is only ever used from the parent process (write_scalar /
-    # write_text / write_image are called by the runner, never by a worker), so
-    # dropping it from the pickled state is behaviour-preserving: the parent
-    # keeps its live writer, and a worker simply has none.
+    # Drop the SummaryWriter when pickling: spawned DataLoader workers pickle the dataset,
+    # which references this Experiment, and the writer holds a lock. Only the parent writes.
     def __getstate__(self):
         st = self.__dict__.copy()
         st["writer"] = None
@@ -213,9 +181,7 @@ class Experiment():
             return None
 
     def set_current_config(self):
-        r"""Set current config. This can change during training and will always 
-            overwrite previous settings, but keep everything else
-        """
+        r"""Merge new values into the current config."""
         self.config = {}
         for i in range(0, len(self.projectConfig)):
             for k in self.projectConfig[i].keys():
@@ -260,8 +226,7 @@ class Experiment():
 
 
 class DataSplit():
-    r"""Handles the splitting of data
-    """
+    r"""Train / val / test split of data files."""
     def __init__(self, path_image, path_label, data_split, dataset):
         self.images = self.split_files(self.getFilesInFolder(path_image, dataset), data_split)
         self.labels = self.split_files(self.getFilesInFolder(path_label, dataset), data_split)

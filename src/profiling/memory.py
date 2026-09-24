@@ -1,21 +1,13 @@
-r"""Memory sampling for Phase 2 profiling.
+r"""Memory sampling for profiling; keeps host and GPU quantities separate.
 
-Deliberately keeps FOUR distinct quantities apart, because conflating them is
-how misleading memory claims get made:
+  process_rss_mb    this process's resident host RAM
+  system_used_mb    whole-machine host RAM in use
+  gpu_allocated_mb  tensors held by the caching allocator
+  gpu_reserved_mb   memory reserved from the driver
+  gpu_peak_mb       max allocated since the last reset
 
-  * ``process_rss_mb``   -- this Python process's resident set (host RAM)
-  * ``system_used_mb``   -- whole-machine host RAM in use
-  * ``gpu_allocated_mb`` -- tensors currently held by the caching allocator
-  * ``gpu_reserved_mb``  -- memory the allocator has reserved from the driver
-  * ``gpu_peak_mb``      -- max allocated since the last peak reset
-
-GPU numbers come from ``torch.cuda`` and are only meaningful on the CUDA device.
-Host numbers need ``psutil``; when it is absent the host fields are reported as
-``None`` rather than guessed.
-
-NOTE on Windows: the CUDA driver may spill beyond physical VRAM into host RAM
-instead of raising OOM. A ``gpu_peak_mb`` above the device's physical VRAM is
-therefore a SPILL, not a fit -- ``classify_peak()`` makes that explicit.
+Host fields need psutil (None without it). On Windows a GPU peak above physical VRAM
+is a spill to host RAM, not a fit; classify_peak() reports that.
 """
 from __future__ import annotations
 
@@ -43,9 +35,7 @@ class MemorySampler:
             self._cuda = False
         self._proc = psutil.Process() if _PSUTIL else None
 
-    # Same spawn-safety rule as Profiler: the torch handle and the psutil
-    # Process object are not picklable, so drop them if this ever crosses a
-    # process boundary and re-acquire lazily in the child.
+    # Drop unpicklable handles when crossing a process boundary; re-acquire lazily.
     def __getstate__(self):
         st = self.__dict__.copy()
         st["_torch"] = None
@@ -96,18 +86,14 @@ class MemorySampler:
         return round(p.total_memory / 1024 ** 2, 2)
 
     def classify_peak(self, peak_mb: Optional[float]) -> str:
-        """FIT / SPILL / UNKNOWN. A peak above physical VRAM means the driver
-        paged to host RAM (Windows sysmem fallback) -- never call that a fit."""
+        """FIT / SPILL / UNKNOWN; a peak above physical VRAM is a spill, never a fit."""
         total = self.device_total_mb()
         if peak_mb is None or total is None:
             return "UNKNOWN"
         return "SPILL" if peak_mb > total * 0.95 else "FIT"
 
     def release(self) -> Dict[str, Any]:
-        """Verified memory release: sample, empty_cache, sample again.
-
-        Reports the ACTUAL numbers before and after rather than asserting that
-        ``empty_cache()`` worked."""
+        """Sample, empty_cache, sample again; report the actual before/after numbers."""
         before = self.sample()
         if self._cuda:
             import gc

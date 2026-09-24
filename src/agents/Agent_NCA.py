@@ -5,8 +5,7 @@ from src.agents.Agent import BaseAgent
 import os
 
 class Agent_NCA(BaseAgent):
-    """Base agent for training NCA models
-    """
+    """Base agent for NCA models (shared by the legacy V2 and two-level GLO-NCA agents)."""
     def initialize(self):
         super().initialize()
         self.input_channels = self.exp.get_from_config('input_channels')
@@ -14,7 +13,6 @@ class Agent_NCA(BaseAgent):
         self.pool = Pool()
 
     def loss_noOcillation(self, x, target, freeChange=True):
-        #x = torch.flatten(x)
         if freeChange:
             x[x <= 1] = 0
             loss = x.sum() / torch.numel(x)
@@ -50,18 +48,14 @@ class Agent_NCA(BaseAgent):
         return target
 
     def make_seed(self, img):
-        r"""Create a seed for the NCA - TODO: Currently only 0 input
-            #Args
-                shape ([int, int]): height, width shape
-                n_channels (int): Number of channels
-        """
+        r"""Create an NCA seed with the input modalities in the first channels."""
         # 2D
         if( self.exp.dataset.slice != None):
             if len(img.shape) == 3:
-                seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)#torch.from_numpy(np.zeros([img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')], np.float32)).to(self.device)
+                seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)
                 seed[..., :img.shape[3]] = img
             else:
-                seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)#torch.from_numpy(np.zeros([img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')], np.float32)).to(self.device)
+                seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)
                 seed[..., 0:img.shape[-1]] = img 
 
         # 3D
@@ -74,27 +68,17 @@ class Agent_NCA(BaseAgent):
                 # Single-channel volume (B, X, Y, Z) -> place in channel 0.
                 seed[..., 0] = img
             else:
-                # Multi-modal volume (B, X, Y, Z, C), e.g. BraTS 4 modalities ->
-                # place the C input channels into the first C state channels.
+                # Multi-modal volume (B, X, Y, Z, C): inputs go in the first C state channels.
                 seed[..., 0:img.shape[-1]] = img
 
         return seed
 
     def repeatBatch(self, seed, target, batch_duplication):
-        r"""Repeat batch -> Useful for better generalisation when doing random activated neurons
-            #Args
-                seed (tensor): Seed for NCA
-                target (tensor): Target of Model
-                batch_duplication (int): How many times it should be repeated
-        """
+        r"""Repeat the batch ``batch_duplication`` times (seed and target)."""
         return torch.Tensor.repeat_interleave(seed, batch_duplication, dim=0), torch.Tensor.repeat_interleave(target, batch_duplication, dim=0)
 
     def getInferenceSteps(self):
-        r"""Get the number of steps for inference, if its set to an array its a random value inbetween
-        """
-        #if len(self.exp.get_from_config('inference_steps')) > 1:
-        #    steps = np.random.randint(self.exp.get_from_config('inference_steps')[0], self.exp.get_from_config('inference_steps')[1])
-        #else:
+        r"""Number of NCA inference steps from config."""
         if type(self.exp.get_from_config('inference_steps')) is list:
             steps = self.exp.get_from_config('inference_steps')
         else:

@@ -1,5 +1,6 @@
-# Keep the training image small and reproducible: only src/ + train.py +
-# requirements-docker.txt are needed (see Dockerfile COPY lines).
+# Keep the training image small: it needs only what the Dockerfile COPYs
+# (src/, configs/, scripts/, split files, train.py, requirements-docker.txt,
+# constraints-docker.txt).
 
 # --- VCS / IDE / OS ---
 .git/
@@ -44,3 +45,5 @@ requirements.txt
 
 experiments/
 scratch_brats/
+# Local preprocessing cache (can be many GB; the VM mounts its own at run time).
+.cache/

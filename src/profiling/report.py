@@ -1,11 +1,4 @@
-r"""Human-readable Phase 2 profiling reports.
-
-Renders measured statistics into a component table with percent-of-iteration.
-Deliberately does NOT editorialise: it ranks by measured mean and states the
-largest contributors. It never labels a component "the bottleneck" unless the
-measurement supports it, and it never invents a percentage when the total is
-unknown.
-"""
+r"""Human-readable profiling report: sections ranked by measured mean with percent-of-iteration."""
 from __future__ import annotations
 
 import json
@@ -14,9 +7,7 @@ from typing import Any, Dict, Optional
 
 
 def _is_timing(name: str) -> bool:
-    """Timing sections only. Memory gauges are MB, not ms: mixing them into a
-    duration table (and computing a '% of iteration' for megabytes) would be
-    meaningless, so they are reported separately."""
+    """Timing sections only; memory gauges (MB) are reported separately."""
     return not name.startswith(("memory/", "data/file_size_mb"))
 
 
@@ -32,10 +23,8 @@ def _table(stats: Dict[str, Dict[str, Any]], total_key: Optional[str]) -> str:
     out = ["| Component | Mean (ms) | Median | Min | Max | p95 | % iteration |",
            "|---|---:|---:|---:|---:|---:|---:|"]
     for name, s in rows:
-        # `data/*` stages run INSIDE the dataloader wait (and, in production,
-        # inside worker processes), so they are NOT a subset of the measured
-        # training iteration. Printing a "% of iteration" for them would be
-        # arithmetic nonsense -- and would exceed 100%. Mark them explicitly.
+        # data/* stages run inside the loader wait (often in workers), outside the measured
+        # iteration, so no percent-of-iteration is shown for them.
         if name.startswith("data/") and name != "data/dataloader_wait":
             pct = "input pipeline*"
         elif name == "data/dataloader_wait":

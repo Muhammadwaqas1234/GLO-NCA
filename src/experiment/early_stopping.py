@@ -1,22 +1,8 @@
 r"""Early stopping on a validation metric.
 
-Training stops once the monitored validation metric has failed to improve by
-more than ``min_delta`` for ``patience`` consecutive validation evaluations.
-The best checkpoint written during the run is the one that should be used
-afterwards; stopping early never overwrites it.
-
-Two rules this module exists to enforce:
-
-* **The monitor is a validation metric, never training loss.** A falling
-  training loss is exactly what overfitting looks like, so using it to decide
-  when to stop would defeat the purpose.
-* **The test split is never consulted.** Early stopping is model selection,
-  and model selection on test data leaks it. The test set stays frozen until
-  the configuration is final.
-
-The counter advances per *validation evaluation*, not per epoch. Those are the
-same thing when validation runs every epoch (the production default), but the
-distinction matters if validation is ever made less frequent.
+Stops after ``patience`` evaluations without a gain above ``min_delta``. The
+monitor is always a validation metric (never training loss) and the test split
+is never consulted. Stopping never overwrites the best checkpoint.
 """
 from __future__ import annotations
 
@@ -29,16 +15,11 @@ class EarlyStopping:
     """Patience-based stopping on a monitored validation metric.
 
     Args:
-        patience: consecutive non-improving evaluations tolerated before
-            stopping. ``0`` disables stopping while still tracking the best
-            value.
-        min_delta: how much better a value must be to count as an
-            improvement. Guards against stopping being deferred forever by
-            noise-level gains.
-        mode: ``"max"`` for metrics where higher is better (Dice, IoU),
-            ``"min"`` for metrics where lower is better (loss, HD95).
-        monitor: name of the monitored metric, recorded for the run report.
-        enabled: ``False`` tracks the best value but never signals a stop.
+        patience: non-improving evaluations tolerated (0 disables stopping).
+        min_delta: minimum gain that counts as an improvement.
+        mode: "max" (Dice, IoU) or "min" (loss, HD95).
+        monitor: metric name, recorded in the run report.
+        enabled: False tracks the best value but never stops.
     """
 
     patience: int = 15
@@ -62,7 +43,7 @@ class EarlyStopping:
         if self.min_delta < 0:
             raise ValueError(f"min_delta must be >= 0, got {self.min_delta}")
 
-    # ------------------------------------------------------------------ core
+    # Core.
     def _is_improvement(self, value: float) -> bool:
         if self.best is None:
             return True
@@ -71,12 +52,7 @@ class EarlyStopping:
         return value < self.best - self.min_delta
 
     def update(self, value: float, epoch: int) -> bool:
-        """Record one validation evaluation. Returns True if training should stop.
-
-        ``value`` must come from the validation split. A non-finite value is
-        treated as a non-improvement rather than raising, so a single bad
-        evaluation cannot abort a long run.
-        """
+        """Record one validation evaluation; return True to stop. Non-finite values count as no improvement."""
         import math
 
         finite = isinstance(value, (int, float)) and math.isfinite(value)
@@ -101,7 +77,7 @@ class EarlyStopping:
         })
         return self.should_stop
 
-    # --------------------------------------------------------------- reporting
+    # Reporting.
     def status(self) -> str:
         """One-line status for the training log."""
         if self.best is None:
@@ -128,7 +104,7 @@ class EarlyStopping:
                      "never used for stopping or model selection."),
         }
 
-    # ------------------------------------------------------------------ resume
+    # Resume.
     def state_dict(self) -> Dict[str, object]:
         return {"best": self.best, "best_epoch": self.best_epoch,
                 "counter": self.counter, "should_stop": self.should_stop,
@@ -145,11 +121,7 @@ class EarlyStopping:
 
 
 def from_config(cfg_section: Optional[Dict[str, object]]) -> EarlyStopping:
-    """Build from the ``training.early_stopping`` config block.
-
-    A missing block yields the documented defaults with stopping DISABLED, so
-    an older config can never acquire new stopping behaviour implicitly.
-    """
+    """Build from ``training.early_stopping``; a missing block disables stopping."""
     section = dict(cfg_section or {})
     return EarlyStopping(
         enabled=bool(section.get("enabled", False)),

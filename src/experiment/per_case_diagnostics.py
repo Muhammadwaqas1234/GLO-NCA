@@ -1,17 +1,9 @@
-r"""Per-case diagnostics for GLO-NCA validation and frozen test evaluation.
+r"""Per-case diagnostics for validation and frozen test evaluation.
 
-Metric definitions are reused from ``metrics_eval`` rather than reimplemented,
-so a per-case row and the aggregate score can never disagree. What this module
-adds is the accounting an examiner needs: which case a number came from,
-how much foreground the ground truth and the prediction each contained, and
-whether HD95 was genuinely computable.
-
-HD95 is undefined when either mask is empty -- a surface distance needs two
-surfaces. Those cases are recorded as undefined WITH A REASON and excluded
-from the HD95 mean; they are never silently replaced by zero.
-
-Metrics come from the primary segmentation logits only. Deep-supervision
-auxiliary heads exist to shape training and never enter a reported metric.
+Reuses ``metrics_eval`` definitions, so per-case rows match aggregate scores.
+HD95 is undefined when either mask is empty; such cases are recorded with a
+reason and excluded from the mean, never replaced by zero. Metrics come from
+the primary logits only; deep-supervision heads are never evaluated.
 """
 from __future__ import annotations
 
@@ -53,12 +45,7 @@ def _hd95_status(pred_mask: np.ndarray, gt_mask: np.ndarray) -> str:
 def build_rows(pairs: Sequence[Tuple[np.ndarray, np.ndarray]],
                case_ids: Sequence[str], split: str,
                thresholds: Dict[str, float]) -> List[dict]:
-    """One diagnostic row per case.
-
-    ``pairs`` are (probability, ground truth) in ``REGIONS`` order, exactly as
-    ``metrics_eval.collect_probs`` returns them and after any post-processing
-    the caller applied.
-    """
+    """One diagnostic row per case; ``pairs`` are (prob, gt) in ``REGIONS`` order, after post-processing."""
     rows: List[dict] = []
     for idx, (prob, gt) in enumerate(pairs):
         cid = case_ids[idx] if idx < len(case_ids) else f"case_{idx:04d}"

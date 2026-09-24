@@ -1,7 +1,4 @@
-r"""Logging: a single logger that writes both a readable console stream and a
-detailed ``logs/training.log`` file, plus per-metric CSV writers and an optional
-TensorBoard wrapper.
-"""
+r"""Logging: console + logs/training.log, per-metric CSV writers and an optional TensorBoard wrapper."""
 from __future__ import annotations
 
 import csv
@@ -31,8 +28,7 @@ def get_logger(ws) -> logging.Logger:
 
 
 class CSVLogger:
-    """Append rows to a CSV with a fixed header. Creates the file with the
-    header on first use; appends thereafter (survives resume)."""
+    """Append rows to a CSV with a fixed header (header written once; survives resume)."""
 
     def __init__(self, path: str, fieldnames: List[str]):
         self.path = path
@@ -48,8 +44,7 @@ class CSVLogger:
 
 
 class TensorBoard:
-    """Thin wrapper around SummaryWriter that degrades gracefully if TensorBoard
-    is unavailable, so a missing dependency never crashes training."""
+    """SummaryWriter wrapper that becomes a no-op if TensorBoard is unavailable."""
 
     def __init__(self, log_dir: str, enabled: bool = True):
         self.writer = None

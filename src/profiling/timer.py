@@ -1,17 +1,8 @@
-r"""Core profiler: CUDA-aware section timing with a true-no-op disabled mode.
+r"""CUDA-aware section timing with a true no-op disabled mode.
 
-Design constraints (Phase 2):
-  * Disabled by default; when disabled, ``section()`` returns a shared no-op
-    context manager and performs **no CUDA synchronisation whatsoever**, so
-    production training behaviour and timing are unchanged.
-  * CUDA is asynchronous: a bare ``perf_counter()`` around a GPU call measures
-    only the launch, not the work. When ``cuda=True`` and a section is marked
-    ``cuda=True`` we synchronise around it so the number means what it says.
-    Sections that are pure CPU (disk, NIfTI, preprocessing) are NOT
-    synchronised, so we do not manufacture sync points that production lacks.
-  * Worker-safe: dataset-side timings are accumulated into plain floats that
-    survive being pickled back from a DataLoader worker; nothing CUDA-related
-    is touched inside a worker.
+Disabled (default): section() returns a shared no-op context with no CUDA sync.
+Enabled: sections marked cuda=True are synchronised so GPU work is included; CPU-only
+sections are not. Worker-side timings are plain floats and never touch CUDA.
 """
 from __future__ import annotations
 
@@ -68,11 +59,8 @@ class NullProfiler:
 # real profiler
 # --------------------------------------------------------------------------- #
 class Profiler:
-    """Collects per-section timings, grouped per iteration.
-
-    ``warmup`` iterations are measured but excluded from the reported
-    statistics -- the first iterations include CUDA context creation, cuDNN
-    autotuning and cold page-cache effects and are never representative.
+    """Per-section timings grouped per iteration; profiler-warmup iterations (CUDA init,
+    cuDNN autotune, cold cache) are excluded from the statistics. Unrelated to LR warmup.
     """
 
     enabled = True
@@ -116,24 +104,16 @@ class Profiler:
             self.record(name, (time.perf_counter() - t0) * 1000.0)
 
     def section(self, name: str, cuda: bool = False):
-        """Time a named block. ``cuda=True`` synchronises around it so the GPU
-        work is actually included (CUDA is async)."""
+        """Time a named block; cuda=True synchronises so GPU work is included."""
         return self._timed(name, cuda)
 
     def record(self, name: str, ms: float) -> None:
-        """Record a measurement directly (used for worker-side timings that were
-        measured in another process and shipped back with the batch)."""
+        """Record a measurement taken elsewhere (e.g. in a DataLoader worker)."""
         self._samples[name].append(ms)
         self._current[name] = self._current.get(name, 0.0) + ms
 
-    # ------------------------------------------------------------- pickling
-    # A Profiler can be reached from the Dataset (which holds no reference, but
-    # the module-level singleton is imported inside __getitem__). On Windows,
-    # DataLoader workers are SPAWNED and the dataset is pickled, so any
-    # unpicklable attribute here becomes "cannot pickle '_thread.lock'". The
-    # torch module handle is exactly such an object, so it is dropped on pickle
-    # and restored on unpickle. Worker-side sections then time CPU work only
-    # (correct: a worker must never touch CUDA anyway).
+    # Pickling: spawned DataLoader workers may pickle this object; the torch handle is
+    # dropped and restored, so worker sections time CPU work only.
     def __getstate__(self):
         st = self.__dict__.copy()
         st["_torch"] = None
@@ -157,20 +137,18 @@ class Profiler:
         self._iter = index
 
     def is_profiled_iteration(self) -> bool:
-        """True once warmup is over (i.e. this iteration counts)."""
+        """True once the profiler warmup is over (this iteration counts)."""
         return self._iter >= self.warmup
 
     def should_stop(self) -> bool:
-        """True when warmup + profiled iterations are complete."""
+        """True when profiler warmup + profiled iterations are complete."""
         return self._iter >= (self.warmup + self.iterations - 1)
 
     def flush(self) -> None:
         self.mark_iteration(self._iter)
 
     def all_samples(self) -> Dict[str, List[float]]:
-        """EVERY sample ever recorded, including sections that fall outside the
-        per-iteration window (validation runs after the training loop, and
-        dataset stages measured in DataLoader workers arrive out-of-band)."""
+        """Every recorded sample, including out-of-iteration ones (validation, worker stages)."""
         return {k: list(v) for k, v in self._samples.items()}
 
     def out_of_band_statistics(self) -> Dict[str, Dict[str, float]]:
@@ -192,7 +170,7 @@ class Profiler:
 
     # ---------------------------------------------------------------- results
     def statistics(self) -> Dict[str, Dict[str, float]]:
-        """Per-section stats over POST-WARMUP iterations only."""
+        """Per-section stats over post-warmup profiled iterations only."""
         post: Dict[str, List[float]] = defaultdict(list)
         for rec in self.iteration_records:
             if rec.get("warmup"):
@@ -264,10 +242,7 @@ def reset_profiler() -> None:
 
 
 def configure(cfg, out_dir: Optional[str] = None):
-    """Build a profiler from a Config's ``profiling:`` section.
-
-    Absent section or ``enabled: false`` => NullProfiler (production default).
-    """
+    """Build a profiler from the config's profiling section; absent or disabled -> NullProfiler."""
     try:
         sec = cfg.section("profiling") if hasattr(cfg, "section") else None
     except Exception:

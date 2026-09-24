@@ -2,9 +2,7 @@ from torch.utils.data import Dataset
 from src.datasets.Data_Instance import Data_Container
 
 class Dataset_Base(Dataset):
-    r"""Base class for any dataset within this project
-        .. WARNING:: Not to be used directly!
-    """
+    r"""Base class for all datasets (not used directly)."""
     def __init__(self, resize=True): 
         self.resize = resize
         self.count = 42
@@ -25,13 +23,10 @@ class Dataset_Base(Dataset):
         self.exp = experiment
 
     def setPaths(self, images_path, images_list, labels_path, labels_list):
-        r"""Set the important image paths
-            #Args
-                images_path (String): The path to the images
-                images_list ([String]): A list of the names of all images
-                labels_path (String): The path to the labels
-                labels_list ([String]): A list of the names of all labels
-            .. TODO:: Refactor
+        r"""Set image/label paths and file lists.
+
+        #Args
+            images_path (String), images_list ([String]), labels_path (String), labels_list ([String])
         """
         self.images_path = images_path
         self.images_list = images_list

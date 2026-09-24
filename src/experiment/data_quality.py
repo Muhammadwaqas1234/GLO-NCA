@@ -1,33 +1,16 @@
-r"""Operational data-quality policy (canonical scientific split preserved).
+r"""Operational data-quality policy (canonical split preserved).
 
-Why this exists
----------------
-Two TRAIN cases in BraTS-MET carry stray segmentation labels outside the BraTS
-value set {0,1,2,3,4}:
+Two training cases carry stray labels outside {0,1,2,3,4}:
 
     BraTS-MET-01094-002  label 6, 129 voxels
     BraTS-MET-01184-002  label 8,  28 voxels
 
-Measured evidence (see ``split/data_quality_policy.json``): both are single
-isolated components, almost entirely background-adjacent, and the PRODUCTION
-label conversion ``Nii_Gz_Dataset_3D._labels_to_regions`` maps only {1,2,3,4}
-into WT/TC/ET. The stray voxels therefore contribute to **no** region -- they
-become background -- and the resulting targets are valid, binary and correctly
-nested (ET subset of TC subset of WT, verified per case).
+Label conversion maps only {1,2,3,4} to WT/TC/ET, so these voxels become
+background and the targets stay valid. The cases are kept and tolerated
+explicitly rather than excluded or edited.
 
-So these cases are **validator-strict, not training-invalid**. The scientifically
-correct action is to keep them in training and record an explicit, auditable
-tolerance -- NOT to exclude them (which would shrink the canonical 898-case train
-set and create a second de-facto split) and NOT to rewrite the data on disk.
-
-Design rules (deliberately strict)
-----------------------------------
-* The canonical split file is never read, written or re-fingerprinted here.
-* Tolerance is per-case AND per-label: only the exact listed labels on the exact
-  listed case ids are accepted. Any other stray label still fails the validator.
-* Nothing is auto-discovered. A case is tolerated only if a human listed it.
-* A missing, malformed, or self-inconsistent policy file fails LOUDLY.
-* Exclusions are supported by the schema but the shipped policy excludes nothing.
+Rules: tolerance is per case and per label, nothing is auto-discovered, and
+a missing or malformed policy fails loudly.
 """
 from __future__ import annotations
 
@@ -87,10 +70,9 @@ class DataQualityPolicy:
             raise DataQualityPolicyError(
                 f"{path}: a case cannot be both tolerated and excluded.")
 
-    # ------------------------------------------------------------------ query
+    # Query.
     def allowed_labels_for(self, case_id: str) -> Set[int]:
-        """Labels accepted for this case: the universal set plus any explicitly
-        tolerated stray labels for THIS case id only."""
+        """Labels accepted for this case: the universal set plus its listed stray labels."""
         return BASE_ALLOWED_SEG_LABELS | self._tolerated.get(case_id, set())
 
     def is_excluded(self, case_id: str) -> bool:
@@ -114,13 +96,9 @@ class DataQualityPolicy:
             parts.append(f"exclude {self.excluded}")
         return "; ".join(parts)
 
-    # ------------------------------------------------------ integrity binding
+    # Integrity binding.
     def assert_known_cases(self, known: Set[str]) -> None:
-        """Every id named by the policy must exist in the split/dataset.
-
-        A typo'd or stale id would otherwise silently tolerate nothing while
-        appearing to be handled -- exactly the kind of quiet drift this policy
-        exists to prevent."""
+        """Every policy id must exist in the split/dataset, so a stale id cannot silently do nothing."""
         named = set(self._tolerated) | set(self.excluded)
         unknown = sorted(named - known)
         if unknown:
@@ -132,13 +110,7 @@ class DataQualityPolicy:
 
 def load_policy(path: Optional[str] = None, *, required: bool = False
                 ) -> Optional[DataQualityPolicy]:
-    """Load the policy.
-
-    ``required=False`` (default) returns ``None`` when the file is absent, which
-    means "no tolerances" -- the validator then behaves exactly as before. A file
-    that EXISTS but is malformed always raises: a broken policy must never be
-    silently downgraded to 'no policy'.
-    """
+    """Load the policy; an absent file returns None (no tolerances), a malformed one always raises."""
     p = path or DEFAULT_POLICY_PATH
     if not os.path.isabs(p):
         root = os.path.dirname(os.path.dirname(os.path.dirname(

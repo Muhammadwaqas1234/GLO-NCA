@@ -1,10 +1,9 @@
 #!/usr/bin/env python
-r"""Create the ONE canonical master patient split, shared by A0/A1/A2/A3/Final.
+r"""Create the canonical subject-disjoint master split (898 / 200 / 198 for production).
 
-Generates split/master_split.json from the VALIDATED dataset using seed 42 and
-the established 70/15/15 proportions. Patient IDs only -- never image data.
-Refuses to overwrite an existing master split unless --force is given, and fails
-loudly on any integrity problem (overlap, missing coverage, empty dataset).
+Built from the validated dataset with seed 42 and about 70/15/15 proportions; case IDs
+only. Refuses to overwrite an existing split without --force and fails on any integrity
+problem.
 
 Usage:
     python scripts/create_master_split.py --data-root "$VM_DATA_DIR"

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Upload the local BraTS dataset to GCS -- but ONLY after the Phase 1 validator
-# passes. Never uploads an invalid dataset. Uses rsync so re-runs are cheap
-# (no blind re-upload of unchanged files).
+# Upload the local BraTS dataset to GCS only after validation passes (rsync: re-runs are cheap).
 #
 # Usage: ./cloud/scripts/upload_dataset.sh /path/to/BraTS
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -14,7 +12,7 @@ LOCAL_DATA="${1:-}"
 
 log "validating dataset BEFORE upload (Phase 1 validator)..."
 PYBIN="$(command -v python3 || command -v python)"
-if "${PYBIN}" "${REPO_DIR}/scripts/validate_dataset.py" --root "${LOCAL_DATA}"; then
+if repo_python --ro "${LOCAL_DATA}" -- scripts/validate_dataset.py --root "${LOCAL_DATA}"; then
   pass "dataset validation PASS"
 else
   die "dataset validation FAILED -- refusing to upload invalid data."
@@ -25,8 +23,7 @@ log "  'UCSD - Training/' structure preserved; never flattened/renamed)"
 gcs_rsync -r "${LOCAL_DATA}" "${GCS_DATA}"
 
 log "verifying upload (by discovered VALID cases, recursively -- not just top-level)"
-# Local: count valid case dirs the loader will actually see (recursive, files-
-# validated), so the count matches the 1296-case nested layout.
+# Local: valid case dirs the loader will see (recursive; 1296 cases in the nested layout).
 n_local=$(REPO_DIR="${REPO_DIR}" "${PYBIN}" - "${LOCAL_DATA}" <<'PY'
 import sys, os; sys.path.insert(0, os.environ.get("REPO_DIR","."))
 from src.experiment.datasource import discover_case_ids

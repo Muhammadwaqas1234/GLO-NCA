@@ -1,9 +1,4 @@
-r"""Generate thesis-useful graphs from the recorded CSV metrics.
-
-Everything is read back from metrics/*.csv (never hard-coded), so the graphs
-always reflect exactly what was logged. Plotting is best-effort and headless
-(Agg backend) so it never crashes a GCP run.
-"""
+r"""Graphs built from the recorded metrics CSVs (headless, best-effort)."""
 from __future__ import annotations
 
 import csv
@@ -31,8 +26,7 @@ def _read_csv(path: str) -> Dict[str, List[float]]:
 
 
 def generate(ws) -> List[str]:
-    """Create graphs/*.png from metrics/train.csv + metrics/validation.csv.
-    Returns the list of files written."""
+    """Write graphs/*.png from metrics/train.csv and metrics/validation.csv; return the files."""
     written: List[str] = []
     try:
         import matplotlib

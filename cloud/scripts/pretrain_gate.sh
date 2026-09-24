@@ -1,38 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-# GLO-NCA FINAL PRE-TRAINING GATE (run ON THE GCP VM). V2 + V3 aware.
+# GLO-NCA pre-training gate (run on the GCP VM).
 #
-# Chains every real check that requires the GPU + real BraTS dataset, in order,
-# and prints a single PASS/FAIL gate. Runs NO 200-epoch training. Does NOT start
-# A0-Final. It is the one command to prove the infrastructure is training-ready.
+# Runs every check that needs the GPU and the real dataset and prints one
+# PASS/FAIL verdict. It never starts the production run: the smoke trains a
+# small master-train subset only and has no fallback.
 #
-# Prereqs (Phase 2/3.1): repo checked out at $VM_WORKSPACE, image built
-# (setup_gcp.sh), dataset cached locally (cache_dataset.sh or run once),
-# cloud/config/gcp.env filled.
+# Prereqs: repo at $VM_WORKSPACE, image built (setup_gcp.sh), dataset cached,
+# cloud/config/gcp.env filled. All Python runs inside the verified image.
 #
-# SAFETY: this gate can NEVER start the science run. The 2-epoch smoke has no
-# fallback -- if it fails, the gate fails (Phase 2, P0).
-#
-# Usage (on the VM):
-#   ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
-#
-# Any other config in configs/ is historical and trains a DIFFERENT
-# architecture. Passing one here gates the wrong model.
+# Usage: ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
 # =============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-PYBIN="$(command -v python3 || command -v python)"
 FAILS=0
 step() { echo; echo "### $* ###"; }
 mark() { if [ "$1" -eq 0 ]; then pass "$2"; else fail "$2"; FAILS=$((FAILS+1)); fi; }
 
-# Phase 2 (P1 fix): lib.sh sets `set -e`, which this script inherits. That made
-# the `cmd; mark $?` idiom dead code -- the script aborted on the FIRST failing
-# check and never printed the gate summary, so "BLOCKED (N failures)" was
-# unreachable. `check <label> <cmd...>` runs the command with errexit disabled,
-# records PASS/FAIL, and lets the gate continue so the operator sees EVERY
-# failure in one run. Use this instead of `cmd; mark $?`.
+# lib.sh sets -e; `check <label> <cmd...>` runs a command with errexit off and
+# records PASS/FAIL, so every failure is reported in one run.
 check() {
   local label="$1"; shift
   set +e; "$@"; local rc=$?; set -e
@@ -42,83 +29,59 @@ check() {
 
 cd "${REPO_DIR}"
 
-# Config under test. Phase 4: there is deliberately NO DEFAULT. The previous
-# default (extra/configs/historical/v3_multilevel_ckpt.yaml) is the FROZEN 32/96/128 thesis
-# reference, so a bare `pretrain_gate.sh` silently validated the WRONG
-# architecture and reported PASS for a config nobody intended to train.
-# Fail closed instead: the caller must name the configuration explicitly.
+# No default config: the caller must name it explicitly.
 GATE_CFG="${1:-}"
 if [[ -z "${GATE_CFG}" ]]; then
   die "usage: pretrain_gate.sh <config>
-       production : ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
-       reference  : ./cloud/scripts/pretrain_gate.sh extra/configs/historical/v3_multilevel_ckpt.yaml   (FROZEN 32/96/128)
-       No default is applied: gating the wrong architecture wastes days of GPU time."
+       production: ./cloud/scripts/pretrain_gate.sh configs/glo_nca_production.yaml
+       No default is applied: gating the wrong architecture wastes GPU time."
 fi
-IS_V3=$("${PYBIN}" - "${GATE_CFG}" <<'PY'
-import sys, yaml
-try:
-    raw = yaml.safe_load(open(sys.argv[1]))
-    print("1" if str(raw.get("model", {}).get("version","")).lower() == "v3" else "0")
-except Exception:
-    print("0")
-PY
-)
-# Phase 4: distinguish the GLOBAL-CONTEXT production candidate (level3 absent,
-# 48/64) from the frozen 32/96/128 reference. `model.global_context` is exactly
-# the key the runner uses to pick build_glo_nca_global_context, so the gate
-# follows the same signal rather than guessing from the filename.
-HAS_GLOBAL_CTX=$("${PYBIN}" - "${GATE_CFG}" <<'PY'
-import sys, yaml
-try:
-    raw = yaml.safe_load(open(sys.argv[1]))
-    print("1" if (raw.get("model", {}) or {}).get("global_context") is not None else "0")
-except Exception:
-    print("0")
-PY
-)
-log "pre-training gate for config: ${GATE_CFG} (v3=${IS_V3}, global_context=${HAS_GLOBAL_CTX})"
-# Gate the IMAGE production will actually run, not only the host checkout.
+[[ -f "${REPO_DIR}/${GATE_CFG}" ]] || die "config not found in the repository: ${GATE_CFG}
+       (give a repo-relative path, e.g. configs/glo_nca_production.yaml)"
+
+# Gate the image production will run; every Python check below runs inside it.
 assert_image_matches_repo "${VM_WORKSPACE}"
+ensure_cache_dir
+
+cfg_flag() { # print 1/0 for a Python expression over the parsed config `r`
+  repo_python -- -c "import sys, yaml; r = yaml.safe_load(open(sys.argv[1])) or {}; \
+m = r.get('model') or {}; print('1' if ($1) else '0')" "${GATE_CFG}" 2>/dev/null || echo 0
+}
+IS_V3=$(cfg_flag "str(m.get('version', '')).lower() == 'v3'")
+# model.global_context is the key the runner uses to pick the two-level
+# production builder; the gate follows the same signal.
+HAS_GLOBAL_CTX=$(cfg_flag "m.get('global_context') is not None")
+log "pre-training gate for config: ${GATE_CFG} (v3=${IS_V3}, global_context=${HAS_GLOBAL_CTX})"
+[ "${IS_V3}" = "1" ] || die "${GATE_CFG} is not a GLO-NCA (model.version v3) config."
 
 # --- Part 1-3: preflight (GPU/CUDA/PyTorch/dataset/master-split/config/disk) --
 step "Part 1-3  GPU + CUDA + dataset preflight"
-check "preflight_gcp" "${PYBIN}" scripts/preflight_gcp.py \
-    --data-root "${VM_DATA_DIR}" --split split/master_split.json
+check "preflight_gcp" repo_python --gpu --ro "${VM_DATA_DIR}" --rw "${VM_OUT_DIR}" \
+    --env "OUT_DIR=${VM_OUT_DIR}" -- \
+    scripts/preflight_gcp.py --data-root "${VM_DATA_DIR}" \
+    --split split/master_split.json --config "${GATE_CFG}"
 
 # --- Part 3: explicit dataset validation (PASS/FAIL, refuses bad data) --------
 step "Part 3  real BraTS dataset validation"
-check "dataset validation" "${PYBIN}" scripts/validate_dataset.py --root "${VM_DATA_DIR}"
+check "dataset validation" repo_python --ro "${VM_DATA_DIR}" -- \
+    scripts/validate_dataset.py --root "${VM_DATA_DIR}"
 
-# --- Part 4: master split -- create ONCE if absent, then verify + freeze ------
-step "Part 4  master split (create once, then verify)"
-if [ ! -f split/master_split.json ]; then
-  log "no master split yet -> creating from real dataset (seed 42)"
-  "${PYBIN}" scripts/create_master_split.py --data-root "${VM_DATA_DIR}"
-fi
-check "master split verified" "${PYBIN}" scripts/check_split.py \
-    --split split/master_split.json --data-root "${VM_DATA_DIR}"
-if [ -f split/master_split.json ]; then
-  FP=$("${PYBIN}" - <<PY
-import json;print(json.load(open("split/master_split.json"))["split_sha256"])
-PY
-)
-  log "master split fingerprint: ${FP}"
-fi
+# --- Part 4: master split (tracked; verified, never regenerated here) ----------
+step "Part 4  master split verification"
+check "master split verified" repo_python --ro "${VM_DATA_DIR}" -- \
+    scripts/check_split.py --split-json split/master_split.json --data-root "${VM_DATA_DIR}"
+FP=$(repo_python -- -c "import json; print(json.load(open('split/master_split.json'))['split_sha256'])" \
+     2>/dev/null || echo unknown)
+log "master split fingerprint: ${FP}"
 
-# --- Part 4b (V3 only): model build + parameter report + production memory gate -
-if [ "${IS_V3}" = "1" ]; then
-  step "Part 4b  V3 model build + parameter report"
-  # heredoc cannot pass through `check`; guard errexit explicitly.
-  set +e
-  "${PYBIN}" - "${GATE_CFG}" <<'PY'
+# --- Part 4b: model build + parameter report ----------------------------------
+step "Part 4b  GLO-NCA model build + parameter report"
+BUILD_PY=$(cat <<'PY'
 import sys, torch
 from src.experiment.config import load_config
 from src.models.Model_GLO_NCA_V3 import build_v3_from_config
 cfg = load_config(sys.argv[1])
-# Phase 4: build the model the RUNNER would actually build. When
-# `model.global_context` is present the runner uses the global-context model;
-# calling build_v3_from_config unconditionally reported the parameter count of
-# an architecture that production never instantiates.
+# Build the model the runner would build (global-context builder when configured).
 if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
     from src.models.Model_GLO_NCA_GlobalContext import build_glo_nca_global_context
     m = build_glo_nca_global_context(cfg, 4, 3, torch.device("cpu"))
@@ -128,86 +91,97 @@ if (cfg.raw.get("model", {}) or {}).get("global_context") is not None:
 else:
     m = build_v3_from_config(cfg, 4, 3, torch.device("cpu"))
     pr = m.parameter_report()
-    print(f"V3 parameters: {pr['total_parameters']} (by component: {pr['by_level']})")
-PY
-  V3_BUILD_RC=$?
-  set -e
-  mark "${V3_BUILD_RC}" "V3 builds + reports parameter count"
-
-  # Phase 4: gpu_memory_gate_v3.py sweeps the LEVEL3 resolution and DERIVES
-  # level1/level2 from it (res//4, res*3//4), so it always builds a THREE-level
-  # model. The production candidate has level3 disabled (L1 48^3, L2 64^3), and
-  # no --resolutions value reproduces that geometry. Running it against the
-  # production config would have measured an architecture production never
-  # builds. Route by config instead of assuming the frozen reference.
-  if [ "${HAS_GLOBAL_CTX}" = "1" ]; then
-    step "Part 4c  GLO-NCA production config identity + memory (actual geometry)"
-    check "production configuration identity (fail-closed)" \
-      "${PYBIN}" scripts/verify_glo_nca_production_config.py "${GATE_CFG}"
-  else
-    step "Part 4c  V3 frozen-reference GPU memory gate (96^3 + 128^3)"
-    check "V3 96^3 + 128^3 GPU memory fit" \
-      "${PYBIN}" scripts/gpu_memory_gate_v3.py --config "${GATE_CFG}" --resolutions 96,128
-  fi
-fi
-
-# --- Part 5-6-13: real-data short training smoke (gate config, tiny) ----------
-# Uses the REAL dataset/model/loss/CUDA via the container, at the thesis patch,
-# for a couple of epochs on a handful of cases -- proves the full path incl. VRAM
-# fit, checkpointing, validation, logging. NOT the science run.
-step "Part 5/6/13  real-data short training smoke (${GATE_CFG})"
-SMOKE_CFG="/tmp/gate_smoke.yaml"
-sed -e 's/^  epochs: .*/  epochs: 2/' \
-    -e 's/^  number_of_patients: .*/  number_of_patients: 12/' \
-    -e 's/^  smoothing_window: .*/  smoothing_window: 2/' \
-    "${GATE_CFG}" > "${SMOKE_CFG}"
-# run inside the container on the GPU, writing to a throwaway out dir
-# SAFETY (Phase 2, P0): there is NO fallback here. The previous version chained
-#   ... --config "${SMOKE_CFG}" || docker run ... --config "${GATE_CFG}"
-# so any failure of the 2-epoch smoke silently launched the FULL 300-epoch
-# production config on the GPU, with no confirmation -- contradicting this
-# script's own header. A gate must never be able to start the science run.
-# Smoke fails -> the gate fails. Nothing else runs.
-#
-# Mounts mirror the PRODUCTION container exactly (see _train_entrypoint.sh) so
-# the gate cannot pass on a mount set that production does not use. The split
-# now ships inside the image, so no split mount is needed here either.
-set +e
-# --shm-size matches _train_entrypoint.sh: the smoke keeps training.workers: 2,
-# and Docker's 64 MB default /dev/shm kills DataLoader workers with a bus error.
-docker run --rm --gpus all --shm-size=8g \
-  -v "${VM_DATA_DIR}:/data:ro" -v "${VM_OUT_DIR}:/out" \
-  -v "${SMOKE_CFG}:/app/configs/_gate_smoke.yaml:ro" \
-  -e DATA_ROOT=/data \
-  glo-nca:latest --config configs/_gate_smoke.yaml --output /out
-GATE_SMOKE=$?
-set -e
-mark ${GATE_SMOKE} "real-data training smoke (fwd/bwd/opt/val/ckpt)"
-# Experiment dir prefix comes from the config's experiment.name.
-EXP_NAME=$("${PYBIN}" - "${GATE_CFG}" <<'PY'
-import sys, yaml
-print(yaml.safe_load(open(sys.argv[1])).get("experiment", {}).get("name", "GLO-NCA"))
+    print(f"legacy V3 parameters: {pr['total_parameters']} (by component: {pr['by_level']})")
 PY
 )
-SMOKE_EXP=$(ls -td "${VM_OUT_DIR}"/${EXP_NAME}-* 2>/dev/null | head -1)
+check "GLO-NCA model builds + reports parameter count" \
+  repo_python -- -c "${BUILD_PY}" "${GATE_CFG}"
+
+# Production: identity gate on the real two-level geometry. gpu_memory_gate_v3.py
+# only builds legacy three-level models, so it runs for legacy configs only.
+if [ "${HAS_GLOBAL_CTX}" = "1" ]; then
+  step "Part 4c  GLO-NCA production configuration identity"
+  check "production configuration identity (fail-closed)" \
+    repo_python -- scripts/verify_glo_nca_production_config.py "${GATE_CFG}"
+else
+  step "Part 4c  legacy V3 GPU memory gate (96^3 + 128^3)"
+  check "legacy V3 96^3 + 128^3 GPU memory fit" \
+    repo_python --gpu -- scripts/gpu_memory_gate_v3.py --config "${GATE_CFG}" --resolutions 96,128
+fi
+
+# --- Part 5-6-13: engineering smoke on a master-train subset -------------------
+# make_gate_smoke.py stages 12 master-train cases (8 train / 2 val / 2 "test");
+# only that stage is mounted, so the production val/test cases are unreachable.
+# Run 1 is hard-killed after epoch 1 (simulated preemption); run 2 resumes it in
+# a fresh container with the same persistent cache.
+step "Part 5/6/13  engineering smoke (12 master-train cases, kill + resume)"
+SMOKE_STAGE="/tmp/glo-nca-gate-smoke"
+SMOKE_ID="GLO-NCA-GATE-SMOKE-$(date +%Y%m%d-%H%M%S)"
+SMOKE_EXP="${VM_OUT_DIR}/${SMOKE_ID}"
+SMOKE_CTR="glo-nca-gate-smoke"
+mkdir -p "${SMOKE_STAGE}"
+check "smoke subset staged (master-train only)" \
+  repo_python --ro "${VM_DATA_DIR}" --rw "${SMOKE_STAGE}" -- \
+    scripts/make_gate_smoke.py --data-root "${VM_DATA_DIR}" --stage "${SMOKE_STAGE}" \
+    --container-data /data --container-stage /smoke
+# Mounts mirror _train_entrypoint.sh, except the data mount is the staged subset.
+# --shm-size=8g as in _train_entrypoint.sh (Docker's 64 MB default kills workers).
+SMOKE_RUN=(--gpus all --shm-size=8g
+  -v "${SMOKE_STAGE}/data:/data:ro" -v "${SMOKE_STAGE}:/smoke:ro"
+  -v "${VM_OUT_DIR}:/out" -v "${VM_CACHE_DIR}:/app/.cache" -e DATA_ROOT=/data
+  -e GLO_VALIDATE_WORKERS="${VALIDATE_WORKERS}")
+CACHE_BEFORE=$(find "${VM_CACHE_DIR}" -name '*.pt' 2>/dev/null | wc -l)
+
+set +e
+docker rm -f "${SMOKE_CTR}" >/dev/null 2>&1
+docker run -d --name "${SMOKE_CTR}" "${SMOKE_RUN[@]}" glo-nca:latest \
+  --config /smoke/smoke_config.yaml --output /out --experiment-id "${SMOKE_ID}" >/dev/null
+KILLED=1; WAITED=0
+while [ "${WAITED}" -lt 3600 ]; do
+  ROWS=$(( $(cat "${SMOKE_EXP}/metrics/train.csv" 2>/dev/null | wc -l) - 1 ))
+  if [ "${ROWS}" -ge 1 ]; then docker kill "${SMOKE_CTR}" >/dev/null 2>&1; KILLED=0; break; fi
+  [ "$(docker inspect -f '{{.State.Running}}' "${SMOKE_CTR}" 2>/dev/null)" = "true" ] || break
+  sleep 2; WAITED=$((WAITED + 2))
+done
+docker logs "${SMOKE_CTR}" > /tmp/glo-nca-gate-smoke-run1.log 2>&1
+docker rm -f "${SMOKE_CTR}" >/dev/null 2>&1
+set -e
+mark "${KILLED}" "smoke run 1 reached epoch 1 and was hard-killed (log /tmp/glo-nca-gate-smoke-run1.log)"
+CACHE_AFTER=$(find "${VM_CACHE_DIR}" -name '*.pt' 2>/dev/null | wc -l)
+[ "${CACHE_AFTER}" -gt 0 ]
+mark $? "preprocessing cache on the host after the container exited (${CACHE_BEFORE} -> ${CACHE_AFTER} entries)"
+
+set +e
+docker run --rm "${SMOKE_RUN[@]}" glo-nca:latest --resume "/out/${SMOKE_ID}" \
+  > /tmp/glo-nca-gate-smoke-run2.log 2>&1
+RESUME_RC=$?
+set -e
+mark "${RESUME_RC}" "smoke run 2 resumed and completed (log /tmp/glo-nca-gate-smoke-run2.log)"
+grep -q "ep 2/" /tmp/glo-nca-gate-smoke-run2.log && ! grep -q "ep 1/" /tmp/glo-nca-gate-smoke-run2.log
+mark $? "resume continued from the checkpoint (no restart at epoch 1)"
+grep -q "reusing cached PASS" /tmp/glo-nca-gate-smoke-run2.log
+mark $? "fresh container reused the persisted dataset-validation cache"
+check "smoke run verified (epochs, status, no production val/test ids)" \
+  repo_python --ro "${SMOKE_STAGE}" --ro "${SMOKE_EXP}" -- \
+    scripts/make_gate_smoke.py --verify "${SMOKE_EXP}" --stage "${SMOKE_STAGE}"
 
 # --- Part 7: checkpoint round-trip (validate the smoke checkpoint) ------------
 step "Part 7  checkpoint round-trip"
-if [ -n "${SMOKE_EXP}" ]; then
+if [ -d "${SMOKE_EXP}" ]; then
   check "checkpoint validates + loads" \
-    "${PYBIN}" "${CLOUD_DIR}/scripts/validate_checkpoint.py" "${SMOKE_EXP}"
+    repo_python --ro "${SMOKE_EXP}" -- cloud/scripts/validate_checkpoint.py "${SMOKE_EXP}"
 else
   fail "no smoke experiment dir found"; FAILS=$((FAILS+1))
 fi
 
 # --- Part 8: GCS round-trip (write, read back) --------------------------------
 step "Part 8  GCS artifact round-trip"
-if [ -n "${SMOKE_EXP}" ]; then
+if [ -d "${SMOKE_EXP}" ]; then
   # compound && chain cannot pass through `check`; guard errexit.
   set +e
   bash "${CLOUD_DIR}/scripts/sync_experiment.sh" "${SMOKE_EXP}" && \
-  gcs_exists "${GCS_EXPERIMENTS}/$(basename "${SMOKE_EXP}")" && \
-  gcs cat "${GCS_EXPERIMENTS}/$(basename "${SMOKE_EXP}")/status.json" >/dev/null 2>&1
+  gcs_exists "${GCS_EXPERIMENTS}/${SMOKE_ID}" && \
+  gcs cat "${GCS_EXPERIMENTS}/${SMOKE_ID}/status.json" >/dev/null 2>&1
   GCS_RC=$?
   set -e
   mark "${GCS_RC}" "GCS upload + read-back"
@@ -215,38 +189,28 @@ else
   warn "GCS round-trip skipped (no smoke experiment)"
 fi
 
-# The round-trip above proves the CURRENT identity can write and read. On the
-# VM that identity is the attached service account, which is the credential the
-# training job actually uses -- and the one that held only objectViewer when a
-# Phase 2 run died on a 403. This additionally proves create/list/DELETE for
-# that account, and refuses to report a pass when run as a human.
+# The VM's service account is the training credential; prove it can create, list
+# and delete objects, and refuse to pass when run as a human.
 set +e
 bash "${CLOUD_DIR}/scripts/verify_gcs_service_account.sh"
 SA_RC=$?
 set -e
 mark "${SA_RC}" "GCS service-account permissions (create/get/list/delete)"
 
-# --- Part 9-14: repository audits (config integrity, discipline, compile) -----
+# --- Part 9-14: repository audits ---------------------------------------------
 step "Part 9-14  repository audits"
-check "compileall" "${PYBIN}" -m compileall -q src scripts train.py
-# verify_phase3_ready validates the V2 ablation matrix + v2 branch; only relevant
-# for a V2 gate. Skip it for a V3 gate (V3 has its own model/param/memory checks).
-if [ "${IS_V3}" = "1" ]; then
-  log "skipping verify_phase3_ready (V2-specific ablation-matrix audit)"
-else
-  # The V2 ablation-matrix audit lives in the local, git-ignored extra/ folder
-  # and is never present on a VM. Report that plainly instead of calling a
-  # missing file; this repository ships only the V3 production path.
-  fail "V2 gate requested, but the V2 ablation audit is not part of this production repository"
-  FAILS=$((FAILS+1))
-fi
+# Parse-only (the checkout is mounted read-only, so nothing is written).
+check "all Python parses" repo_python -- -c "import ast, pathlib
+files = [p for d in ('src', 'scripts', 'cloud/scripts') for p in pathlib.Path(d).rglob('*.py')]
+for p in files + [pathlib.Path('train.py')]: ast.parse(p.read_text(encoding='utf-8'), str(p))
+print(f'{len(files) + 1} files parse')"
 
 # --- Gate ---------------------------------------------------------------------
 echo; echo "========================================"
 if [ "${FAILS}" -eq 0 ]; then
   echo "FINAL PRE-TRAINING GATE: PASS"
   echo "GLO-NCA TRAINING: READY"
-  echo "(Then launch A0->A1->A2->A3->Final per extra/docs/reproducibility/PHASE3_RUNBOOK.md -- NOT auto-started.)"
+  echo "(Launch with ./cloud/scripts/run_training.sh ${GATE_CFG} -- never auto-started.)"
   echo "========================================"
   exit 0
 else

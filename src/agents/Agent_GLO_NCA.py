@@ -6,11 +6,9 @@ import random
 import math
 
 class Agent_GLO_NCA(Agent_Multi_NCA):
-    """GLO-NCA (Global Context-Aware NCA) training agent.
+    """Legacy V2 agent: coarse-to-fine cascade of separate GLO_NCA_Cell models trained on patches.
 
-    Uses a coarse-to-fine multi-level Neural Cellular Automata with a global
-    context mechanism (the lightweight SE block in GLO_NCA_Cell) and 3D patches
-    across n-levels during training to keep VRAM low.
+    Not the production model; two-level GLO-NCA uses Agent_GLO_NCA_V3.
     """
     def initialize(self):
         super().initialize()
@@ -18,10 +16,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
         self.scaling_factor = self.exp.get_from_config('scaling_factor')
 
     def get_outputs(self, data, full_img=False, tag="", **kwargs):
-        r"""Get the outputs of the model
-            #Args
-                data (int, tensor, tensor): id, inputs, targets
-        """
+        r"""Model outputs for (id, inputs, targets)."""
         id, inputs, targets = data
 
         if len(targets.shape) < 5:
@@ -42,7 +37,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
         full_res_gt = targets
         inputs_loc = inputs
 
-        # Scale image down square(scale_factor) -> Replace with single downscaling step
+        # Downscale the image to the coarsest level.
         for i in range(self.exp.get_from_config('train_model')*int(math.log2(scale_fac))):
             inputs_loc = inputs_loc.transpose(1,4)
             inputs_loc = max_pool(inputs_loc)
@@ -54,7 +49,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
         input_channel = self.exp.get_from_config('input_channels')
         
 
-        # After training: run inference on the FULL image (coarse -> fine).
+        # Eval: full-image inference, coarse -> fine.
         if full_img == True:
             with torch.no_grad():
                 # Start at the low-res level and climb to the high-res level.
@@ -99,13 +94,13 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                         stp = self.getInferenceSteps()
                     outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
                 else:
-                    # Create higher res image for next level -> Replace with single downscaling step
+                    # Higher-res image for the next level.
                     next_res = full_res
                     for i in range(self.exp.get_from_config('train_model') - (m +1)):
                         next_res = next_res.transpose(1,4)
                         next_res = max_pool(next_res)
                         next_res = next_res.transpose(1,4)
-                    # Create higher res groundtruth for next level -> Replace with single downscaling step
+                    # Higher-res ground truth for the next level.
                     next_res_gt = full_res_gt
                     for i in range(self.exp.get_from_config('train_model') - (m +1)):
                         next_res_gt = next_res_gt.transpose(1,4)
@@ -167,7 +162,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                     full_res = full_res_new
                     full_res_gt = full_res_gt_new
 
-        # Add pooling - not functional
+        # Pooling option (not functional).
         if self.exp.get_from_config('Persistence'):
             if np.random.random() < self.exp.get_from_config('pool_chance'):
                 self.epoch_pool.addToPool(outputs.detach().cpu(), id)

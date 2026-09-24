@@ -1,6 +1,4 @@
-r"""Diagnostic report -- extracted verbatim (behaviour-preserving) from the
-original train.py. Turns a finished run into GOOD/OK/WATCH decision signals.
-"""
+r"""Diagnostic report: turns a finished run into GOOD/OK/WATCH signals."""
 from __future__ import annotations
 
 from typing import Any, Dict

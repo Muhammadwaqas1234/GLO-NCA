@@ -1,21 +1,9 @@
 r"""GPU diagnostics and training-phase timing.
 
-Two problems this module exists to avoid.
-
-**Sampling the wrong moment.** A GPU reading taken while Python is loading a
-NIfTI or between benchmark iterations shows an idle card -- low clock, ~0%
-utilization -- and says nothing about training. Every sample here carries the
-phase it was taken in, so an idle reading can never be mistaken for evidence
-about compute.
-
-**Measuring the measurement.** CUDA is asynchronous, so timing a GPU section
-requires a synchronize, and synchronizing inside the hot loop would change
-what is being measured. Timing here happens at section boundaries only, and
-`PhaseTimer` reports the cost it added so that cost is visible rather than
-assumed.
-
-Anything the hardware does not expose is recorded as ``NOT AVAILABLE``. No
-value in this module is estimated or inferred.
+Every GPU sample carries the phase it was taken in, so an idle reading is
+never mistaken for compute. Timing syncs only at section boundaries and
+reports its own overhead. Unavailable values are recorded as NOT AVAILABLE,
+never estimated.
 """
 from __future__ import annotations
 
@@ -28,8 +16,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
-# Training phases a sample can belong to. The distinction is the point: a
-# reading taken in DATA_WAIT describes the dataloader, not the model.
+# Training phases; a DATA_WAIT sample describes the dataloader, not the model.
 IDLE = "IDLE"
 DATA_WAIT = "DATA_WAIT"
 ACTIVE_GPU = "ACTIVE_GPU"
@@ -82,12 +69,7 @@ def _nvidia_smi() -> Dict[str, Any]:
 
 
 class GPUDiagnostics:
-    """Phase-labelled GPU sampler.
-
-    Sampling is rate-limited (``min_interval_s``) because nvidia-smi costs
-    tens of milliseconds -- polling it every step would distort the very
-    timings the run is trying to measure.
-    """
+    """Phase-labelled GPU sampler, rate-limited because nvidia-smi is slow."""
 
     def __init__(self, enabled: bool = True, min_interval_s: float = 5.0):
         self.enabled = bool(enabled)
@@ -146,7 +128,7 @@ class GPUDiagnostics:
         self.samples.append(rec)
         return rec
 
-    # ------------------------------------------------------------- reporting
+    # Reporting.
     def summary(self) -> Dict[str, Any]:
         """Per-phase summary. Utilization is reported ONLY for ACTIVE_GPU."""
         if not self.samples:
@@ -223,13 +205,7 @@ class GPUDiagnostics:
 
 
 class PhaseTimer:
-    """Wall-clock timing of named sections, with explicit CUDA boundaries.
-
-    ``cuda=True`` synchronises at entry and exit so async kernels are charged
-    to the section that launched them. That synchronisation is itself a cost,
-    so it is counted and reported: an instrument that hides its own overhead
-    cannot be trusted.
-    """
+    """Wall-clock section timing; ``cuda=True`` syncs at entry and exit and counts that cost."""
 
     def __init__(self, enabled: bool = True, cuda: bool = False):
         self.enabled = bool(enabled)

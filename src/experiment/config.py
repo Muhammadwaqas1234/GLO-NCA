@@ -1,12 +1,8 @@
-r"""Configuration loading for GLO-NCA V2 experiments.
+r"""Configuration loading for GLO-NCA experiments.
 
-Loads a YAML config into a plain, validated ``Config`` object. The defaults in
-the YAML files under ``configs/`` are byte-for-byte the current V2 defaults, so
-loading ``gcp_full.yaml`` reproduces the established methodology exactly.
-
-The only derivation performed here is the two-level cascade ``input_size`` from
-``training.patch_size``, using the SAME mapping the original ``train.py`` used
-(64 / 96 / 128), so nothing about the model changes.
+Loads a YAML file into a validated ``Config``. The only derivation is the
+legacy V2 cascade ``input_size``; the production two-level model derives its
+per-level resolutions itself.
 """
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-# The exact PATCH -> [[low-res],[high-res]] mapping from the original train.py.
+# Legacy V2: patch size -> [[low-res], [high-res]] cascade sizes.
 PATCH_TABLE: Dict[int, List[List[int]]] = {
     64:  [[32, 32, 24], [64, 64, 48]],
     96:  [[48, 48, 32], [96, 96, 64]],
@@ -26,23 +22,22 @@ PATCH_TABLE: Dict[int, List[List[int]]] = {
 
 @dataclass
 class Config:
-    """Parsed experiment configuration. Holds the raw nested dict plus a few
-    convenience accessors; nothing here mutates the research defaults."""
+    """Parsed experiment configuration: the raw nested dict plus read-only accessors."""
 
     raw: Dict[str, Any]
     path: Optional[str] = None
 
-    # ------------------------------------------------------------------ helpers
+    # Helpers.
     def section(self, name: str) -> Dict[str, Any]:
         return self.raw.get(name, {}) or {}
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         return self.section(section).get(key, default)
 
-    # ------------------------------------------------------------ derived values
+    # Derived values.
     @property
     def input_size(self) -> List[List[int]]:
-        """Two-level cascade sizes derived from training.patch_size."""
+        """Legacy V2 cascade sizes derived from training.patch_size."""
         patch = int(self.get("training", "patch_size", 96))
         return copy.deepcopy(PATCH_TABLE.get(patch, PATCH_TABLE[96]))
 
@@ -56,7 +51,7 @@ class Config:
 
     @property
     def name(self) -> str:
-        return str(self.get("experiment", "name", "GLO-NCA-V2"))
+        return str(self.get("experiment", "name", "GLO-NCA"))
 
     def to_dict(self) -> Dict[str, Any]:
         return copy.deepcopy(self.raw)
@@ -79,10 +74,7 @@ def load_config(path: str) -> Config:
     if missing:
         raise ValueError(f"Config {path!r} is missing sections: {missing}")
 
-    # The PATCH_TABLE gate is a V2 guard (its two-level cascade sizes are derived
-    # from patch_size). V3 (model.version == 'v3') derives per-level resolutions
-    # itself, so its top-level patch_size is not indexed into PATCH_TABLE and any
-    # positive value is allowed.
+    # PATCH_TABLE applies to legacy V2 only; the two-level (v3) model accepts any positive patch_size.
     is_v3 = str(raw.get("model", {}).get("version", "")).lower() == "v3"
     patch = int(raw.get("training", {}).get("patch_size", 96))
     if not is_v3 and patch not in PATCH_TABLE:

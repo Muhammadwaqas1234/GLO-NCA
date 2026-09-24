@@ -1,7 +1,4 @@
-r"""Evaluation + threshold tuning, extracted verbatim (behaviour-preserving)
-from the original train.py so the runner reuses the EXACT methodology:
-single clean forward pass, per-region Dice/mIoU/HD95, val-only threshold tuning.
-"""
+r"""Evaluation and threshold tuning: one forward pass, per-region Dice/mIoU/HD95, validation-only tuning."""
 from __future__ import annotations
 
 import math
@@ -16,13 +13,7 @@ REGIONS = ["WT", "TC", "ET"]
 
 
 def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """One clean forward pass over ``state``; returns per-case (prob, gt).
-
-    Phase 2: the validation path is profiled SEPARATELY from training, because a
-    slow "epoch" may be dominated by full-volume validation inference rather
-    than by the training iterations. Observational only -- one forward pass per
-    case, unchanged.
-    """
+    """One forward pass over ``state``; returns per-case (prob, gt). Profiled separately from training."""
     from src.profiling import get_profiler
     prof = get_profiler()
 
@@ -35,19 +26,11 @@ def collect_probs(agent, dataset, state) -> List[Tuple[np.ndarray, np.ndarray]]:
                 data = agent.prepare_data(data, eval=True)
             with prof.section(f"validation/{state}_inference", cuda=True):
                 out, targets = agent.get_outputs(data, full_img=True)
-            # sigmoid + device->host copy: a real synchronisation point, timed
-            # so probability generation is not hidden inside "inference".
+            # Sigmoid + host copy is a sync point; timed separately from inference.
             with prof.section(f"validation/{state}_probabilities", cuda=True):
                 prob = torch.sigmoid(out).detach().cpu().numpy()
-            # Phase 2 (memory, EXACT): the ground truth is strictly binary {0,1}
-            # (Nii_Gz_Dataset_3D._labels_to_regions stacks boolean masks), and
-            # every metric below uses it only via `gt >= 0.5`. Storing it as
-            # uint8 instead of float32 is therefore BIT-EXACT for every metric
-            # while cutting the accumulated host RAM for val+test from ~20 GB to
-            # ~12.5 GB at 128^3 -- the difference between finishing and an OOM
-            # *after* a 300-epoch run. Probabilities stay float32: float16 was
-            # measured to flip ~2.3k threshold decisions per 4M voxels, so it is
-            # NOT equivalent and is deliberately not used.
+            # Store binary GT as uint8 (bit-exact for gt >= 0.5, saves host RAM at 128³).
+            # Probabilities stay float32: float16 flips threshold decisions.
             with prof.section(f"validation/{state}_gt_to_host", cuda=True):
                 gt = (targets.detach().cpu().numpy() >= 0.5).astype(np.uint8)
             pairs.append((prob, gt))
@@ -82,12 +65,7 @@ def score(pairs, thresholds: Dict[str, float]) -> Dict[str, Dict[str, float]]:
 
 
 def score_per_case(pairs, thresholds: Dict[str, float]):
-    r"""Per-CASE metrics (no averaging), using the SAME metric definitions as
-    ``score``. Returns {region: {"dice": [...], "iou": [...], "hd95": [...]}}
-    with one entry per test case, so downstream code can compute mean / median /
-    std / bootstrap CIs. Purely additive -- does not affect model selection or
-    threshold tuning (those still use ``score``/``tune_thresholds`` unchanged).
-    """
+    r"""Per-case metrics with the same definitions as ``score``: {region: {"dice", "iou", "hd95": [...]}}."""
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     for prob, gt in pairs:
         for i, r in enumerate(REGIONS):
@@ -108,8 +86,7 @@ def evaluate(agent, dataset, state, thresholds=None):
 
 
 def tune_thresholds(pairs, grid=None) -> Dict[str, float]:
-    """Best per-region threshold by mean Dice on VALIDATION pairs (test never
-    seen). Same grid and logic as the original."""
+    """Best per-region threshold by mean Dice on validation pairs only."""
     if grid is None:
         grid = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6]
     best = {}

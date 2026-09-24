@@ -1,7 +1,6 @@
 # =============================================================================
-# GLO-NCA — .gitignore
-# Ignore generated output, local data, caches and secrets. Keep all source,
-# configs, scripts, docs, the master split and reproducibility evidence tracked.
+# GLO-NCA — .gitignore: generated output, local data, caches, secrets and the
+# local-only extra/ folder. Source, configs, scripts and the master split stay tracked.
 # =============================================================================
 
 # --- Python / environments ---
@@ -24,13 +23,11 @@ scratch_brats/
 Tutorial/Data/
 
 # --- Experiment outputs / checkpoints / logs (generated) ---
-# ROOT-ANCHORED. A bare `experiments/` also matched configs/experiments/ and
-# docs/experiments/, which silently untracked the experimental CONFIGS -- those
-# are source and thesis evidence, not generated output.
+# Root-anchored so only the top-level output directory is ignored.
 /experiments/
-# Phase 2 profiling artifacts (traces can be large; never commit them)
+# Profiling artifacts (large traces).
 /experiments/phase2_profiling/
-# Deterministic preprocessing cache (regenerable; ~38 MB/case at 128^3)
+# Deterministic preprocessing cache (regenerable; ~40 MB/case at 128^3).
 .cache/
 **/profiler/*.pt.trace.json
 runs/
@@ -65,19 +62,13 @@ gcp-key*.json
 .ipynb_checkpoints/
 
 # -----------------------------------------------------------------------------
-# Explicitly KEEP (tracked) despite broader patterns above:
-#   - split/master_split.json  (case-IDs only; required for reproducibility)
-#   - configs/*.yaml, src/**, scripts/**, cloud/**, extra/** (docs, reports, tests)
-# The master split is data-free (patient/case IDs only) and is committed on
-# purpose so the exact thesis split is archived in git.
+# Keep the master split tracked (case IDs only, no data) so the thesis split is
+# archived in git.
 # -----------------------------------------------------------------------------
 !split/master_split.json
 .trash_md_review/
 .trash_cleanup/
 
-# --- Non-production material (kept locally, NOT versioned) -------------------
-# Tests, audits, reports, docs, historical configs, the Kaggle notebook and
-# optional ops tools. Production has no runtime dependency on this folder, and
-# .dockerignore already keeps it out of the training image. Earlier commits
-# still contain these files if they are ever needed from history.
+# --- Local-only material (tests, reports, docs, historical configs) ------------
+# Not versioned and not needed at runtime; .dockerignore also excludes it.
 /extra/

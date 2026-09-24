@@ -2,14 +2,8 @@
 # Verify the VM SERVICE ACCOUNT can write, read back and delete checkpoint
 # objects -- run this ON THE VM, not from a workstation.
 #
-# WHY THIS EXISTS
-#   A Phase 2 run failed with a GCS 403 because the service account held only
-#   roles/storage.objectViewer. A workstation test cannot catch that: a
-#   developer's own account usually has broader rights, so testing locally
-#   proves nothing about what the training job will be allowed to do.
-#
-#   On the VM the service account is the ambient identity, so this script
-#   exercises the true production credential end to end.
+# A workstation account usually has broader rights than the VM service account
+# (a run once failed with 403 on objectViewer), so this must run on the VM.
 #
 # It writes a few hundred KB, reads it back, compares checksums and deletes it.
 # It never touches a production checkpoint.

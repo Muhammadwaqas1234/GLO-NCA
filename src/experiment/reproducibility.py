@@ -1,11 +1,7 @@
-r"""Reproducibility helpers: seeding and RNG-state capture / restore.
+r"""Seeding and RNG-state capture/restore.
 
-Honest scope: seeding + RNG-state capture makes runs *reproducible in practice*
-and lets a resume continue the same RNG stream. It does NOT force full
-bit-exact determinism (that would require cudnn deterministic algorithms and
-disabling non-deterministic CUDA ops, which can change results and slow
-training). We therefore capture and restore states but do not claim guaranteed
-determinism -- see ``describe()``.
+Runs are reproducible in practice and a resume continues the same RNG stream;
+full bit-exact CUDA determinism is not enforced (see ``describe()``).
 """
 from __future__ import annotations
 
@@ -17,8 +13,7 @@ import torch
 
 
 def set_all_seeds(seed: int) -> None:
-    """Seed Python, NumPy and PyTorch (CPU + CUDA). Mirrors the original
-    ``set_seed`` in train.py so behaviour is unchanged."""
+    """Seed Python, NumPy and PyTorch (CPU + CUDA)."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -52,12 +47,11 @@ def restore_rng_state(state: Dict[str, Any]) -> None:
         try:
             torch.cuda.set_rng_state_all([_as_byte_tensor(s) for s in state["torch_cuda"]])
         except Exception:
-            pass  # GPU count/config changed between runs; skip rather than crash
+            pass  # GPU config changed between runs; skip
 
 
 def _as_byte_tensor(x: Any) -> torch.Tensor:
-    """torch RNG states must be uint8 CPU tensors; checkpoints may reload them
-    as generic tensors, so coerce defensively."""
+    """Coerce a reloaded torch RNG state to a uint8 CPU tensor."""
     if isinstance(x, torch.Tensor):
         return x.to(dtype=torch.uint8, device="cpu")
     return torch.tensor(x, dtype=torch.uint8)
