@@ -49,19 +49,30 @@ def main() -> int:
     except Exception as exc:
         record("PyTorch", "FAIL", str(exc)); critical_fail = True
 
-    # --- dataset + validation ---
+    # --- dataset + validation (same data-quality policy as the runner) ---
     from src.experiment import datasource
     root = datasource.resolve_data_root(args.data_root)
     if root:
         record("Dataset exists", "PASS", root)
         try:
+            from src.experiment.config import load_config
+            from src.experiment.data_quality import load_policy
             from src.experiment.dataset_validation import validate_dataset
-            rep = validate_dataset(root, limit=None)
+            cfg_path = args.config if os.path.exists(args.config) else os.path.join(_REPO, args.config)
+            cfg = load_config(cfg_path)
+            dq_path = (cfg.section("data") or {}).get("quality_policy_file", "__unset__")
+            policy = None if dq_path is None else load_policy(
+                None if dq_path == "__unset__" else dq_path)
+            rep = validate_dataset(root, modalities=list(cfg.get("dataset", "modalities")),
+                                   limit=None, policy=policy)
+            tolerated = len(rep.get("tolerated_cases") or {})
             if rep["result"] == "PASS":
-                record("Dataset validation", "PASS", f"{rep['patient_count']} cases")
+                record("Dataset validation", "PASS",
+                       f"{rep['patient_count']} cases ({tolerated} tolerated by policy)")
             else:
+                bad = [p["patient"] for p in rep.get("patients", []) if not p.get("ok")]
                 record("Dataset validation", "FAIL",
-                       f"{rep['failed_patients']} bad cases"); critical_fail = True
+                       f"{rep['failed_patients']} bad cases: {bad[:10]}"); critical_fail = True
         except Exception as exc:
             record("Dataset validation", "FAIL", str(exc)); critical_fail = True
     else:
