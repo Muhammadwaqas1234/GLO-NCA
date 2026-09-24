@@ -1,7 +1,4 @@
-r"""Capture the runtime environment for an experiment: software versions, GPU
-info, git commit, and a pip freeze. Everything is best-effort -- a missing tool
-records "unavailable" rather than crashing a long run.
-"""
+r"""Best-effort capture of software versions, GPU, git commit and pip freeze; missing tools record "unavailable"."""
 from __future__ import annotations
 
 import platform
@@ -74,8 +71,7 @@ def pip_freeze() -> str:
 
 
 def write_environment(ws) -> Dict[str, Any]:
-    """Write config/environment.txt, config/pip_freeze.txt, config/git_commit.txt
-    into the experiment workspace and return a summary dict for the manifest."""
+    """Write environment, pip-freeze and git-commit files to the workspace; return a manifest summary."""
     versions = software_versions()
     gpu = gpu_info()
     git = git_info()

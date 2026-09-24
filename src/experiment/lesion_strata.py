@@ -1,29 +1,12 @@
-"""Lesion-size stratified evaluation (ANALYSIS ONLY).
+"""Lesion-size stratified evaluation (analysis only).
 
-Groups already-computed per-case diagnostic rows into lesion-size strata and
-reports the existing metrics within each stratum. This is pure post-processing
-over ``per_case_diagnostics.build_rows`` output:
+Groups existing per-case rows by ground-truth lesion size and reports the same
+metrics per stratum. No extra model pass; no effect on training, thresholds,
+checkpoint selection or stopping.
 
-  * no additional model forward passes
-  * no change to Dice / IoU / HD95 computation
-  * no influence on training, thresholds, checkpoint selection or stopping
-  * no access to any split the caller does not already hold
-
-UNITS -- read before interpreting any number produced here.
-
-Each case is foreground-cropped to its own brain bounding box and then
-resampled to the 128^3 working volume, so the scale factor DIFFERS PER CASE and
-no voxel spacing is carried through the pipeline. Ground-truth sizes are
-therefore counted in RESAMPLED VOXELS of the 128^3 grid, which are not a
-physical volume and are only approximately comparable between cases.
-
-The bin edges below are consequently declared as ANALYSIS BINS, not clinical
-categories. The repository defines no BraTS-METS size convention and none is
-invented here: the defaults simply split the observed range into small / medium
-/ large and are configurable. Do not describe them as clinically meaningful.
-
-Stratification uses GROUND TRUTH only, never predictions, so a case's stratum
-does not depend on model quality.
+Sizes are in resampled voxels of the 128³ grid (per-case scale factor, not
+mm³), so the bins are analysis bins, not clinical categories. Strata use
+ground truth only, never predictions.
 """
 from __future__ import annotations
 
@@ -35,17 +18,14 @@ import numpy as np
 
 REGIONS = ["WT", "TC", "ET"]
 
-# Analysis bins in resampled voxels of the 128^3 grid. Upper edge exclusive;
-# the final stratum is unbounded. NOT clinical categories -- see module docstring.
+# Analysis bins in resampled 128³ voxels; upper edge exclusive, last bin unbounded.
 DEFAULT_STRATA: List[tuple] = [
     ("small", 0, 100),
     ("medium", 100, 1000),
     ("large", 1000, None),
 ]
 
-# A region absent from the ground truth is not a "small lesion"; it is a
-# different evaluation case entirely and gets its own stratum so that empty-GT
-# cases can never depress or inflate a size stratum's Dice.
+# Empty ground truth gets its own stratum so it cannot distort size-stratum Dice.
 ABSENT = "absent_gt"
 
 
@@ -66,14 +46,7 @@ def _mean(values: Sequence[float]):
 
 def stratify(rows: Sequence[dict],
              strata: Sequence[tuple] = DEFAULT_STRATA) -> List[dict]:
-    """One output row per (region, stratum).
-
-    Reads only ``gt_vox_{r}``, ``pred_vox_{r}``, ``dice_{r}``, ``iou_{r}``,
-    ``hd95_{r}`` and ``failure_reason``, all of which the per-case diagnostics
-    already produce. HD95 is averaged over VALID cases only and the undefined
-    ones are counted separately -- an undefined surface distance is never
-    replaced with zero.
-    """
+    """One row per (region, stratum); HD95 averages valid cases only and never substitutes zero."""
     names = [s[0] for s in strata] + [ABSENT]
     out: List[dict] = []
 

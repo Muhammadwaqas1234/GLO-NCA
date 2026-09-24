@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# GLO-NCA V2 cloud -- shared shell library (sourced by every script).
-# Provides: config loading, coloured PASS/WARN/FAIL logging, gcloud/gcs helpers,
-# and safety guards. No secrets live here.
+# GLO-NCA cloud shared shell library: config loading, PASS/WARN/FAIL logging,
+# gcloud/GCS helpers and safety guards. No secrets.
 # =============================================================================
 set -euo pipefail
 
@@ -34,6 +33,10 @@ load_config() {
   EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-experiments}"
   VM_DATA_DIR="${VM_DATA_DIR:-/data}"
   VM_OUT_DIR="${VM_OUT_DIR:-/out}"
+  VM_CACHE_DIR="${VM_CACHE_DIR:-/cache}"
+  # Dataset-scan threads. Each thread may hold a whole large case in float64
+  # (up to ~3 GB for 640x640x392), so the default stays well inside VM RAM.
+  VALIDATE_WORKERS="${VALIDATE_WORKERS:-4}"
   VM_WORKSPACE="${VM_WORKSPACE:-/opt/glo-nca}"
   SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-300}"
   GCS_ROOT="gs://${GCS_BUCKET}"
@@ -71,15 +74,9 @@ confirm() { # confirm "message" -- interactive guard for anything spendy
   [[ "${ans}" == "y" || "${ans}" == "Y" ]] || die "aborted by user."
 }
 
-# --- training concurrency guard (Phase 2, P1) --------------------------------
-# The previous guard wrote `$$` -- the LAUNCHER shell's pid -- into a lock file,
-# but training actually runs under systemd. The launcher exits immediately, so
-# that pid was always dead and the guard reported "not running" while training
-# was live, allowing a SECOND run to start on the same GPU. It could also leave
-# a stale lock behind when the operator declined the confirmation prompt.
-#
-# systemd already tracks the real job, so it is the single source of truth.
-# The lock file is kept only as a human-readable breadcrumb.
+# --- training concurrency guard ------------------------------------------------
+# systemd tracks the real job and is the source of truth; the lock file is only
+# a human-readable breadcrumb.
 TRAIN_UNIT="glo-nca-training"
 TRAIN_LOCK="/tmp/glo-nca-training.lock"
 
@@ -87,14 +84,11 @@ training_is_active() { # 0 = a training job is genuinely running
   systemctl is-active --quiet "${TRAIN_UNIT}" 2>/dev/null
 }
 
-# --- image identity guard ----------------------------------------------------
-# The training container reads its code AND its config from inside the image,
-# not from the host checkout. An image built from an older commit therefore
-# trains a DIFFERENT model with no error: a normal-looking run of the wrong
-# thesis configuration. setup_gcp.sh stamps the image with the commit it was
-# built from (label glo.commit); every launcher calls this before using it.
-# `-c safe.directory` avoids git's "dubious ownership" refusal when the
-# workspace is owned by root, which would otherwise block this check falsely.
+# --- image identity guard ------------------------------------------------------
+# The container runs the code and config baked into the image, so an image from
+# an older commit would silently train a different model. setup_gcp.sh stamps
+# glo.commit; every launcher checks it. -c safe.directory avoids git's
+# dubious-ownership refusal on a root-owned workspace.
 assert_image_matches_repo() {
   local repo="${1:-${VM_WORKSPACE}}" img head
   docker image inspect glo-nca:latest >/dev/null 2>&1     || die "docker image glo-nca:latest missing. Run setup_gcp.sh."
@@ -108,6 +102,51 @@ assert_image_matches_repo() {
   git -c safe.directory="${repo}" -C "${repo}" diff --quiet HEAD --     || die "repo ${repo} has uncommitted changes to tracked files, so the image
        cannot correspond to one commit. Commit or reset them, then run setup_gcp.sh."
   pass "image glo-nca:latest matches repo commit ${head:0:12}"
+}
+
+# --- persistent preprocessing cache ------------------------------------------------
+# The container's /app/.cache (preprocessing + dataset-validation caches) is
+# bind-mounted from VM_CACHE_DIR so `docker run --rm` and Spot restarts keep it.
+ensure_cache_dir() {
+  if [[ ! -d "${VM_CACHE_DIR}" ]]; then
+    sudo mkdir -p "${VM_CACHE_DIR}" && sudo chown "$USER" "${VM_CACHE_DIR}" \
+      || die "cannot create cache dir ${VM_CACHE_DIR}"
+  fi
+  [[ -w "${VM_CACHE_DIR}" ]] || sudo chown "$USER" "${VM_CACHE_DIR}" \
+    || die "cache dir ${VM_CACHE_DIR} is not writable"
+  pass "persistent cache dir ${VM_CACHE_DIR} (mounted at /app/.cache)"
+}
+
+# --- repo Python with the training image's dependencies ---------------------------
+# The VM host has no torch / numpy / nibabel / pyyaml; the training image does.
+# repo_python runs Python inside glo-nca:latest with the checkout and any given
+# host paths bind-mounted at identical paths, so arguments need no translation.
+# Without the image it falls back to host Python only if those packages import.
+# Usage: repo_python [--gpu] [--ro PATH]... [--rw PATH]... [--env K=V]... -- <python args...>
+repo_python() {
+  local extra=() envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    case "$1" in
+      --gpu) extra+=(--gpus all); shift ;;
+      --ro)  extra+=(-v "$2:$2:ro"); shift 2 ;;
+      --rw)  extra+=(-v "$2:$2"); shift 2 ;;
+      --env) extra+=(-e "$2"); envs+=("$2"); shift 2 ;;
+      *) die "repo_python: unknown option $1" ;;
+    esac
+  done
+  [[ "${1:-}" == "--" ]] && shift
+  if docker image inspect glo-nca:latest >/dev/null 2>&1; then
+    docker run --rm --shm-size=8g --user "$(id -u):$(id -g)" -e HOME=/tmp \
+      -e GLO_VALIDATE_WORKERS="${VALIDATE_WORKERS:-4}" \
+      -v "${REPO_DIR}:${REPO_DIR}:ro" -w "${REPO_DIR}" "${extra[@]+"${extra[@]}"}" \
+      --entrypoint python glo-nca:latest "$@"
+  else
+    local py; py="$(command -v python3 || command -v python || true)"
+    [[ -n "${py}" ]] && "${py}" -c "import torch, numpy, nibabel, yaml" 2>/dev/null \
+      || die "no glo-nca:latest image, and host Python lacks torch/numpy/nibabel/pyyaml.
+       On the VM run setup_gcp.sh (builds the image); elsewhere install those packages."
+    (cd "${REPO_DIR}" && env GLO_VALIDATE_WORKERS="${VALIDATE_WORKERS:-4}" "${envs[@]+"${envs[@]}"}" "${py}" "$@")
+  fi
 }
 
 assert_no_training_running() {

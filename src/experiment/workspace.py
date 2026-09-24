@@ -1,9 +1,4 @@
-r"""Experiment directory management.
-
-Creates a unique, timestamped experiment directory with the full Phase 1 layout
-and never overwrites a previous run. Also owns ``status.json`` (a live progress
-file) and helpers to write the manifest / reports.
-"""
+r"""Experiment directory management: unique timestamped runs, status.json and report helpers."""
 from __future__ import annotations
 
 import json
@@ -21,7 +16,7 @@ SUBDIRS = [
 ]
 
 STATUS_STATES = (
-    "initializing", "validating", "training",
+    "initializing", "validating", "training", "paused",
     "evaluating", "packaging", "completed", "failed",
 )
 
@@ -37,17 +32,11 @@ class Workspace:
     root: str
     experiment_id: str
 
-    # --------------------------------------------------------------- creation
+    # Creation.
     @classmethod
     def create(cls, base: str, name: str,
                experiment_id: Optional[str] = None) -> "Workspace":
-        """Create a fresh experiment directory: base/<name>-<timestamp>/.
-
-        ``experiment_id`` pins the directory name exactly (used by the cloud
-        entrypoint, which generates the id BEFORE launching so the GCS sync
-        watcher never has to guess which directory is the live experiment).
-        An existing directory is still refused rather than overwritten.
-        """
+        """Create base/<name>-<timestamp>/; ``experiment_id`` pins the name. Never overwrites."""
         if experiment_id:
             root = os.path.join(base, experiment_id)
             if os.path.exists(root):
@@ -60,7 +49,7 @@ class Workspace:
 
         experiment_id = f"{name}-{_timestamp()}"
         root = os.path.join(base, experiment_id)
-        # Extremely unlikely, but guarantee uniqueness rather than overwrite.
+        # Guarantee uniqueness rather than overwrite.
         suffix = 1
         while os.path.exists(root):
             experiment_id = f"{name}-{_timestamp()}-{suffix}"
@@ -80,7 +69,7 @@ class Workspace:
             os.makedirs(os.path.join(root, sub), exist_ok=True)
         return cls(root=root, experiment_id=os.path.basename(root.rstrip(os.sep)))
 
-    # ------------------------------------------------------------------ paths
+    # Paths.
     def path(self, *parts: str) -> str:
         return os.path.join(self.root, *parts)
 
@@ -103,7 +92,7 @@ class Workspace:
     def manifest_path(self) -> str:
         return self.path("experiment_manifest.json")
 
-    # ----------------------------------------------------------------- status
+    # Status.
     def write_status(self, state: str, **extra: Any) -> None:
         """Atomically write status.json with the current state and progress."""
         assert state in STATUS_STATES, f"unknown status {state!r}"

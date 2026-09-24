@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Runs ON THE GPU VM. Idempotent: prepares Docker + NVIDIA Container Toolkit,
-# checks out the repo, builds the image, and creates the data/out dirs.
-# Deep Learning VM images already ship the NVIDIA driver, Docker and the
-# container toolkit; this script only fills gaps and never destroys state.
+# Runs on the GPU VM; idempotent. Fills Docker / NVIDIA toolkit gaps, checks out
+# the repo, creates data/out dirs and builds the commit-stamped image.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-log "GLO-NCA V2 VM setup (idempotent)"
+log "GLO-NCA VM setup (idempotent)"
 
 # --- Docker ---
 if command -v docker >/dev/null 2>&1; then pass "docker present"
@@ -26,9 +24,7 @@ else
 fi
 
 # --- repo checkout ---
-# Phase 2 (P1): the branch was hard-coded to 'v2', so a VM provisioned for the
-# V3 campaign silently received the V2 baseline WITHOUT the V3 model, agent or
-# configs. Default to the V3 branch; override with GLO_BRANCH for a V2 run.
+# Production branch by default; override with GLO_BRANCH.
 GLO_BRANCH="${GLO_BRANCH:-v3-multilevel}"
 if [[ -d "${VM_WORKSPACE}/.git" ]]; then
   pass "repo already at ${VM_WORKSPACE}"
@@ -42,17 +38,18 @@ else
   sudo mkdir -p "${VM_WORKSPACE}"; sudo chown "$USER" "${VM_WORKSPACE}"
   git clone -b "${GLO_BRANCH}" https://github.com/Muhammadwaqas1234/GLO-NCA.git "${VM_WORKSPACE}"
 fi
-# Prove the checkout actually contains V3 before building an image from it.
+# The checkout must contain the model and the canonical split before building.
 [[ -f "${VM_WORKSPACE}/src/models/Model_GLO_NCA_V3.py" \
    && -f "${VM_WORKSPACE}/split/master_split.json" ]] \
-  || die "checkout at ${VM_WORKSPACE} (branch ${GLO_BRANCH}) is missing the V3
+  || die "checkout at ${VM_WORKSPACE} (branch ${GLO_BRANCH}) is missing the GLO-NCA
        model and/or the canonical split. Refusing to build a broken image."
-pass "checkout verified: V3 model + canonical split present (branch ${GLO_BRANCH})"
+pass "checkout verified: GLO-NCA model + canonical split present (branch ${GLO_BRANCH})"
 
 # --- data / out dirs ---
-sudo mkdir -p "${VM_DATA_DIR}" "${VM_OUT_DIR}"
-sudo chown "$USER" "${VM_DATA_DIR}" "${VM_OUT_DIR}" || true
-pass "data dir ${VM_DATA_DIR}, out dir ${VM_OUT_DIR} ready"
+# VM_CACHE_DIR persists the preprocessing cache across containers (mounted at /app/.cache).
+sudo mkdir -p "${VM_DATA_DIR}" "${VM_OUT_DIR}" "${VM_CACHE_DIR}"
+sudo chown "$USER" "${VM_DATA_DIR}" "${VM_OUT_DIR}" "${VM_CACHE_DIR}" || true
+pass "data dir ${VM_DATA_DIR}, out dir ${VM_OUT_DIR}, cache dir ${VM_CACHE_DIR} ready"
 
 # --- build image ---
 log "building Docker image glo-nca:latest (uses the Phase 1 Dockerfile)"

@@ -1,12 +1,6 @@
-r"""Bounded PyTorch-profiler integration.
+r"""Bounded torch.profiler integration: a short window of iterations exported as a Chrome trace.
 
-Deliberately bounded: an unrestricted ``torch.profiler`` run over a whole epoch
-produces multi-GB traces and distorts the very timings we are trying to measure.
-This wraps a short, explicit window (a handful of iterations) and exports a
-Chrome trace to the run's ``profiler/`` directory.
-
-Returns a null context when disabled or when torch.profiler is unavailable, so
-callers need no version branching.
+Returns a null context when disabled or unavailable.
 """
 from __future__ import annotations
 
@@ -24,11 +18,7 @@ def torch_profiler(out_dir: str, *, enabled: bool = False,
                    active: int = 3, warmup: int = 1, wait: int = 1,
                    record_shapes: bool = True, profile_memory: bool = True,
                    with_stack: bool = False):
-    """Bounded profiler context.
-
-    Yields the profiler (or ``None``). Call ``.step()`` once per iteration when
-    a profiler object is yielded.
-    """
+    """Bounded profiler context; yields the profiler (call .step() per iteration) or None."""
     if not enabled:
         return _null()
     try:

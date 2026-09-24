@@ -1,42 +1,24 @@
-r"""
-================================================================================
-GLO-NCA V3 -- training entry point (config-driven, reproducible, resumable)
-================================================================================
-Global Context-Aware Neural Cellular Automata for multi-modal (BraTS) brain
-tumour segmentation. This CLI is a thin wrapper: all training logic lives in
-``src/experiment/`` and the GLO-NCA V2 methodology (model, dataset, loss, EMA,
-grad-clip, cosine LR, smoothed best-epoch, val-only threshold tuning, single-pass
-evaluation) is UNCHANGED from the established recipe.
+r"""GLO-NCA training entry point (config-driven, reproducible, resumable).
 
-Every run creates a fresh, self-contained experiment directory under
-``experiments/`` (never overwriting a previous run) containing checkpoints,
-metrics CSVs, graphs, TensorBoard logs, a training log, the exact config, the
-patient split, the environment capture, a status file and a manifest.
+Thin CLI wrapper; all training logic lives in ``src/experiment/``. Each run
+writes a fresh experiment directory under ``experiments/``.
 
 Usage:
-    # THE production run. This is the model the thesis trains.
+    # Production run.
     python train.py --config configs/glo_nca_production.yaml
 
-    # resume an interrupted run (e.g. after a Spot preemption)
+    # Resume an interrupted run (e.g. after a Spot preemption).
     python train.py --resume experiments/<run-id>
 
-    # continue past the planned budget, explicitly and on the record
+    # Continue a completed run past its planned budget.
     python train.py --resume experiments/<run-id> --extend-to 310 \
                     --extension-reason "validation still improving"
 
-configs/glo_nca_production.yaml is the ONLY production configuration. Every
-other config in configs/ is historical -- V2-era baselines and the frozen V3
-reference -- and trains a DIFFERENT architecture. They remain in the tree
-because audit scripts and thesis evidence cite them, not because they are
-alternatives. Verify before a long run:
+configs/glo_nca_production.yaml is the only production configuration. Verify
+it before a long run:
 
     python scripts/verify_glo_nca_production_config.py \
         configs/glo_nca_production.yaml
-
-Legacy note: the old env-variable interface (EPOCHS/PATCH/AUG_LEVEL/...) is
-replaced by YAML configs so every run has an exact, saved record. The kaggle_v*
-scripts remain untouched as experiment history.
-================================================================================
 """
 import argparse
 import os
@@ -50,10 +32,8 @@ if _HERE not in sys.path:
 
 def _parse_args():
     ap = argparse.ArgumentParser(
-        description="GLO-NCA V2 training (config-driven, reproducible).")
-    # Phase 2: no default config. V3 is the production architecture, and the old
-    # default (extra/configs/historical/gcp_full.yaml) was the V2 baseline -- a bare
-    # `python train.py` silently trained the wrong model. Be explicit.
+        description="GLO-NCA training (config-driven, reproducible).")
+    # No default config: a bare run must fail rather than train the wrong model.
     ap.add_argument("--config", default=None,
                     help="path to a YAML config, e.g. configs/glo_nca_production.yaml "
                          "(required unless --resume is given)")
@@ -71,11 +51,7 @@ def _parse_args():
                          "passes it so the GCS sync watcher knows the experiment "
                          "id up front instead of guessing the newest directory.")
 
-    # --- explicit continuation past the planned budget ----------------------
-    # `--resume` continues an UNFINISHED run toward its original
-    # `training.epochs`. `--extend-to` continues a run that already REACHED
-    # that budget, and records the continuation so the two are never confused
-    # in the thesis record.
+    # --resume finishes an unfinished run; --extend-to continues a completed one.
     ap.add_argument("--extend-to", metavar="EPOCH", type=int, default=None,
                     help="continue a COMPLETED run past its planned budget, "
                          "e.g. --extend-to 301. Requires --resume and a "
@@ -88,10 +64,16 @@ def _parse_args():
                     help="learning-rate policy for --extend-to. "
                          "'freeze' (default, production-safe) holds the LR at "
                          "eta_min, leaving the original 1..N decay intact. "
-                         "'continue' steps the saved cosine onward, which "
-                         "RAISES the LR past T_max (a warm restart). "
+                         "'continue' steps the saved scheduler onward; the "
+                         "production WarmupCosineLR holds at eta_min past the "
+                         "horizon (a legacy CosineAnnealingLR would rise again). "
                          "'rebuild' re-fits the cosine to the new horizon, "
                          "retroactively changing the original curve.")
+    ap.add_argument("--stop-after-epoch", metavar="EPOCH", type=int, default=None,
+                    help="pause after this epoch: write its full checkpoint and exit "
+                         "before any end-of-run evaluation (the test split is not "
+                         "read). The planned budget and LR schedule are unchanged; "
+                         "continue later with --resume.")
     ap.add_argument("--extension-reason", default=None,
                     help="why the run is being continued. Recorded in "
                          "extension.json for the thesis record. Required with "
@@ -102,21 +84,11 @@ def _parse_args():
 def main() -> int:
     args = _parse_args()
 
-    # Phase 5 (B-01): validate the CLI contract BEFORE importing torch. These two
-    # guards are pure argument checks that need no heavy module, but they used to
-    # sit after `import runner` (which pulls in torch), so a misinvocation paid a
-    # ~210 s import before being told it was invalid -- and a bare `train.py`
-    # could not be checked under a sane timeout. Same exit code (2), same
-    # message, same conditions; only the import is deferred past them. Nothing on
-    # the successful training path is reordered.
+    # Validate CLI arguments before importing torch (fail fast, exit code 2).
     if not args.resume and not args.config:
         print("FAILED: --config is required (or use --resume <dir>).\n"
               "  production: python train.py --config configs/glo_nca_production.yaml")
         return 2
-    # Final audit (B-02): a mistyped --config path previously paid the ~13 s torch
-    # import and then died with a raw FileNotFoundError traceback (rc=1). A wrong
-    # path is the most likely production invocation mistake, so check it here --
-    # before the heavy imports -- and report it the same way as the other guards.
     if args.config and not os.path.isfile(args.config):
         print(f"FAILED: config not found: {args.config}\n"
               "  production: python train.py --config configs/glo_nca_production.yaml")
@@ -129,9 +101,7 @@ def main() -> int:
                   "reproducibly; refusing to substitute a different config.")
             return 2
 
-    # --- continuation contract (checked before the heavy imports) -----------
-    # An extension continues a specific completed run, so it needs that run's
-    # directory and a stated justification. Both are cheap argument checks.
+    # An extension needs the parent run directory and a stated reason.
     if args.extend_to is not None:
         if not args.resume:
             print("FAILED: --extend-to requires --resume <experiment-dir>.\n"
@@ -154,6 +124,10 @@ def main() -> int:
                   f"learning-rate trajectory. 'freeze' is the production-safe "
                   f"policy; anything else is a separate experiment.")
 
+    if args.stop_after_epoch is not None and args.stop_after_epoch < 1:
+        print(f"FAILED: --stop-after-epoch {args.stop_after_epoch} is not a valid epoch.")
+        return 2
+
     from src.experiment.config import load_config
     from src.experiment.workspace import Workspace
     from src.experiment import runner
@@ -162,10 +136,7 @@ def main() -> int:
         ws = Workspace.open_existing(args.resume)
         cfg_path = ws.path("config", "config.yaml")
         if not os.path.exists(cfg_path):
-            # Phase 2 (P0): NEVER fall back to --config here. Its default is the
-            # V2 baseline (extra/configs/historical/gcp_full.yaml), so the old fallback could
-            # resume a V3 experiment under a V2 configuration. A resume without
-            # its own saved config is unreproducible -- fail loudly instead.
+            # Never fall back to --config: resume must use the run's own config.
             print(f"FAILED: cannot resume {args.resume}: missing {cfg_path}.\n"
                   "The experiment's own config is required to resume "
                   "reproducibly; refusing to substitute a different config.")
@@ -178,12 +149,7 @@ def main() -> int:
                   "  production: python train.py --config configs/glo_nca_production.yaml")
             return 2
         cfg = load_config(args.config)
-        # Final audit (B-03): an invalid --device previously failed only once the
-        # runner tried to use it -- AFTER Workspace.create() had already made a
-        # timestamped experiment directory, leaving an empty junk directory in
-        # experiments/ for every typo. Validate the string first; this only parses
-        # the device and does not select, initialise or allocate on it, so the
-        # normal training path is unaffected.
+        # Validate --device before creating the experiment directory.
         if args.device:
             try:
                 import torch as _torch
@@ -201,12 +167,13 @@ def main() -> int:
         result = runner.run(cfg, ws, resume=resume, device_str=args.device,
                             extend_to=args.extend_to,
                             lr_policy=args.lr_policy,
-                            extension_reason=args.extension_reason)
+                            extension_reason=args.extension_reason,
+                            stop_after_epoch=args.stop_after_epoch)
     except KeyboardInterrupt:
         ws.write_status("failed", error="interrupted by user")
         print("\nInterrupted -- status set to failed; last.pth is on disk to resume.")
         return 130
-    except Exception as exc:  # top-level guard: record, then exit non-zero
+    except Exception as exc:  # Record the failure, then exit non-zero.
         with open(ws.path("reports", "failure_report.txt"), "a", encoding="utf-8") as fh:
             fh.write("\nUNCAUGHT EXCEPTION\n" + "=" * 40 + "\n")
             fh.write(f"{type(exc).__name__}: {exc}\n\n")
@@ -217,6 +184,10 @@ def main() -> int:
               f"{ws.path('logs', 'training.log')}")
         return 1
 
+    if result.get("status") == "paused":
+        print(f"PAUSED after epoch {result.get('epoch')}; continue with "
+              f"--resume {ws.root}")
+        return 0
     return 0 if result.get("status") == "completed" else 1
 
 

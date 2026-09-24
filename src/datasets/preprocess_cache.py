@@ -1,60 +1,16 @@
 r"""Deterministic preprocessing cache for the BraTS pipeline.
 
-WHAT IS CACHED (and why it is safe)
------------------------------------
-Only the **deterministic** head of ``Nii_Gz_Dataset_3D.__getitem__``:
+Caches only the deterministic head of Nii_Gz_Dataset_3D.__getitem__:
+NIfTI load -> foreground crop -> resample to the 128³ working volume -> WT/TC/ET labels.
+Patchify, augmentation, per-(epoch, case) seeding and sampling still run every epoch.
+Lookups consume no random numbers, so cached and uncached runs draw identical sequences.
 
-    NIfTI load -> foreground crop -> resample -> label conversion (WT/TC/ET)
+Format: torch.save of image float32 + label uint8 (lossless, restored to float32);
+.pt reads far faster than npz or NIfTI.
 
-Every one of those steps is a pure function of (case files, configured size,
-crop/rescale flags). Verified empirically: running that stage twice under
-*different* RNG seeds produces byte-identical arrays.
-
-WHAT IS **NOT** CACHED (deliberately)
--------------------------------------
-Everything stochastic stays at runtime, recomputed every epoch:
-
-    patchify (random position, ET-aware retries), augmentation, per-(epoch,case)
-    RNG seeding, sampler order, threshold decisions, model outputs.
-
-Caching any of those would freeze randomness across epochs and silently change
-the science. The cache is inserted at exactly the point the in-memory
-``Data_Container`` already used, so the runtime stochastic path is untouched.
-
-RNG NEUTRALITY
---------------
-Cache lookup, read and write consume **no** ``random`` / ``numpy`` / ``torch``
-random numbers. A cache hit and a cache miss leave the RNG in the same state, so
-a cached run and an uncached run draw the identical stochastic sequence.
-
-FORMAT
-------
-``torch.save`` of two tensors, chosen by measurement at production volume size
-(128^3, 4 modalities + 3 regions):
-
-    format              write        read      size
-    npz (uncompressed)  168.6 ms   188.7 ms   56.0 MB
-    npz (compressed)   6885.3 ms   815.9 ms   29.7 MB
-    torch .pt           166.7 ms    27.9 ms   56.0 MB   <- chosen
-    npz uint8 label     118.7 ms   115.8 ms   38.0 MB
-
-``.pt`` reads ~6.8x faster than npz and ~54x faster than the measured 1517 ms
-NIfTI materialisation. Compressed npz is disqualified by its 6.9 s write.
-Labels are stored as uint8 (they are strictly binary, so this is lossless) and
-restored to float32 on load, preserving the exact dtype the pipeline expects.
-
-SAFETY
-------
-* identity-aware: a key derived from dataset root, case id, modality order,
-  target size, crop/rescale flags, label-conversion version and cache format
-  version. Any mismatch is a **miss**, never a silent reuse.
-* fail-closed validation: shape, dtype, channel count and binary-label
-  invariants are checked on every read; anything unexpected is treated as a
-  miss and the entry is rebuilt from source.
-* atomic writes: unique temp file + ``os.replace``, so a crashed or concurrent
-  write can never leave a half-written entry visible.
-* multiprocessing-safe: each DataLoader worker writes its own temp file; the
-  final rename is atomic, so concurrent workers cannot corrupt an entry.
+Safety: identity-keyed (root, case, modality order, size, flags, label and format
+versions); every read is validated and any mismatch is a miss; writes use a unique
+temp file + os.replace, so concurrent workers cannot expose a partial entry.
 """
 from __future__ import annotations
 
@@ -66,8 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-# Bump when the deterministic preprocessing contract changes in a way that makes
-# previously written entries invalid (e.g. a different resample or label rule).
+# Bump when the deterministic preprocessing changes (invalidates old entries).
 CACHE_FORMAT_VERSION = "glonca-precache-v1"
 LABEL_CONVERSION_VERSION = "wt-tc-et-v1"   # _labels_to_regions semantics
 
@@ -115,10 +70,7 @@ class PreprocessCache:
 
     # ----------------------------------------------------------------- read
     def get(self, case_id: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Return (img, label) or ``None``. Consumes no random numbers.
-
-        Any corruption, truncation, identity mismatch or invariant violation is
-        reported as a MISS (never as bad data), and the caller rebuilds."""
+        """Return (img, label) or None; any corruption or mismatch is a miss. Consumes no random numbers."""
         if not self.enabled:
             return None
         p = self.path_for(case_id)
@@ -144,7 +96,7 @@ class PreprocessCache:
             return None
 
         self.hits += 1
-        # labels are stored uint8 (lossless: strictly binary) -> restore dtype
+        # Labels stored as uint8 (binary, lossless); restore float32.
         return img, lab.astype(np.float32, copy=False)
 
     def _validate(self, img, lab, meta) -> bool:
@@ -173,14 +125,11 @@ class PreprocessCache:
         try:
             import torch
             final = self.path_for(case_id)
-            # Unique temp file per writer: several DataLoader workers may build
-            # the same case concurrently. Each writes its own temp file and the
-            # rename is atomic, so a reader never observes a partial file and
-            # the losing writer merely overwrites with identical bytes.
+            # Unique temp file per writer; the atomic rename means readers never see a partial file.
             fd, tmp = tempfile.mkstemp(dir=self.directory, suffix=".tmp")
             os.close(fd)
             torch.save({"img": torch.from_numpy(np.ascontiguousarray(img)),
-                        # binary labels -> uint8 is lossless and ~4x smaller
+                        # Binary labels -> uint8: lossless, about 4x smaller.
                         "lab": torch.from_numpy(
                             np.ascontiguousarray(lab).astype(np.uint8)),
                         "meta": json.dumps(self.identity(), sort_keys=True)},
@@ -204,8 +153,7 @@ class PreprocessCache:
                 "writes": self.writes, "invalid_entries": self.invalid,
                 "hit_rate": round(self.hits / total, 4) if total else None}
 
-    # Cache objects travel to DataLoader workers; keep them trivially picklable
-    # (plain attributes only -- no file handles, locks or torch module refs).
+    # Cache objects are sent to DataLoader workers; keep them picklable (plain attributes only).
     def __getstate__(self):
         return self.__dict__.copy()
 

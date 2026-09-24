@@ -1,7 +1,4 @@
-r"""Per-case statistics for thesis reporting: mean / median / std, and an
-optional bootstrap 95% CI over test cases. Honest by construction -- the CI is
-labelled as bootstrap (not analytical) and records its method + seed + samples.
-"""
+r"""Per-case statistics for reporting: mean/median/std and a bootstrap 95% CI (method, seed and samples recorded)."""
 from __future__ import annotations
 
 import math
@@ -14,14 +11,13 @@ METRICS = ["dice", "iou", "hd95"]
 
 
 def _clean(values: List[float]) -> List[float]:
-    """Drop NaNs (HD95 is NaN when exactly one mask is empty -- undefined)."""
+    """Drop NaNs (HD95 is undefined when a mask is empty)."""
     return [v for v in values if not (isinstance(v, float) and math.isnan(v))]
 
 
 def bootstrap_ci(values: List[float], n_boot: int = 2000, seed: int = 42,
                  alpha: float = 0.05) -> Dict[str, float]:
-    """Bootstrap percentile CI for the mean of ``values``. Returns lo/hi and the
-    method metadata. Not an analytical CI -- resampling over cases."""
+    """Bootstrap percentile CI for the mean of ``values`` (resampling over cases); returns lo/hi and metadata."""
     vals = _clean(values)
     if len(vals) < 2:
         return {"lo": float("nan"), "hi": float("nan"),

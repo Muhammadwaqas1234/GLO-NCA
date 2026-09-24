@@ -1,23 +1,14 @@
 import torch
 
 class DiceLoss(torch.nn.Module):
-    r"""Dice Loss
-    """
+    r"""Dice loss."""
     def __init__(self, useSigmoid = True):
-        r"""Initialisation method of DiceLoss
-            #Args:
-                useSigmoid: Whether to use sigmoid
-        """
+        r"""useSigmoid: apply sigmoid to the input."""
         self.useSigmoid = useSigmoid
         super(DiceLoss, self).__init__()
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-                smooth: Smoothing value
-        """
+        r"""input, target: arrays of the same shape; smooth: Dice smoothing."""
         if self.useSigmoid:
             input = torch.sigmoid(input)  
         input = torch.flatten(input)
@@ -28,18 +19,9 @@ class DiceLoss(torch.nn.Module):
         return 1 - dice
 
 class DiceCELoss(torch.nn.Module):
-    r"""Dice + Cross-Entropy loss for multi-class / multi-label segmentation.
+    r"""Dice + BCE over independent sigmoid channels (nested WT/TC/ET are multi-label).
 
-    Designed for BraTS, where the tumor regions (ET / TC / WT) are *nested*
-    and therefore treated as independent binary channels (multi-label) rather
-    than mutually exclusive softmax classes. Each channel gets a sigmoid, a
-    Dice term and a binary-cross-entropy term; the per-channel losses are
-    averaged. This matches the per-region Dice the Agent loop already computes.
-
-    #Args:
-        useSigmoid: apply sigmoid to logits (set False if inputs are already
-            probabilities).
-        dice_weight / ce_weight: relative weighting of the two terms.
+    useSigmoid: apply sigmoid to logits; dice_weight / ce_weight: term weights.
     """
     def __init__(self, useSigmoid=True, dice_weight=1.0, ce_weight=1.0):
         super(DiceCELoss, self).__init__()
@@ -48,16 +30,7 @@ class DiceCELoss(torch.nn.Module):
         self.ce_weight = ce_weight
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function.
-
-        Accepts either a single channel (input shape == target shape) or a
-        stack of channels, where the last dim indexes the region. The loss is
-        averaged over channels so it is comparable across region counts.
-            #Args:
-                input: raw logits (or probabilities if useSigmoid=False)
-                target: binary ground-truth, same shape as input
-                smooth: Dice smoothing value
-        """
+        r"""Loss averaged over channels (last dim = region); input shape == target shape."""
         if self.useSigmoid:
             input = torch.sigmoid(input)
 
@@ -75,19 +48,7 @@ class DiceCELoss(torch.nn.Module):
 
 
 class TverskyCELoss(torch.nn.Module):
-    r"""Tversky + BCE loss - tuned for small, imbalanced regions (ET / TC).
-
-    Tversky generalises Dice with separate penalties for false positives
-    (alpha) and false negatives (beta). For tiny structures like the enhancing
-    tumour, setting beta > alpha (e.g. 0.7 / 0.3) penalises MISSED tumour voxels
-    harder than false alarms, which raises recall and typically lifts ET/TC Dice
-    compared with plain Dice. A small BCE term keeps gradients stable.
-
-    #Args:
-        alpha: weight on false positives.
-        beta:  weight on false negatives (use beta > alpha for small regions).
-        ce_weight: weight of the auxiliary BCE term.
-    """
+    r"""Tversky + BCE: alpha weights false positives, beta false negatives (beta > alpha favours recall)."""
     def __init__(self, alpha=0.3, beta=0.7, ce_weight=0.5, useSigmoid=True):
         super(TverskyCELoss, self).__init__()
         self.alpha = alpha
@@ -109,17 +70,10 @@ class TverskyCELoss(torch.nn.Module):
 
 
 class FocalTverskyCELoss(torch.nn.Module):
-    r"""Focal Tversky + BCE - focuses learning on the hard, small regions (ET).
+    r"""Focal Tversky + BCE (production loss): Tversky^gamma focuses on hard, small regions such as ET.
 
-    Focal Tversky raises the Tversky loss to a power gamma > 1, which
-    down-weights easy (already well-segmented) voxels and concentrates gradient
-    on the hard cases. Combined with beta > alpha (recall focus), this is the
-    standard SOTA choice for the tiny enhancing-tumour region on BraTS.
-
-    #Args:
-        alpha / beta: false-positive / false-negative weights (beta > alpha).
-        gamma:  focal exponent (1.0 = plain Tversky; ~1.33 is common).
-        ce_weight: weight of the auxiliary BCE term.
+    alpha / beta: false-positive / false-negative weights (production derives alpha = 1 - beta).
+    gamma: focal exponent (1.0 = plain Tversky). ce_weight: auxiliary BCE weight.
     """
     def __init__(self, alpha=0.3, beta=0.7, gamma=1.33, ce_weight=0.5, useSigmoid=True):
         super(FocalTverskyCELoss, self).__init__()

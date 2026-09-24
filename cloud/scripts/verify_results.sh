@@ -25,15 +25,13 @@ EXP_ID="${1:-}"
 [[ -n "${EXP_ID}" ]] || die "usage: verify_results.sh <experiment_id> [--keep-download]"
 KEEP="${2:-}"
 SRC="${GCS_EXPERIMENTS}/${EXP_ID}"
-PYBIN="$(command -v python3 || command -v python)"
 FAILS=0
 mark() { if [ "$1" -eq 0 ]; then pass "$2"; else fail "$2"; FAILS=$((FAILS+1)); fi; }
 
 log "verifying GCS artifacts for ${EXP_ID}"
 gcs_exists "${SRC}"; mark $? "experiment prefix exists in GCS (${SRC})"
 
-# Required artifacts must exist AND be non-zero in GCS. `gcs ls -l` prints a size
-# column; we assert the size is > 0. Checkpoints validated by reload below.
+# Required artifacts must exist in GCS with size > 0; checkpoints are reload-tested below.
 REQUIRED=(
   "experiment_manifest.json"
   "status.json"
@@ -60,12 +58,7 @@ gcs ls "${SRC}/graphs/"  >/dev/null 2>&1; mark $? "graphs/ present in GCS"
 # status must be completed -- UNLESS we are verifying a failed run purely to
 # confirm its artifacts are durably in GCS before releasing the GPU.
 #
-# Phase 2 (P1, cost safety): previously this check hard-required "completed", and
-# delete_vm.sh refuses to delete when verification fails. A CRASHED run could
-# therefore never be cleaned up through the normal path, so the GPU VM kept
-# billing until someone remembered the undocumented --force. ALLOW_FAILED makes
-# the legitimate case explicit and still verifies that everything reachable has
-# been preserved first.
+# ALLOW_FAILED=1 lets a crashed run's artifacts be verified so its VM can be deleted.
 state="$(gcs cat "${SRC}/status.json" 2>/dev/null | grep -o '"state":[^,]*' || true)"
 if [[ "${ALLOW_FAILED:-0}" == "1" ]]; then
   if echo "${state}" | grep -qiE 'completed|failed'; then
@@ -93,10 +86,13 @@ mkdir -p "${TMP}/${EXP_ID}/checkpoints"
 gcs_cp "${SRC}/checkpoints/best.pth" "${TMP}/${EXP_ID}/checkpoints/best.pth" 2>/dev/null || true
 gcs_cp "${SRC}/checkpoints/last.pth" "${TMP}/${EXP_ID}/checkpoints/last.pth" 2>/dev/null || true
 gcs_cp "${SRC}/experiment_manifest.json" "${TMP}/${EXP_ID}/experiment_manifest.json" 2>/dev/null || true
-# Absolute path: this script is invoked by delete_vm.sh from an arbitrary CWD,
-# where the old repo-relative path silently failed and blocked VM cleanup.
-"${PYBIN}" "${CLOUD_DIR}/scripts/validate_checkpoint.py" "${TMP}/${EXP_ID}"
-mark $? "downloaded checkpoint reloads with resume state"
+# Absolute path: delete_vm.sh calls this from an arbitrary CWD.
+# Needs torch: runs in the training image, or host Python with torch installed.
+set +e
+repo_python --ro "${TMP}" -- cloud/scripts/validate_checkpoint.py "${TMP}/${EXP_ID}"
+CKPT_RC=$?
+set -e
+mark "${CKPT_RC}" "downloaded checkpoint reloads with resume state"
 
 if [ "${KEEP}" != "--keep-download" ]; then rm -rf "${TMP}"; else log "kept ${TMP}"; fi
 

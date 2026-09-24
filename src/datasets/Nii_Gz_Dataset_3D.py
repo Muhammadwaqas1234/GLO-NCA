@@ -15,53 +15,23 @@ except Exception:  # heavy-aug elastic/blur fall back to no-op if scipy missing
 
 
 class Dataset_NiiGz_3D_BraTS(Dataset_3D):
-    r"""3D loader for the multi-modal BraTS dataset (Kaggle / official layout).
+    r"""3D loader for multi-modal BraTS: one folder per case with four modalities and a seg.
 
-    Each patient lives in its own folder containing four modality volumes and a
-    segmentation mask::
-
-        BraTS20_Training_001/
-            BraTS20_Training_001_t1.nii.gz
-            BraTS20_Training_001_t1ce.nii.gz
-            BraTS20_Training_001_t2.nii.gz
-            BraTS20_Training_001_flair.nii.gz
-            BraTS20_Training_001_seg.nii.gz
-
-    The four modalities are stacked into a 4-channel input (T1, T1ce, T2,
-    FLAIR). The raw label values (1 = NCR, 2 = ED, 4 = ET; some Kaggle copies
-    remap 4 -> 3) are converted into the three standard, nested BraTS regions
-    used for reporting:
-
-        WT (Whole Tumor)      = labels {1, 2, 4}   -> channel 0
-        TC (Tumor Core)       = labels {1, 4}      -> channel 1
-        ET (Enhancing Tumor)  = label  {4}         -> channel 2
-
-    Only the 3D path is supported (``slice`` must be None); BraTS volumes are
-    segmented as full 3D volumes.
+    Modalities are stacked as 4 channels (T1, T1ce, T2, FLAIR). Raw labels (1 NCR, 2 ED,
+    4 ET, sometimes remapped to 3) become nested regions: WT {1,2,4} -> ch 0,
+    TC {1,4} -> ch 1, ET {4} -> ch 2. 3D only (``slice`` must be None).
     """
 
-    # Modality suffixes in the fixed channel order T1, T1ce, T2, FLAIR.
-    # BraTS 2024 (BraTS-GLI) uses t1n / t1c / t2w / t2f; override MODALITIES on
-    # the instance if your dataset uses the older t1/t1ce/t2/flair names.
+    # Modality suffixes in channel order T1, T1ce, T2, FLAIR (BraTS 2024 naming);
+    # override MODALITIES for the older t1/t1ce/t2/flair names.
     MODALITIES = ["t1n", "t1c", "t2w", "t2f"]
     SEG_SUFFIX = "seg"
 
     def getFilesInPath(self, path):
-        r"""Discover cases by folder, RECURSIVELY. The 'images' and 'labels' live
-            in the same per-case folder, so both image_path and label_path point
-            to the dataset root.
+        r"""Discover cases recursively: a case folder directly holds four modalities + seg.
 
-            A directory is a valid case only if it directly contains all four
-            modalities + a segmentation; container directories that merely hold
-            other cases (e.g. a nested cohort folder) are skipped. ``folder_name``
-            is the path RELATIVE to ``path`` so nested cases resolve correctly,
-            while the case id remains the leaf folder name. For a flat dataset
-            (one case folder per patient at the root) this returns exactly the
-            same mapping as before (folder_name == case id).
-            #Args
-                path (string): dataset root
-            #Returns:
-                dic (dictionary): {caseID: {0: (rel_path, caseID, 0)}}
+        folder_name is relative to ``path`` (handles nested cohorts); the case id is the leaf folder.
+        Returns {caseID: {0: (rel_path, caseID, 0)}}.
         """
         from src.experiment.datasource import discover_cases
         dic = {}
@@ -70,14 +40,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return dic
 
     def _find_modality_file(self, folder, patient, suffix):
-        r"""Locate a modality/seg file in a patient folder, tolerant to naming.
-            #Args
-                folder (str): absolute path to the patient folder
-                patient (str): patient id (folder name)
-                suffix (str): modality suffix, e.g. 't1ce' or 'seg'
-        """
-        # Common explicit names (underscore or hyphen separator, .nii.gz/.nii).
-        # BraTS 2020: 'BraTS_x_t1.nii.gz'; BraTS 2024: 'BraTS-GLI-x-t1c.nii'.
+        r"""Find a modality/seg file in a case folder, tolerant to naming (e.g. suffix 't1c' or 'seg')."""
+        # Explicit names, '_' or '-' separator, .nii.gz or .nii.
         for sep in ("_", "-"):
             for ext in (".nii.gz", ".nii"):
                 candidate = os.path.join(folder, f"{patient}{sep}{suffix}{ext}")
@@ -92,14 +56,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         raise FileNotFoundError(f"Could not find '{suffix}' volume for patient '{patient}' in {folder}")
 
     def load_item(self, path):
-        r"""Load a single nii/nii.gz volume as a float numpy array.
-
-        Phase 2 note: ``nib.load`` only reads the HEADER (it is lazy); the actual
-        gzip decompression + voxel materialisation happens in ``get_fdata()``.
-        The two are timed separately so a profiling report can distinguish
-        "opening files" from "decompressing volumes" -- they differ by orders of
-        magnitude for .nii.gz. Behaviour is identical either way.
-        """
+        r"""Load one nii/nii.gz volume as float; header open and decompression are profiled separately."""
         from src.profiling import get_profiler
         prof = get_profiler()
         if not prof.enabled:
@@ -116,15 +73,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
     @staticmethod
     def _foreground_bbox(vol_stack):
-        r"""Bounding box of the non-zero brain across all modalities.
-
-            Swin-UNETR-style CropForeground: removes the black background so the
-            resized patch contains brain only (recovers small ET/TC detail).
-            #Args
-                vol_stack (numpy): (X, Y, Z, C) stacked modalities
-            #Returns
-                (x0,x1,y0,y1,z0,z1) or None if the volume is empty
-        """
+        r"""Bounding box (x0,x1,y0,y1,z0,z1) of non-zero brain across modalities, or None if empty."""
         fg = np.any(vol_stack > 0, axis=-1)
         if not fg.any():
             return None
@@ -134,13 +83,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
 
     def _labels_to_regions(self, seg):
-        r"""Convert raw BraTS segmentation values into nested ET/TC/WT regions.
-            #Args
-                seg (numpy): raw label volume with values in {0,1,2,3,4}
-            #Returns:
-                label (numpy): (X, Y, Z, 3) binary volume, channels = WT, TC, ET
-        """
-        # ET is encoded as 4 in BraTS2020 and sometimes remapped to 3 on Kaggle.
+        r"""Raw BraTS labels {0..4} -> (X, Y, Z, 3) binary WT, TC, ET."""
+        # ET is 4, or 3 in some remapped copies.
         et = np.logical_or(seg == 4, seg == 3)
         ncr = (seg == 1)
         ed = (seg == 2)
@@ -151,35 +95,16 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         label = np.stack([wt, tc, et], axis=-1).astype(np.float32)
         return label
 
-    # Base seed for per-(epoch, case) augmentation reseeding; set by the runner.
+    # Base seed for per-(epoch, case) augmentation; set by the runner.
     _aug_base_seed = None
 
-    # OPTIONAL genuine training-patch size, e.g. (96, 96, 96).
-    #
-    # WHY THIS EXISTS. `self.size` historically served TWO roles at once: the
-    # `rescale3d` resample target AND the `patchify_multimodal` patch size.
-    # Because the volume is resampled to exactly `self.size` BEFORE patching,
-    # `randint(0, shape - size)` degenerates to `randint(0, 0) == 0` on every
-    # axis, so the "patch" is the whole volume and patchify is a no-op (see the
-    # note in `patchify_multimodal`).
-    #
-    # Setting this to a size STRICTLY SMALLER than `self.size` on at least one
-    # axis separates the two roles:
-    #     self.size            -> WORKING VOLUME (resample target)
-    #     _train_patch_size    -> TRAINING PATCH (real spatial crop)
-    # None keeps the previous behaviour EXACTLY (patch size == self.size), so
-    # every existing config, including the frozen thesis reference, is
-    # unaffected. TRAIN-ONLY: `patchify_multimodal` is already gated on
-    # `self.state == "train"`, so validation/test inference geometry cannot be
-    # changed by this field.
+    # Optional training patch smaller than the working volume (off in production).
+    # self.size is the 128³ working volume (resample target); None keeps patch == working
+    # volume. Train only: validation/test geometry is unaffected.
     _train_patch_size = None
 
     def set_train_patch_size(self, size):
-        """Enable a genuine training patch smaller than the working volume.
-
-        ``size`` may be an int (cube) or a 3-sequence. ``None`` disables it and
-        restores the original whole-volume behaviour.
-        """
+        """Set a training patch smaller than the working volume (int or 3-sequence); None disables it."""
         if size is None:
             self._train_patch_size = None
             return
@@ -187,41 +112,29 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             size = (size, size, size)
         self._train_patch_size = tuple(int(v) for v in size)
 
-    # Optional on-disk deterministic preprocessing cache (see
-    # src/datasets/preprocess_cache.py). None => disabled, behaviour unchanged.
+    # Optional deterministic preprocessing cache; None disables it.
     _precache = None
 
     def set_preprocess_cache(self, cache):
-        """Attach a PreprocessCache. Caches ONLY the deterministic head of
-        __getitem__; all stochastic work still runs every epoch."""
+        """Attach a PreprocessCache (deterministic head only; augmentation runs every epoch)."""
         self._precache = cache
 
     def set_augmentation_seed(self, seed):
-        r"""Set the base seed used to derive the per-(epoch, case) augmentation
-        RNG. Called once by the runner; see ``__getitem__``."""
+        r"""Set the base seed for per-(epoch, case) augmentation RNG."""
         self._aug_base_seed = int(seed)
 
     def __getitem__(self, idx):
-        r"""Load and preprocess one BraTS patient.
-            #Args
-                idx (int | (int, int)): either a plain index, or an
-                    ``(epoch, index)`` pair from the runner's epoch-aware
-                    sampler (see below).
-            #Returns:
-                id (str): patient identifier, formatted '_<patient>_0'
-                img (numpy): (X, Y, Z, 4) float32, modalities T1/T1ce/T2/FLAIR
-                label (numpy): (X, Y, Z, 3) float32, regions WT/TC/ET
+        r"""Load and preprocess one case.
+
+        #Args
+            idx: index, or (epoch, index) from the runner's sampler.
+        #Returns:
+            id (str): '_<patient>_0'
+            img: (X, Y, Z, 4) float32, T1/T1ce/T2/FLAIR
+            label: (X, Y, Z, 3) float32, WT/TC/ET
         """
-        # PHASE 2 (P1 reproducibility fix). Previously the augmentation and
-        # patch-sampling RNG was seeded ONLY per worker (cfg.seed + worker_id) by
-        # worker_init_fn, which re-ran every epoch with the same few seeds -- so
-        # all 300 epochs replayed the SAME augmentation draw sequence.
-        #
-        # The runner's sampler now yields (epoch, index). Seeding here from
-        # (base_seed, epoch, index) gives every (epoch, case) pair its own
-        # stream: DIFFERENT across epochs (real augmentation diversity) yet
-        # fully DETERMINISTIC and independent of worker count, sharding order and
-        # whether workers persist -- which the old scheme was not.
+        # Seed augmentation from (base_seed, epoch, index): different every epoch, yet
+        # deterministic and independent of worker count and order.
         epoch = None
         if isinstance(idx, (tuple, list)) and len(idx) == 2:
             epoch, idx = int(idx[0]), int(idx[1])
@@ -230,7 +143,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             random.seed(s)
             np.random.seed(s)
 
-        # Phase 2: observational profiler (NullProfiler unless explicitly on).
+        # Profiler is a no-op unless enabled.
         from src.profiling import get_profiler
         _prof = get_profiler()
 
@@ -238,9 +151,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
         key = self.images_list[idx]
         cached = self.data.get_data(key=key)
-        # --- on-disk deterministic cache lookup (RNG-neutral) --------------
-        # Consumes no random numbers, so a hit and a miss leave the RNG stream
-        # identical -- the stochastic path below is unaffected either way.
+        # Cache lookup consumes no random numbers, so hit or miss leaves the RNG unchanged.
         if not cached and self._precache is not None:
             folder_name, p_id, _ = key
             _hit = self._precache.get(str(p_id))
@@ -254,13 +165,13 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             folder_name, p_id, _ = key
             folder = os.path.join(self.images_path, folder_name)
 
-            # --- Load RAW modalities + seg (no resize yet if we crop first) --
+            # Load raw modalities + seg.
             raw_vols = [self.load_item(self._find_modality_file(folder, folder_name, mod))
                         for mod in self.MODALITIES]
             raw = np.stack(raw_vols, axis=-1)  # (X, Y, Z, C) full resolution
             seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
 
-            # --- Foreground crop to the brain bounding box (Swin-UNETR) ------
+            # Crop to the brain bounding box.
             with _prof.section("data/foreground_crop"):
                 if crop_fg:
                     bbox = self._foreground_bbox(raw)
@@ -269,7 +180,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                         raw = raw[x0:x1, y0:y1, z0:z1, :]
                         seg = seg[x0:x1, y0:y1, z0:z1]
 
-            # --- Resize to training size -----------------------------------
+            # Resize to the working volume.
             with _prof.section("data/resample"):
                 if self.exp.get_from_config('rescale') is not False:
                     img = np.stack([self.rescale3d(raw[..., c]) for c in range(raw.shape[-1])], axis=-1)
@@ -280,7 +191,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
 
             img_id = "_" + str(p_id) + "_0"
-            # Persist the DETERMINISTIC result only (never patches/augmentation).
+            # Cache the deterministic result only.
             if self._precache is not None:
                 with _prof.section("data/cache_write"):
                     self._precache.put(str(p_id), img, label)
@@ -289,24 +200,19 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
         img_id, img, label = cached
 
-        # Patchify on the fly for training (global info comes from the
-        # coarse NCA level, so a patch is enough at full resolution).
+        # Optional training patch (inert unless configured).
         if self.exp.get_from_config('patchify') is True and self.state == "train":
             with _prof.section("data/patchify"):
                 img, label = self.patchify_multimodal(img, label)
 
-        # Light on-the-fly augmentation (train only). Gated by the 'augment'
-        # config flag -- default off, so single-modality / older configs are
-        # unchanged. Cheap, label-safe geometric + intensity transforms that
-        # regularise without distorting tumour shape: axis flips, 90-deg
-        # in-plane rotations and a small per-modality intensity scale/shift.
+        # Train-only augmentation, gated by the 'augment' config flag.
         if self.exp.get_from_config('augment') is True and self.state == "train":
             with _prof.section("data/augment"):
                 img, label = self._augment(img, label)
 
         # Per-modality intensity normalisation.
         if self.exp.get_from_config('nonzero_norm') is True:
-            # Swin-UNETR nonzero z-norm: normalise using brain voxels only.
+            # Non-zero z-norm over brain voxels only.
             img_norm = np.empty_like(img, dtype=np.float32)
             for c in range(img.shape[-1]):
                 ch = img[..., c]
@@ -317,11 +223,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 else:
                     img_norm[..., c] = ch
         else:
-            # Original torchio z-norm + rescale-to-[0,1] per channel.
-            # PHASE 2: these two transform objects were previously constructed on
-            # EVERY __getitem__ call (before the cache lookup) even though the
-            # production config sets nonzero_norm=True and never reaches this
-            # branch. Constructed here instead, so the unused path costs nothing.
+            # Fallback: torchio z-norm + rescale to [0, 1] (production uses non-zero z-norm).
             rescale = torchio.RescaleIntensity(out_min_max=(0, 1), percentiles=(0.5, 99.5))
             znormalisation = torchio.ZNormalization()
             img_norm = np.empty_like(img, dtype=np.float32)
@@ -336,14 +238,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return (img_id, img, label)
 
     def rescale3d(self, img, isLabel=False):
-        r"""Resize a 3D volume to the configured training size (X, Y, Z).
-
-            Images use LINEAR interpolation and labels NEAREST. Linear is the
-            standard for medical volumes: cubic overshoots at brain/tumour edges,
-            producing negative intensities and ringing right where the small
-            ET/TC structures live, which corrupts the smallest regions. Nearest
-            for labels keeps the mask strictly binary.
-        """
+        r"""Resize a volume to the working size: linear for images (no cubic overshoot), nearest for labels."""
         size = (self.size[0], self.size[1])
         size2 = (self.size[2], self.size[0])
         interp = cv2.INTER_NEAREST if isLabel else cv2.INTER_LINEAR
@@ -360,32 +255,21 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return resized
 
     def _augment(self, img, label):
-        r"""Label-safe augmentation for a (X,Y,Z,C) image and (X,Y,Z,R) label.
+        r"""Label-safe augmentation for image (X,Y,Z,C) and label (X,Y,Z,R).
 
-        Two intensities, chosen by the 'augment_level' config value:
-          'light'  -- flips, 90-deg rotations, per-modality scale/shift.
-          'heavy'  -- light + gamma, Gaussian noise, Gaussian blur, and (label-
-                      safe) elastic deformation. The nnU-Net-style set, the most
-                      proven generalisation win at the 882-case scale.
-
-        Geometric transforms use the SAME field/axes for image and label so the
-        masks stay aligned; intensity transforms touch the image only and keep
-        zeros as zeros, so the non-zero z-norm is unaffected and the small ET/TC
-        regions are preserved.
-            #Args
-                img (numpy): (X, Y, Z, C) patch
-                label (numpy): (X, Y, Z, R) patch, same spatial dims
-            #Returns
-                img, label: augmented arrays, same shapes
+        'light': flips, 90-degree rotations, per-modality scale/shift.
+        'heavy': light + gamma, noise, blur and elastic deformation.
+        Geometric transforms share axes/fields with the label; intensity transforms touch the
+        image only and keep zeros at zero.
         """
         level = self.exp.get_from_config('augment_level') or 'light'
 
-        # --- Geometric: flips (all levels) ---
+        # Flips.
         for ax in (0, 1, 2):
             if random.random() < 0.5:
                 img = np.flip(img, axis=ax)
                 label = np.flip(label, axis=ax)
-        # --- Geometric: 90-deg axial rotation (all levels) ---
+        # 90-degree axial rotation.
         k = random.randint(0, 3)
         if k:
             img = np.rot90(img, k, axes=(0, 1))
@@ -393,11 +277,11 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         img = np.ascontiguousarray(img)
         label = np.ascontiguousarray(label)
 
-        # --- Heavy: elastic deformation (label-safe: one field, NN for labels) ---
+        # Heavy: elastic deformation (one field; nearest for labels).
         if level == 'heavy' and random.random() < 0.3:
             img, label = self._elastic(img, label)
 
-        # --- Intensity: per-modality scale + shift (all levels, image only) ---
+        # Per-modality scale + shift (image only).
         img = img.copy()
         s_range = 0.1 if level != 'heavy' else 0.2
         for c in range(img.shape[-1]):
@@ -427,10 +311,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return np.ascontiguousarray(img), np.ascontiguousarray(label)
 
     def _elastic(self, img, label, alpha=8.0, sigma=3.0):
-        r"""3D elastic deformation applied identically to image (linear) and
-        label (nearest, so masks stay strictly binary). Skipped gracefully if
-        scipy.ndimage is unavailable.
-        """
+        r"""Elastic deformation shared by image (linear) and label (nearest); skipped without scipy."""
         if not _NDIMAGE:
             return img, label
         shape = img.shape[:3]
@@ -452,42 +333,20 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return out_img, out_lab
 
     def patchify_multimodal(self, img, label):
-        r"""Random 3D patch of the configured size, shared across all channels.
-            Optionally biased towards patches containing tumour (WT channel).
-            #Args
-                img (numpy): (X, Y, Z, 4)
-                label (numpy): (X, Y, Z, 3)
-        """
-        # `self.size` is the WORKING VOLUME (the rescale3d target). When a
-        # genuine training patch is configured it is STRICTLY SMALLER on at
-        # least one axis, so the `randint` bounds below are non-degenerate and a
-        # REAL spatial crop happens. Falling back to `self.size` reproduces the
-        # historical no-op behaviour bit-for-bit.
+        r"""Random patch shared across channels, optionally biased toward a tumour region."""
+        # self.size is the working volume; a configured training patch makes this a real crop.
         size = self._train_patch_size or self.size
         prioritize = self.exp.get_from_config('priotize_masks')
         contains_mask = prioritize is not None and (random.uniform(0, 1) < prioritize)
-        # Which region to bias the patch toward: 0=WT (default), 1=TC, 2=ET.
-        # Biasing toward ET (the rarest region) improves ET/TC recall.
+        # Region to bias toward: 0=WT (default), 1=TC, 2=ET.
         region = self.exp.get_from_config('prioritize_region')
         region = 0 if region is None else int(region)
 
         pos_x = pos_y = pos_z = 0
-        fallback = None  # best WT-containing position, used if the target region
-        #                  (e.g. ET) is never found within the retry budget.
+        fallback = None  # best WT-containing position, fallback if the target region is never found
 
-        # PHASE 2 performance (methodology-neutral). In the production config the
-        # volume is already resized to exactly `size` (128^3), so
-        # `randint(0, shape - size)` == `randint(0, 0)` == 0 for all three axes:
-        # EVERY retry inspects the SAME full-volume region and reaches the same
-        # verdict. For a case with no ET that meant 50 iterations x ~2.1M-element
-        # `.max()` reductions (plus a second one for the WT fallback), all to
-        # re-derive a predetermined answer.
-        #
-        # We hoist those two reductions out of the loop and reuse them. The loop,
-        # its bounds and EVERY `random.*` call are left exactly as they were, so
-        # the Python RNG stream -- which augmentation shares -- is untouched.
-        # Verified over 300 trials (including no-ET and all-empty labels):
-        # identical output arrays AND identical `random.getstate()` afterwards.
+        # When the volume already equals the patch size every retry sees the same region,
+        # so the two reductions are hoisted; the loop and all random.* calls are unchanged.
         full_volume = tuple(img.shape[:3]) == tuple(size)
         if full_volume and contains_mask:
             region_present = bool(label[..., region].max() > 0)
@@ -509,15 +368,13 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], region]
             if patch.max() > 0:
                 break  # found a patch containing the target region
-            # Remember the first WT-valid position as a fallback (ET can be tiny
-            # or absent in a given patient, so the target region may not exist).
+            # First WT-valid position is the fallback (ET may be tiny or absent).
             if region != 0 and fallback is None:
                 wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
                 if wt_patch.max() > 0:
                     fallback = (pos_x, pos_y, pos_z)
         else:
-            # Retry budget exhausted without hitting the target region: use the
-            # remembered WT-valid patch rather than the last (possibly empty) one.
+            # Retries exhausted: use the WT-valid fallback.
             if fallback is not None:
                 pos_x, pos_y, pos_z = fallback
 

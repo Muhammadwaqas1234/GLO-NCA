@@ -1,16 +1,14 @@
 #!/usr/bin/env python
-r"""Verify train/val/test split integrity for an experiment (or a fresh split).
+r"""Verify train/val/test split integrity for an experiment or a split file.
 
-Checks (Phase 3 sec. 11-12):
-  * pairwise-disjoint train/val/test
-  * union == the intended dataset population (optional, if --data-root given)
-  * reports the actual counts (does NOT assume 882)
+Checks pairwise disjointness, subject-disjointness, the stored fingerprint, and (with
+--data-root) coverage of the dataset; reports the actual counts.
 
 Usage:
     python scripts/check_split.py --experiment experiments/<id>
     python scripts/check_split.py --split-json experiments/<id>/split/split.json
     python scripts/check_split.py --experiment <id> --data-root /path/to/BraTS
-Exit 0 if the split is valid, 1 otherwise.
+Exit 0 if valid, 1 otherwise.
 """
 import argparse
 import json
@@ -64,8 +62,7 @@ def main() -> int:
     print(f"counts -> train {len(tr)} | val {len(va)} | test {len(te)} | "
           f"total {len(tr | va | te)}")
 
-    # SUBJECT-disjointness (temporal-leakage gate): all timepoints of a subject
-    # must live in one partition. Uses the canonical subject_of() rule.
+    # Subject-disjointness: all timepoints of a subject stay in one partition.
     from src.experiment.datasource import subject_of
     s_tr = {subject_of(x) for x in tr}
     s_va = {subject_of(x) for x in va}

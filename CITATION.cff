@@ -3,9 +3,13 @@ message: "If you use this work, please cite it as below."
 title: "GLO-NCA: Global Context-Aware Neural Cellular Automata for Brain Tumor Segmentation"
 abstract: >-
   A lightweight, global-context-aware Neural Cellular Automata (NCA) architecture
-  for multi-modal 3D brain-tumor segmentation on BraTS. GLO-NCA V3 is a unified
-  multi-level model (global 32^3, regional 96^3, fine 128^3) with learnable
-  cross-level projections and learnable fusion, totalling 40,656 parameters.
+  for multi-modal 3D brain-tumor segmentation on BraTS. GLO-NCA is a unified
+  two-level model on a 128^3 working volume: a global-context level at 48^3 and a
+  segmentation level at 64^3 (30 NCA steps in total), with squeeze-and-excitation
+  channel attention and spatial global context at every NCA step, learnable
+  cross-level projections and a learned fusion. The production model has 30,209
+  inference parameters (30,284 during training, including 75 deep-supervision
+  auxiliary parameters).
 type: software
 authors:
   - family-names: Waqas

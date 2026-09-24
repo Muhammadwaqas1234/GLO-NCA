@@ -1,30 +1,15 @@
-"""Linear LR warmup preceding the production cosine schedule (EXPERIMENTAL).
+"""Linear LR warmup followed by cosine annealing (production schedule).
 
-The production baseline uses CosineAnnealingLR stepped ONCE PER OPTIMISER STEP
-over ``total_steps`` with ``eta_min = optimizer.minimum_learning_rate``. This
-wrapper prepends a linear warmup without changing that:
+Stepped once per optimiser step:
 
   step < warmup_steps :  lr = base_lr * (step + 1) / warmup_steps
   step >= warmup_steps:  lr = eta_min + 0.5 * (base_lr - eta_min) *
                               (1 + cos(pi * (step - warmup_steps) /
                                        (total_steps - warmup_steps)))
 
-PRESERVED FROM THE BASELINE
-  * peak LR is exactly ``base_lr`` (reached at the end of warmup)
-  * final LR is exactly ``eta_min``
-  * total number of steps is unchanged, so the training budget is identical
-  * optimizer, weight decay and seed are untouched
-
-The cosine tail is re-parameterised over the REMAINING steps so it still
-completes at eta_min at the final step. This is a deliberate, documented change
-of cosine semantics: the decay is compressed into (total - warmup) steps rather
-than shifted. The alternative -- keeping the original cosine curve and letting
-warmup cut into it -- would not reach the peak LR and was rejected.
-
-Determinism: the LR depends only on the step index, so resume reproduces the
-schedule exactly provided ``last_epoch`` is restored.
-
-NOT MEASURED: no claim is made that warmup improves Dice.
+Peak LR is exactly ``base_lr``, the final LR is exactly ``eta_min`` and the
+total step count is unchanged. Past ``total_steps`` the LR holds at
+``eta_min``. The LR depends only on the step index, so resume is exact.
 """
 from __future__ import annotations
 

@@ -1,64 +1,20 @@
-"""Case-level SMALL-LESION-aware sampling (EXPERIMENTAL -- never the baseline).
+"""Case-level small-lesion sampling (production).
 
-WHAT THIS ACTUALLY DOES -- read this before citing the mechanism.
+Oversamples cases with small enhancing-tumour (ET) volume. Every measured
+BraTS-METS case contains ET, so ET volume is the weighting signal and
+small-lesion emphasis is the purpose. Case-level only; nothing is cropped.
 
-  It oversamples cases whose ENHANCING-TUMOUR VOLUME IS SMALL. It is NOT
-  "ET-positive oversampling", and must not be described as such.
-
-  MEASURED on the BraTS-METS training split (extra/scripts/analyze_et_voxels.py):
-  every measured case contains enhancing tumour, so the ET-positive share is
-  already 1.0 under uniform sampling and cannot be increased. ET presence is
-  definitional in a metastases cohort, unlike BraTS-GLIOMA where ET is often
-  absent. What varies -- across roughly three orders of magnitude -- is ET
-  VOLUME, and that is the only thing this sampler can and does act on.
-
-  ET volume is therefore the weighting SIGNAL; small-lesion emphasis is the
-  PURPOSE. The class name and the ``et_*`` fields refer to the signal.
-
-The production baseline is uniform case-level sampling via ``_EpochSampler``.
-This module is the single alternative sampler. Per the audit brief,
-foreground-aware sampling, small-lesion oversampling and class-balanced
-sampling are ONE mechanism here, not three: all are expressed as case weights
-on the same sampler.
-
-SCOPE -- this is CASE-level, not patch-level. Patchify remains OFF; nothing in
-this module crops, and the working volume is unchanged.
-
-WEIGHTING
   weight(case) = 1.0                        if the case has no ET voxels
-               = 1.0 + (boost - 1.0) * s    if the case has ET voxels
+               = 1.0 + (boost - 1.0) * s    otherwise
 
-  where s = 1.0 for a case whose ET volume is at or below
-  ``small_lesion_voxels`` and decays to 0.0 as ET volume grows, so the
-  smallest-lesion cases receive the largest boost and the largest lesions
-  approach weight 1.0. ``boost`` defaults to 2.0. On a cohort where every case
-  has ET, the effect is purely a re-weighting BY SIZE. This is the simplest
-  defensible scheme, NOT a tuned optimum -- see LIMITATIONS.
+where s = 1.0 at or below ``small_lesion_voxels`` and decays towards 0.0 as
+ET volume grows. Draws ``len(dataset)`` indices per epoch with replacement,
+seeded from (base_seed, epoch), so epoch length and the LR schedule are
+unchanged. Built from the training split only; validation and test stay
+uniform.
 
-ET-VOLUME MEASUREMENT
-  From the ground-truth label of the TRAINING split only, counting voxels in
-  the ET channel (REGIONS index 2). Statistics are computed once, from the
-  deterministic preprocessing head, and cached.
-
-SAMPLING
-  With replacement, drawing exactly ``len(dataset)`` indices per epoch, so
-  epoch length and optimiser-step count are IDENTICAL to the baseline and the
-  cosine schedule is unaffected. Weights are normalised to a probability
-  distribution. The generator is seeded from (base_seed, epoch) exactly like
-  ``_EpochSampler``, so the draw is reproducible and differs per epoch.
-
-ISOLATION
-  Constructed from the training split only. Validation and test keep uniform,
-  unshuffled, full-pass evaluation; this sampler is never applied to them.
-
-LIMITATIONS
-  * ET volume is counted in resampled 128^3 voxels (per-case scale factor, no
-    spacing carried through), so "small" is approximate.
-  * Sampling with replacement means some cases are unseen in a given epoch
-    while others repeat; over many epochs this evens out, but a single epoch
-    is no longer a full pass over the training set.
-  * boost and small_lesion_voxels are NOT tuned. Tuning them on validation
-    would be legitimate but has not been done; tuning on test is forbidden.
+Limitations: ET volume is in resampled 128³ voxels (approximate), and
+``boost`` / ``small_lesion_voxels`` are not tuned.
 """
 from __future__ import annotations
 
@@ -89,8 +45,7 @@ class LesionAwareSampler(torch.utils.data.Sampler):
         positive = self.et_voxels > 0
         if not positive.any():
             return w
-        # Smallest ET lesions get the full boost; it decays toward 1.0 as the
-        # lesion grows past the small-lesion threshold.
+        # Smallest lesions get the full boost; it decays towards 1.0 above the threshold.
         scale = np.zeros(self.n, dtype=np.float64)
         thr = max(1.0, float(self.small_lesion_voxels))
         scale[positive] = np.clip(thr / np.maximum(self.et_voxels[positive], 1.0),

@@ -4,6 +4,7 @@ Exit 0 only if all CRITICAL checks pass; non-zero otherwise.
 
 Usage:
     python scripts/preflight_gcp.py --data-root "$VM_DATA_DIR" --split split/master_split.json
+        [--config configs/glo_nca_production.yaml]
 """
 import argparse
 import os
@@ -28,6 +29,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--split", default=os.path.join("split", "master_split.json"))
+    ap.add_argument("--config", default=os.path.join("configs", "glo_nca_production.yaml"))
     args = ap.parse_args()
 
     critical_fail = False
@@ -87,17 +89,18 @@ def main() -> int:
         record("Master split", "FAIL",
                f"{args.split} missing -- run create_master_split.py"); critical_fail = True
 
-    # --- config integrity (reuse verify_phase3_ready helpers) ---
+    # --- production configuration identity (the tracked, authoritative gate) ---
+    gate = os.path.join(_HERE, "verify_glo_nca_production_config.py")
     try:
-        from scripts.verify_phase3_ready import check_ablation_matrix, check_final_config
-        ok_abl, msg_abl = check_ablation_matrix(_REPO)
-        record("Ablation configs", "PASS" if ok_abl else "FAIL", msg_abl)
-        critical_fail = critical_fail or not ok_abl
-        ok_fin, msg_fin = check_final_config(_REPO)
-        record("Final config", "PASS" if ok_fin else "FAIL", msg_fin)
-        critical_fail = critical_fail or not ok_fin
+        proc = subprocess.run([sys.executable, gate, args.config], cwd=_REPO,
+                              capture_output=True, text=True)
+        result = [l.strip() for l in proc.stdout.splitlines() if "RESULT:" in l]
+        detail = result[-1] if result else (proc.stderr.strip().splitlines() or ["no output"])[-1]
+        record("Production config identity", "PASS" if proc.returncode == 0 else "FAIL",
+               f"{args.config}: {detail}")
+        critical_fail = critical_fail or proc.returncode != 0
     except Exception as exc:
-        record("Config integrity", "FAIL", str(exc)); critical_fail = True
+        record("Production config identity", "FAIL", str(exc)); critical_fail = True
 
     # --- git commit ---
     try:

@@ -1,7 +1,4 @@
-r"""Robust checkpointing: a checkpoint holds the COMPLETE training state so a
-run can resume exactly (model, optimizer, scheduler, EMA, best score, epoch,
-config and RNG states). ``best`` and ``last`` are kept strictly separate.
-"""
+r"""Full-state checkpointing (model, optimizer, scheduler, EMA, epoch, config, RNG); best and last kept separate."""
 from __future__ import annotations
 
 import os
@@ -43,9 +40,7 @@ def save_checkpoint(path: str, ckpt: Dict[str, Any]) -> None:
 
 def save_best_weights(path: str, weights: List[Dict[str, torch.Tensor]],
                       epoch: int, val_mean: float, val_smooth: float) -> None:
-    """Save the compact best-model file (EMA or raw weights) used for testing.
-    Kept in the SAME format the original train.py wrote, so downstream test code
-    is unchanged: {"m": [...], "ep": int, "val_mean": ..., "val_smooth": ...}."""
+    """Save the compact best-model file: {"m": [...], "ep", "val_mean", "val_smooth"}."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     torch.save({"m": weights, "ep": epoch,
@@ -54,9 +49,7 @@ def save_best_weights(path: str, weights: List[Dict[str, torch.Tensor]],
 
 
 def load_checkpoint(path: str, map_location: Any = "cpu") -> Dict[str, Any]:
-    # weights_only=False: our checkpoints embed numpy/torch RNG states (not just
-    # tensors), and they are produced by this codebase, so they are trusted.
-    # PyTorch >= 2.6 defaults weights_only=True and would reject them otherwise.
+    # weights_only=False: our checkpoints embed RNG states and are produced by this codebase.
     try:
         return torch.load(path, map_location=map_location, weights_only=False)
     except TypeError:  # older torch without the weights_only kwarg
@@ -71,12 +64,7 @@ def restore_into(ckpt: Dict[str, Any], *, models: List[torch.nn.Module],
         m.load_state_dict(sd)
     for o, sd in zip(optimizers, ckpt.get("optimizer", [])):
         o.load_state_dict(sd)
-    # Phase 2 (P1): this was a bare `except: pass` with NO logging. If scheduler
-    # restore failed, the run silently continued with a freshly-built
-    # CosineAnnealingLR at step 0 -- i.e. the learning rate jumped back to its
-    # initial value in the middle of a 300-epoch campaign, corrupting the run
-    # with no warning anywhere. The failure is now surfaced loudly (and is
-    # visible afterwards in metrics/train.csv's `lr` column).
+    # Fail loudly: a silently reset scheduler would restart the LR mid-run.
     failures = []
     for i, (s, sd) in enumerate(zip(schedulers, ckpt.get("scheduler", []))):
         try:
@@ -92,13 +80,7 @@ def restore_into(ckpt: Dict[str, Any], *, models: List[torch.nn.Module],
             "the ORIGINAL config, or start a new experiment deliberately.")
 
 
-# ---------------------------------------------------------------- top-K best
-# Best-checkpoint retention. `save_best_weights` above keeps the single best
-# file in the original format and is unchanged; the helpers here maintain an
-# ADDITIONAL ranked set (best_1 .. best_k) plus a JSON manifest.
-#
-# Weights are never averaged and no SWA is performed: the ranked files are
-# retained for inspection and for a later, explicitly approved experiment.
+# Top-K best: a ranked best_1..best_k set plus a manifest; weights are never averaged.
 
 
 def _best_path(directory: str, rank: int) -> str:
@@ -108,13 +90,7 @@ def _best_path(directory: str, rank: int) -> str:
 def update_top_k(directory: str, *, weights: List[Dict[str, torch.Tensor]],
                  epoch: int, score: float, metrics: Dict[str, Any],
                  meta: Dict[str, Any], top_k: int = 3) -> List[Dict[str, Any]]:
-    """Insert one candidate into the ranked best-K set, highest score first.
-
-    Returns the manifest (a list, best first). The candidate is written only if
-    it makes the top K, so a run that never improves performs no extra I/O.
-    Files are rewritten in rank order, which keeps `best_1.pth` always the best
-    regardless of the order in which candidates arrived.
-    """
+    """Insert a candidate into the ranked best-K set (highest first); written only if it makes the top K."""
     import json
 
     os.makedirs(directory, exist_ok=True)
@@ -127,10 +103,7 @@ def update_top_k(directory: str, *, weights: List[Dict[str, torch.Tensor]],
         except (OSError, ValueError):
             entries = []          # unreadable manifest -> rebuild from scratch
 
-    # Rank BEFORE this candidate is considered. The manifest order is the
-    # authority for where each retained epoch's file currently lives, so the
-    # mapping epoch -> existing file must be built from the PREVIOUS ranking,
-    # never from the new one.
+    # Map epoch -> existing file from the previous ranking, not the new one.
     previous = sorted(entries, key=lambda e: e["score"], reverse=True)
     existing = {}
     for i, e in enumerate(previous):
@@ -146,8 +119,7 @@ def update_top_k(directory: str, *, weights: List[Dict[str, torch.Tensor]],
     if not any(e["epoch"] == epoch for e in keep):
         return keep               # candidate did not make the cut: no write
 
-    # Move every surviving file aside first, so a file that changes rank can
-    # never overwrite another before it has been relocated.
+    # Move survivors aside first so a re-ranked file never overwrites another.
     staged = {}
     for ep_, src in existing.items():
         if any(e["epoch"] == ep_ for e in keep) and ep_ != epoch:
@@ -186,13 +158,7 @@ def update_top_k(directory: str, *, weights: List[Dict[str, torch.Tensor]],
 
 def provenance_metadata(*, config: Dict[str, Any],
                         split_sha: str = "", dataset_root: str = "") -> Dict[str, Any]:
-    """Identity/provenance block embedded in best checkpoints.
-
-    Captures what is needed to reproduce a saved model: code revision, config
-    fingerprint, dataset and split identity, and the software/hardware it was
-    produced on. Every field degrades to a sentinel rather than raising, so
-    checkpointing can never fail because provenance is unavailable.
-    """
+    """Provenance block for best checkpoints; each field falls back to a sentinel, never raises."""
     import hashlib
     import json
     import platform

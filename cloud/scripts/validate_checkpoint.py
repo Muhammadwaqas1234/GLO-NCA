@@ -1,11 +1,9 @@
 #!/usr/bin/env python
-r"""Validate a GLO-NCA checkpoint before resuming (infrastructure-only; does not
-touch the model). Reuses the Phase 1 loader. Exit 0 if usable, 1 otherwise.
+r"""Validate a GLO-NCA checkpoint before resuming. Exit 0 if usable, 1 otherwise.
 
 Usage:
     python cloud/scripts/validate_checkpoint.py <experiment_dir>
-Prints the best usable checkpoint path on success (last.pth preferred, else the
-newest periodic), or an error and the available alternatives on failure.
+Prints the usable checkpoint (last.pth preferred, else the newest periodic) or the alternatives.
 """
 import argparse
 import glob
@@ -38,6 +36,26 @@ def _is_valid_full(path):
     return True, f"epoch={ck['epoch']}"
 
 
+def candidates(experiment_dir):
+    """last.pth first, then periodic checkpoints newest first."""
+    ckpt_dir = os.path.join(experiment_dir, "checkpoints")
+    last = os.path.join(ckpt_dir, "last.pth")
+    periodic = sorted(glob.glob(os.path.join(ckpt_dir, "periodic", "epoch_*.pth")),
+                      reverse=True)
+    return ([last] if os.path.exists(last) else []) + periodic
+
+
+def newest_valid(experiment_dir):
+    """(path, epoch, invalid) for the first valid candidate, or (None, None, invalid)."""
+    invalid = []
+    for cand in candidates(experiment_dir):
+        ok, detail = _is_valid_full(cand)
+        if ok:
+            return cand, int(_load(cand)["epoch"]), invalid
+        invalid.append((cand, detail))
+    return None, None, invalid
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("experiment_dir")
@@ -49,30 +67,26 @@ def main() -> int:
         return 1
 
     last = os.path.join(ckpt_dir, "last.pth")
-    periodic = sorted(glob.glob(os.path.join(ckpt_dir, "periodic", "epoch_*.pth")),
-                      reverse=True)
-
     # Prefer last.pth; never replace a valid checkpoint with an older one.
-    candidates = ([last] if os.path.exists(last) else []) + periodic
-    if not candidates:
+    cands = candidates(args.experiment_dir)
+    if not cands:
         print(f"FAIL: no last.pth or periodic checkpoints in {ckpt_dir}")
         return 1
 
-    for cand in candidates:
-        ok, detail = _is_valid_full(cand)
-        if ok:
-            print(f"OK: {cand} ({detail})")
-            print(f"RESUME_CHECKPOINT={cand}")
-            if cand != last:
-                print(f"NOTE: last.pth invalid/missing; using newest valid "
-                      f"periodic checkpoint instead. Corrupt file left in place.")
-            return 0
-        else:
-            print(f"invalid: {cand} -> {detail}")
+    path, epoch, invalid = newest_valid(args.experiment_dir)
+    for cand, detail in invalid:
+        print(f"invalid: {cand} -> {detail}")
+    if path:
+        print(f"OK: {path} (epoch={epoch})")
+        print(f"RESUME_CHECKPOINT={path}")
+        if path != last:
+            print(f"NOTE: last.pth invalid/missing; using newest valid "
+                  f"periodic checkpoint instead. Corrupt file left in place.")
+        return 0
 
     print("FAIL: no valid checkpoint found. Corrupt files were NOT modified.")
     print("Available (all invalid):")
-    for c in candidates:
+    for c in cands:
         print(f"  {c}")
     return 1
 

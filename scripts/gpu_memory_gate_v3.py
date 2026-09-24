@@ -1,21 +1,13 @@
 #!/usr/bin/env python
-r"""GLO-NCA V3 -- production GPU memory gate (run ON THE TARGET GPU, e.g. GCP).
+r"""Legacy GPU memory gate for three-level V3 configs (not used for the production configuration).
 
-Measures whether the V3 production path fits the *actual* GPU at the thesis
-resolutions. It sweeps the model's finest-level (level3) resolution -- the real
-activation-memory driver -- through the production values and classifies each:
+Sweeps the finest-level resolution, derives the lower levels from it, and classifies
+each peak as TRUE FIT (<= physical VRAM), SPILL (> VRAM) or OOM. It cannot build the
+two-level production geometry (L1 48³, L2 64³); pretrain_gate.sh runs it only for legacy
+configs and uses verify_glo_nca_production_config.py plus the real-data smoke for production.
 
-    TRUE FIT  : peak allocated <= physical VRAM
-    SPILL     : peak > physical VRAM (host-memory pressure; NOT a real fit)
-    OOM       : allocation failed
-
-It does NOT train and NOT modify the architecture. If 96^3/128^3 OOM on the
-chosen GPU, that is reported as a hardware-capacity result (pick a larger GPU),
-never silently worked around.
-
-Usage (on the GPU VM):
-    python scripts/gpu_memory_gate_v3.py --config configs/glo_nca_production.yaml
-    python scripts/gpu_memory_gate_v3.py --resolutions 96,128     # production only
+Usage (legacy configs only, on the GPU VM):
+    python scripts/gpu_memory_gate_v3.py --config <legacy_v3_config.yaml> --resolutions 96,128
 """
 import argparse
 import copy
@@ -36,13 +28,34 @@ from src.losses.LossFunctions import FocalTverskyCELoss
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=os.path.join("configs", "glo_nca_production.yaml"))
+    ap = argparse.ArgumentParser(
+        description="LEGACY three-level V3 GPU memory gate. Does NOT validate the "
+                    "two-level GLO-NCA production configuration; for that use "
+                    "scripts/verify_glo_nca_production_config.py.")
+    ap.add_argument("--config", default=None,
+                    help="a LEGACY three-level V3 config (required; no default)")
     ap.add_argument("--resolutions", default="32,48,64,96,128",
-                    help="comma list of level3 resolutions to probe")
+                    help="comma list of legacy level3 resolutions to probe")
     ap.add_argument("--batch", type=int, default=1)
     args = ap.parse_args()
     res_list = [int(r) for r in args.resolutions.split(",") if r.strip()]
+
+    # Refuse anything but an explicit legacy config: this tool always builds a
+    # derived three-level model, which is not the production architecture.
+    if not args.config:
+        print("LEGACY V3 GPU MEMORY GATE: REFUSED -- no --config given.")
+        print("This legacy tool needs an explicit three-level V3 config. The two-level")
+        print("production GLO-NCA is verified by scripts/verify_glo_nca_production_config.py.")
+        return 3
+    base = load_config(args.config)
+    model_cfg = base.raw.get("model", {}) or {}
+    level3 = model_cfg.get("level3") or {}
+    if model_cfg.get("global_context") is not None or not level3.get("enabled", False):
+        print(f"LEGACY V3 GPU MEMORY GATE: REFUSED -- {args.config} is not a legacy")
+        print("three-level config (model.global_context set or level3 not enabled).")
+        print("Measuring it here would build a different, three-level architecture.")
+        print("The production GLO-NCA is verified by scripts/verify_glo_nca_production_config.py.")
+        return 3
 
     if not torch.cuda.is_available():
         print("GPU MEMORY GATE: NOT TESTED (no CUDA GPU on this machine).")
@@ -53,12 +66,11 @@ def main() -> int:
     p = torch.cuda.get_device_properties(0)
     total_gb = p.total_memory / 1e9
     print("=" * 64)
-    print(f"V3 GPU MEMORY GATE  |  GPU: {p.name}  VRAM: {total_gb:.1f} GB")
+    print(f"LEGACY V3 GPU MEMORY GATE  |  GPU: {p.name}  VRAM: {total_gb:.1f} GB")
     print(f"config: {args.config}  batch: {args.batch}")
-    print("sweeping level3 resolution (the real activation-memory driver)")
+    print("sweeping legacy level3 resolution (the activation-memory driver)")
     print("=" * 64)
 
-    base = load_config(args.config)
     loss_f = FocalTverskyCELoss(
         alpha=1 - float(base.get("loss", "tversky_beta")),
         beta=float(base.get("loss", "tversky_beta")),
@@ -68,7 +80,7 @@ def main() -> int:
     true_fit = []
     for res in res_list:
         cfg = copy.deepcopy(base)
-        # keep the nested multi-scale ratio; level3 drives memory
+        # Legacy nested ratio: lower levels derived from the finest level.
         cfg.raw["model"]["level1"]["resolution"] = max(16, res // 4)
         cfg.raw["model"]["level2"]["resolution"] = max(24, res * 3 // 4)
         cfg.raw["model"]["level3"]["resolution"] = res
@@ -111,21 +123,20 @@ def main() -> int:
             break
 
     print("=" * 64)
-    prod = [r for r in (96, 128) if r in res_list]
-    prod_fit = all(results.get(r, ("", None))[0] == "TRUE FIT" for r in prod) and prod
-    print("Largest TRUE FIT level3 on this GPU:",
+    legacy = [r for r in (96, 128) if r in res_list]
+    legacy_fit = all(results.get(r, ("", None))[0] == "TRUE FIT" for r in legacy) and legacy
+    print("Largest TRUE FIT legacy level3 on this GPU:",
           f"{max(true_fit)}^3" if true_fit else "none")
-    for r in prod:
+    for r in legacy:
         v = results.get(r, ("NOT REACHED", None))[0]
-        print(f"Production {r}^3: {v}")
-    if prod and prod_fit:
-        print("\nV3 GPU MEMORY GATE: PASS (production 96^3 + 128^3 TRUE FIT)")
+        print(f"Legacy V3 {r}^3: {v}")
+    if legacy and legacy_fit:
+        print("\nLEGACY V3 GPU MEMORY GATE: PASS (legacy 96^3 + 128^3 TRUE FIT)")
         return 0
-    if prod:
-        print("\nV3 GPU MEMORY GATE: FAIL for production resolution on this GPU.")
-        print("Pick a larger-VRAM GPU. Do NOT reduce the thesis architecture.")
+    if legacy:
+        print("\nLEGACY V3 GPU MEMORY GATE: FAIL for the legacy resolutions on this GPU.")
         return 1
-    print("\nV3 GPU MEMORY GATE: informational (production 96/128 not in sweep).")
+    print("\nLEGACY V3 GPU MEMORY GATE: informational (legacy 96/128 not in sweep).")
     return 0
 
 

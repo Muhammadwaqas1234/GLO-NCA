@@ -1,34 +1,19 @@
-r"""GLO-NCA — PRODUCTION CONFIGURATION IDENTITY GATE (Phase 4).
+r"""GLO-NCA production configuration identity gate.
 
-Purpose
--------
-Fail CLOSED unless the supplied configuration IS the intended production
-candidate. This exists because the repository deliberately keeps the FROZEN
-thesis reference (``extra/configs/historical/v3_multilevel_ckpt.yaml``, 32/96/128) alongside the
-current production candidate (``configs/glo_nca_production.yaml``, 48/64), and a
-300-epoch cloud run started with the wrong one would burn days of GPU time on
-the wrong architecture before anyone noticed.
+Fails closed unless the config is the production configuration (two-level GLO-NCA:
+128³ working volume, L1 48³, L2 64³, spatial global context k=7), so a long cloud run
+cannot start on a legacy config. The model is actually built and its parameter count
+and level geometry are read back from the live object.
 
-It verifies the ARCHITECTURE THAT IS ACTUALLY BUILT, not just the YAML text:
-the model is constructed and its parameter count and level geometry are read
-back from the live object.
-
-Usage
------
+Usage:
     python scripts/verify_glo_nca_production_config.py <config.yaml>
 
-Exit codes
-----------
-    0  config IS the production candidate
-    2  config is valid YAML but is NOT the production candidate (fail closed)
-    3  no config supplied / file missing (fail closed -- never defaults)
+Exit codes:
+    0  production configuration
+    2  valid YAML but not the production configuration
+    3  no config / file missing (never defaults)
 
-Scientific note
----------------
-Passing this gate means the config matches the intended 48/64 CANDIDATE. It does
-NOT mean that geometry is scientifically approved: 48^3/64^3 remains a Category C
-decision relative to the frozen 32/96/128 reference and needs author/supervisor
-sign-off. This script checks identity, not scientific merit.
+Checks identity, not scientific merit.
 """
 from __future__ import annotations
 
@@ -39,8 +24,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-# The intended production candidate. Changing anything here is a deliberate
-# scientific act, not a maintenance edit.
+# Production identity; changing a value here is a deliberate scientific decision.
 EXPECTED = {
     "level1_resolution": 48,
     "level1_channels": 24,
@@ -52,7 +36,7 @@ EXPECTED = {
     "level2_nca_steps": 15,
     "level3_enabled": False,
     "total_nca_steps": 30,
-    "spatial_kernel_size": 7,   # the thesis contribution's receptive field (restored 5 -> 7)
+    "spatial_kernel_size": 7,  # spatial global-context kernel
     "inference_parameters": 30209,
     "auxiliary_parameters": 75,
     "training_parameters": 30284,
@@ -82,7 +66,7 @@ def main(argv) -> int:
     print("GLO-NCA PRODUCTION CONFIGURATION IDENTITY GATE")
     print("=" * 74)
 
-    # ---- §8/§22 fail-closed: no config => FAIL. Never fall back to a default.
+    # No config => FAIL; never fall back to a default.
     if len(argv) < 2 or not str(argv[1]).strip():
         print("  FAIL  no configuration supplied.")
         print()
@@ -102,8 +86,7 @@ def main(argv) -> int:
 
     import torch
     from src.experiment.config import load_config
-    # Build through the SAME entry point the runner uses; a gate that picks
-    # its own builder can certify a model that never trains.
+    # Build through the runner's own entry point, so the gate certifies what trains.
     from src.experiment.runner import _build_production_model
 
     cfg = load_config(path)
@@ -140,9 +123,7 @@ def main(argv) -> int:
     chk("level3.enabled", bool(l3.get("enabled", False)), EXPECTED["level3_enabled"])
     chk("use_attention (SE)", bool(m_.get("use_attention")), EXPECTED["use_attention"])
     chk("use_spatial (spatial GC)", bool(m_.get("use_spatial")), EXPECTED["use_spatial"])
-    # The spatial global-context receptive field. Must be stated by the config:
-    # a missing key would silently fall back to the old hardcoded 7 and build a
-    # different architecture than the one declared here.
+    # The spatial global-context kernel must be stated explicitly; a missing key fails.
     chk("model.spatial_kernel_size", m_.get("spatial_kernel_size"),
         EXPECTED["spatial_kernel_size"])
     chk("global_context.roi_fraction",
@@ -153,9 +134,7 @@ def main(argv) -> int:
     tp = data.get("training_patch") or {}
     chk("data.training_patch.enabled", bool(tp.get("enabled", False)),
         EXPECTED["patchify_enabled"])
-    # The working volume is training.patch_size: the dataset resamples to it
-    # and the model receives it whole. data.training_patch.working_volume
-    # applies only when patchify is enabled, which production forbids.
+    # Working volume = training.patch_size (resampled, passed whole; patchify is off).
     chk("working volume",
         int((raw.get("training") or {}).get("patch_size", 0)),
         EXPECTED["working_volume"])
@@ -168,7 +147,7 @@ def main(argv) -> int:
     chk("experiment.seed", int((raw.get("experiment") or {}).get("seed", -1)),
         EXPECTED["seed"])
 
-    # ---- §9/§32: verify the ARCHITECTURE THAT IS BUILT, not just the YAML ----
+    # Verify the model that is built, not just the YAML.
     model = _build_production_model(cfg, torch.device("cpu"))
     n_params = sum(p.numel() for p in model.parameters())
     n_aux = (sum(p.numel() for p in model.aux_heads.parameters())
@@ -185,7 +164,7 @@ def main(argv) -> int:
     chk("BUILT learned fusion", fusion[0] if fusion else None,
         EXPECTED["fusion_in_out"])
 
-    # ---- §29 split identity -------------------------------------------------
+    # Split identity.
     split_path = os.path.join(HERE, EXPECTED["split_file"])
     if os.path.isfile(split_path):
         import json

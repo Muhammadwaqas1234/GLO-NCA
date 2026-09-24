@@ -3,9 +3,7 @@ import cv2
 import numpy as np
 
 class Dataset_3D(Dataset_Base):
-    r"""Base class to load 3D datasets
-        .. WARNING:: Not to be used directly!
-    """
+    r"""Base class for 3D datasets (not used directly)."""
     def __init__(self, slice=None, resize=True): 
         self.slice = slice
         self.count = 42
@@ -29,11 +27,11 @@ class Dataset_3D(Dataset_Base):
         return self.__getitem__(idx)
     
     def preprocessing(self, img, isLabel=False):
-        r"""Preprocessing of image slices
-            #Args
-                img (tensor): the image
-                isLabel (boolean): Whether its a mask or an image
-            .. warning:: Likely there is a preprocessing problem since performance is worse than the already preprocessed slices. ( I imagine the scaling functionality of the mask is at fault)
+        r"""Legacy slice preprocessing (unused by the production Nii_Gz_Dataset_3D path).
+
+        #Args
+            img (tensor): the image
+            isLabel (boolean): whether it is a mask
         """
         if not isLabel:
             img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
@@ -42,13 +40,10 @@ class Dataset_3D(Dataset_Base):
         if len(img.shape) > 2:
             img = img[:, :, 0] 
 
-        #img = np.repeat(img[:, :, np.newaxis], 3, axis=2)
         img = np.expand_dims(img, axis=-1)
 
         if isLabel:
             img[..., 0][img[...,0] != 0] = 1
-            #img[...,1] = 0
-            #img[...,2] = 0
 
         return img
 

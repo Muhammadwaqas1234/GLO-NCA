@@ -3,8 +3,7 @@ from src.agents.Agent_NCA import Agent_NCA
 import os
 
 class Agent_Multi_NCA(Agent_NCA):
-    """Base functionality for multiple NCAs working in combination
-    """
+    """Legacy V2 base for several separate NCA models trained together (one per cascade level)."""
     def batch_step(self, data, loss_f):
         r"""Execute a single batch training step
             #Args
@@ -33,8 +32,7 @@ class Agent_Multi_NCA(Agent_NCA):
         return loss_ret
 
     def save_state(self, model_path):
-        r"""Save state of current model
-        """
+        r"""Save the state of every model."""
         os.makedirs(model_path, exist_ok=True)
 
         for id, z in enumerate(zip(self.model, self.optimizer, self.scheduler)):
@@ -44,8 +42,7 @@ class Agent_Multi_NCA(Agent_NCA):
             torch.save(s.state_dict(), os.path.join(model_path, 'scheduler'+ str(id) +'.pth'))
 
     def load_state(self, model_path):
-        r"""Load state of current model
-        """
+        r"""Load the state of every model."""
         for id, z in enumerate(zip(self.model, self.optimizer, self.scheduler)):
             m, o, s = z
             m.load_state_dict(torch.load(os.path.join(model_path, 'model'+ str(id) +'.pth')))

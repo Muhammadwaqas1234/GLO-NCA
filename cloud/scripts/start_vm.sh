@@ -13,8 +13,7 @@ if gcloud compute instances describe "${VM_NAME}" $(vm_flags) >/dev/null 2>&1; t
   if [[ "${state}" == "RUNNING" ]]; then
     pass "VM ${VM_NAME} already RUNNING"
   else
-    # Phase 2 (cost safety): restarting a stopped GPU VM resumes billing
-    # immediately. Creation was already guarded by confirm(); restart was not.
+    # Restarting a stopped GPU VM resumes billing, so confirm first.
     log "VM ${VM_NAME} is ${state}; starting it resumes GPU billing"
     confirm "Start existing GPU VM ${VM_NAME} (${MACHINE_TYPE}, ${GPU_TYPE}) -- billing resumes?"
     gcloud compute instances start "${VM_NAME}" $(vm_flags)
@@ -24,15 +23,9 @@ else
   log "VM ${VM_NAME} does not exist -- creating it"
   log "  machine=${MACHINE_TYPE} gpu=${GPU_TYPE}x${GPU_COUNT} disk=${DISK_SIZE_GB}GB"
   log "  image=${IMAGE_FAMILY}/${IMAGE_PROJECT} zone=${GCP_ZONE}"
-  # PROVISIONING_MODEL: SPOT (preemptible, ~3x cheaper) or STANDARD
-  # (on-demand). Spot is safe for this workload because checkpoints are
-  # written every epoch, periodic snapshots every 5, and a background watcher
-  # rsyncs the experiment directory to GCS every GLO_SYNC_INTERVAL seconds, so
-  # a preemption costs at most one sync interval of progress.
-  #
-  # Termination action is STOP, not DELETE: the VM and its boot disk survive a
-  # preemption so `start_vm.sh` restarts the SAME instance and training resumes
-  # from last.pth. DELETE would discard anything not yet synced to GCS.
+  # SPOT (preemptible, ~3x cheaper) or STANDARD. Spot is safe: last.pth every
+  # epoch and a GCS sync every GLO_SYNC_INTERVAL seconds. Termination action is
+  # STOP, so the same VM and disk survive; relaunch with resume_training.sh.
   PROVISIONING_MODEL="${PROVISIONING_MODEL:-STANDARD}"
   spot_flags=()
   if [ "${PROVISIONING_MODEL}" = "SPOT" ]; then

@@ -1,11 +1,4 @@
-r"""Explicit, persisted training lifecycle.
-
-A long run gets interrupted: a Spot VM is reclaimed, a process is killed, a
-laptop sleeps. Afterwards someone has to answer, from the directory alone,
-what actually happened -- did it finish its budget, stop early, get extended,
-or die? A free-text status string cannot answer that reliably, so the
-lifecycle is a state machine whose transitions are enumerated and whose state
-is written to disk after every change.
+r"""Explicit training lifecycle, persisted to ``state.json`` after every change.
 
 States
 ------
@@ -19,15 +12,9 @@ States
 ``COMPLETED_300``        the planned epoch budget was reached
 ``EXTENDED``             continuing past the budget by explicit request
 ``COMPLETED_EXTENSION``  an extension finished
-``FAILED``               unrecoverable error
+``FAILED``               unrecoverable error (reachable from any state)
 
-Two distinctions the file format exists to protect:
-
-* a resumed run must not look like a new experiment, and
-* an extended run must not look like the original budget.
-
-Both are recorded as history, not inferred afterwards. ``FAILED`` is
-reachable from anywhere, because a crash can happen anywhere.
+Resumed and extended runs are recorded as history, never inferred.
 """
 from __future__ import annotations
 
@@ -52,16 +39,14 @@ STATES = (CREATED, PREFLIGHT, RUNNING, VALIDATING, BEST_UPDATED,
           CHECKPOINTED, EARLY_STOPPED, COMPLETED_300, EXTENDED,
           COMPLETED_EXTENSION, FAILED)
 
-# Terminal for this process. A run may LEAVE these only by an explicit new
-# action: resuming a stopped run, or extending a completed one.
+# Terminal for this process; left only by an explicit resume or extension.
 TERMINAL = (EARLY_STOPPED, COMPLETED_300, COMPLETED_EXTENSION, FAILED)
 
 #: Allowed transitions. FAILED is appended to every source below.
 _ALLOWED: Dict[str, tuple] = {
     CREATED: (PREFLIGHT, RUNNING),
     PREFLIGHT: (RUNNING,),
-    # A resumed run re-enters RUNNING from a terminal-ish state; that is why
-    # EARLY_STOPPED and COMPLETED_300 can lead back to RUNNING/EXTENDED.
+    # Resume re-enters RUNNING, so EARLY_STOPPED/COMPLETED_300 may lead back to RUNNING/EXTENDED.
     RUNNING: (VALIDATING, CHECKPOINTED, EARLY_STOPPED, COMPLETED_300,
               COMPLETED_EXTENSION, RUNNING),
     VALIDATING: (BEST_UPDATED, CHECKPOINTED, RUNNING, EARLY_STOPPED,
@@ -97,7 +82,7 @@ class TrainingState:
         self.metadata: Dict[str, Any] = {}
         self._record(CREATED, "workspace created")
 
-    # ------------------------------------------------------------- internals
+    # Internals.
     @property
     def path(self) -> str:
         return os.path.join(self.directory, self.FILENAME)
@@ -114,7 +99,7 @@ class TrainingState:
         if self.autosave:
             self.save()
 
-    # --------------------------------------------------------------- control
+    # Control.
     def can_transition(self, to: str) -> bool:
         if to not in STATES:
             return False
@@ -123,11 +108,7 @@ class TrainingState:
         return to in _ALLOWED.get(self.state, ())
 
     def transition(self, to: str, reason: str = "", **extra: Any) -> str:
-        """Move to `to`. Raises InvalidTransition if the lifecycle forbids it.
-
-        Refusing is the point: a run that silently jumps from CREATED to
-        COMPLETED_300 would produce a directory that lies about what ran.
-        """
+        """Move to ``to``; raises InvalidTransition if the lifecycle forbids it."""
         if to not in STATES:
             raise InvalidTransition(
                 f"unknown state {to!r}; expected one of {STATES}")
@@ -149,7 +130,7 @@ class TrainingState:
         if self.autosave:
             self.save()
 
-    # ------------------------------------------------------------ persistence
+    # Persistence.
     def to_dict(self) -> Dict[str, Any]:
         return {
             "run_id": self.run_id,
@@ -168,8 +149,8 @@ class TrainingState:
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self.to_dict(), fh, indent=2, default=str)
-        os.replace(tmp, self.path)           # atomic: a crash mid-write cannot
-        return self.path                     # leave a truncated state file
+        os.replace(tmp, self.path)  # atomic write: no truncated state file
+        return self.path
 
     @classmethod
     def load(cls, directory: str, *, run_id: str = "") -> "TrainingState":
@@ -185,8 +166,7 @@ class TrainingState:
                 obj.metadata = data.get("metadata", {})
                 obj.run_id = data.get("run_id", run_id)
             except (OSError, ValueError):
-                # A corrupt state file must not block recovery; the run
-                # restarts its lifecycle rather than dying on JSON.
+                # A corrupt state file restarts the lifecycle instead of blocking recovery.
                 obj.history.append({
                     "state": CREATED,
                     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
@@ -195,7 +175,7 @@ class TrainingState:
         obj.autosave = True
         return obj
 
-    # --------------------------------------------------------------- queries
+    # Queries.
     def summary(self) -> Dict[str, Any]:
         counts: Dict[str, int] = {}
         for h in self.history:

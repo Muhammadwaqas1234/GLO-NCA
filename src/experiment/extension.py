@@ -1,40 +1,12 @@
-r"""Explicit continuation of a training run past its planned epoch budget.
+r"""Explicit continuation of a completed run past its planned epoch budget.
 
-A production run is configured with a maximum budget (``training.epochs``).
-Reaching it means the run completed what it was planned to do. Training
-further is sometimes justified, but it is a deliberate act, so it is kept
-separate from ordinary resume:
+``--resume`` finishes an unfinished run; ``--extend-to N`` continues a finished
+one and records that it did. An extension carries over all state and refuses
+to run if the config, architecture, split or seed has drifted.
 
-* ``--resume`` continues an *unfinished* run toward its original budget.
-* ``--extend-to N`` continues a *finished* run beyond that budget, and says
-  so in the metadata.
-
-The distinction matters for reporting. "Trained for 301 epochs" and "planned
-for 300, then explicitly continued for one epoch from the epoch-300
-checkpoint" describe different experiments, and only the second is what
-actually happened.
-
-An extension is a continuation, never a restart. Model, optimizer, EMA,
-global step, validation history, best checkpoint and the top-k ranking all
-carry over. The original run's identity (config fingerprint, architecture,
-split SHA, seed) must match, or it is a new experiment rather than a
-continuation and this module refuses it.
-
-LEARNING-RATE WARNING
----------------------
-``CosineAnnealingLR`` is periodic: past ``T_max`` its learning rate rises
-again rather than staying at ``eta_min``. Measured for the production
-schedule (``T_max`` = 300 epochs, lr 1.6e-3, eta_min 1e-5)::
-
-    epoch 300 -> 1.00e-05      (eta_min, end of the planned decay)
-    epoch 301 -> 1.00e-05
-    epoch 310 -> 1.44e-05
-    epoch 350 -> 1.17e-04      (11.6x eta_min)
-
-So "just keep the saved scheduler state" is not a neutral choice past the
-horizon -- it is a warm restart, and it changes the LR trajectory. Because
-that is a scientific decision, an extension must state its policy explicitly
-(``--lr-policy``); there is no default.
+LR past the horizon depends on the scheduler: the production WarmupCosineLR
+holds at ``eta_min``, while a plain CosineAnnealingLR rises again (a warm
+restart). ``--lr-policy`` (default ``freeze``) makes the choice explicit.
 """
 from __future__ import annotations
 
@@ -55,7 +27,7 @@ PROTECTED_IDENTITY = (
     ("ema", "decay"),
 )
 
-# Model-architecture fields. A change here is a different model, full stop.
+# Model-architecture fields; a change here is a different model.
 PROTECTED_ARCHITECTURE = (
     ("model", "level1"), ("model", "level2"), ("model", "level3"),
     ("model", "fire_rate"), ("model", "hidden"), ("model", "dropout"),
@@ -67,9 +39,10 @@ LR_POLICIES = {
     "freeze": ("Hold the learning rate at the scheduler's final value "
                "(eta_min). The extension trains at a constant minimum LR; "
                "the original decay curve is left intact and is not resumed."),
-    "continue": ("Step the saved scheduler onward. NOTE: CosineAnnealingLR "
-                 "is periodic, so this RAISES the learning rate past T_max "
-                 "(a warm restart), which changes the LR trajectory."),
+    "continue": ("Step the saved scheduler onward. With the production "
+                 "WarmupCosineLR the learning rate HOLDS at eta_min past the "
+                 "original horizon (the same LR as 'freeze'). Only a legacy "
+                 "periodic CosineAnnealingLR would rise again past T_max."),
     "rebuild": ("Rebuild the cosine schedule over the NEW horizon. This "
                 "retroactively changes the whole LR curve, so epochs 1..300 "
                 "no longer match the original run. Rarely correct."),
@@ -159,12 +132,7 @@ def plan_extension(*, checkpoint: Dict[str, Any], checkpoint_path: str,
                    current_cfg: Dict[str, Any], target_epoch: int,
                    lr_policy: str, reason: str,
                    parent_run_id: str = "") -> ExtensionPlan:
-    """Validate a requested continuation and return an executable plan.
-
-    Raises ExtensionError -- never returns a partially-valid plan -- if the
-    checkpoint is incomplete, the target does not extend the parent, the LR
-    policy is unstated, or any protected identity field has drifted.
-    """
+    """Validate a requested continuation and return a plan; raises ExtensionError on any problem."""
     if lr_policy not in LR_POLICIES:
         raise ExtensionError(
             f"lr_policy must be one of {sorted(LR_POLICIES)}, got "
@@ -231,15 +199,14 @@ def apply_lr_policy(schedulers: List[Any], plan: ExtensionPlan,
         for s in schedulers:
             lr = [g["lr"] for g in s.optimizer.param_groups]
             frozen.append(lr)
-            # Replace with a constant-LR schedule so nothing steps the LR.
+            # Hold the LR constant: nothing steps the scheduler.
             for g in s.optimizer.param_groups:
                 g["lr"] = g["lr"]
         note["frozen_lr"] = frozen
         note["effect"] = ("learning rate held constant for the extension; "
                           "the scheduler is not stepped")
     elif plan.lr_policy == "continue":
-        # The behaviour past the horizon depends on WHICH scheduler the run
-        # used, so describe the one actually present rather than assuming.
+        # Describe the scheduler the run actually used.
         periodic = any(type(s).__name__ == "CosineAnnealingLR" for s in schedulers)
         if periodic:
             note["effect"] = ("saved scheduler stepped onward; for a periodic "

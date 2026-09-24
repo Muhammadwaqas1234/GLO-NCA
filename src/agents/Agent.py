@@ -7,9 +7,7 @@ from src.utils.helper import convert_image
 from src.losses.LossFunctions import DiceLoss
 import math
 
-# seaborn / matplotlib are only used by the optional NQM visualisation methods
-# (plot_results_byPatient, labelVariance). Import them lazily so training does
-# not require them -- they are not runtime dependencies of the model.
+# seaborn / matplotlib are imported lazily: only the optional visualisation methods use them.
 try:
     import seaborn as sns
 except Exception:  # pragma: no cover - visualisation only
@@ -47,8 +45,7 @@ def iou_score(pred, target, threshold=0.5, smooth=1e-6):
 
 def _surface_distances(a, b):
     r"""Distances from every surface voxel of ``a`` to the surface of ``b``."""
-    # Surface = foreground voxels minus their eroded interior is overkill here;
-    # distance_transform_edt on the complement gives distance-to-foreground.
+    # Distance transform of the complement gives distance-to-foreground.
     dt_b = distance_transform_edt(~b)
     return dt_b[a]
 
@@ -77,9 +74,7 @@ def hd95_score(pred, target, threshold=0.5):
     return float(np.percentile(all_d, 95))
 
 class BaseAgent():
-    """Base class for all agents. Handles basic training and only needs to be adapted if special use cases are necessary.
-    
-    .. note:: In many cases only the data preparation and outputs need to be changed."""
+    """Base agent: generic training loop; subclasses usually override data preparation and outputs."""
     def __init__(self, model):
         self.model = model
 
@@ -91,10 +86,9 @@ class BaseAgent():
         self.initialize()
 
     def initialize(self):
-        r"""Initialize agent with optimizers and schedulers
-        """
+        r"""Build optimizers and schedulers."""
         self.device = torch.device(self.exp.get_from_config('device'))
-        # If stacked NCAs
+        # Stacked models: one optimizer and scheduler per model.
         if isinstance(self.model, list):
             self.optimizer = []
             self.scheduler = []
@@ -106,10 +100,7 @@ class BaseAgent():
             self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, self.exp.get_from_config('lr_gamma'))
 
     def _make_optimizer(self, params):
-        r"""Build the optimizer from config. Defaults to AdamW (decoupled weight
-            decay), which is the choice in the thesis methodology; set
-            config['optimizer'] to 'adam' to reproduce the original behaviour.
-        """
+        r"""Build the optimizer from config: AdamW by default, 'adam' for the original behaviour."""
         name = (self.exp.get_from_config('optimizer') or 'adamw').lower()
         lr = self.exp.get_from_config('lr')
         betas = self.exp.get_from_config('betas')
@@ -228,10 +219,6 @@ class BaseAgent():
                 self.exp.write_scalar('Dice/test/mask' + str(key), sum(loss_log[key].values())/len(loss_log[key]), epoch)
                 self.exp.write_histogram('Dice/test/byPatient/mask' + str(key), np.fromiter(loss_log[key].values(), dtype=float), epoch)
         param_lst = []
-        # TODO: ADD AGAIN 
-        #for param in self.model.parameters():
-        #    param_lst.extend(np.fromiter(param.flatten(), dtype=float))
-        #self.exp.write_histogram('Model/weights', np.fromiter(param_lst, dtype=float), epoch)
 
     def getAverageDiceScore(self, useSigmoid=True, tag = "", pseudo_ensemble=False, showResults=False):
         r"""Get the average Dice test score.
@@ -277,9 +264,6 @@ class BaseAgent():
             if epoch % self.exp.get_from_config('evaluate_interval') == 0:
                 print("Evaluate model")
                 self.intermediate_evaluation(dataloader, epoch)
-            #if epoch % self.exp.get_from_config('ood_interval') == 0:
-            #    print("Evaluate model in OOD cases")
-            #    self.ood_evaluation(epoch=epoch)
             if epoch % self.exp.get_from_config('save_interval') == 0:
                 print("Model saved")
                 self.save_state(os.path.join(self.exp.get_from_config('model_path'), 'models', 'epoch_' + str(self.exp.currentStep)))
@@ -294,18 +278,6 @@ class BaseAgent():
         return image
 
 
-    #def ood_evaluation(self, ood_cases=["random_noise", "random_spike", "random_anitrosopy"], epoch=0):
-    #    print("OOD EVALUATION")
-    #    dataset_train = self.exp.dataset
-    #    diceLoss = DiceLoss(useSigmoid=True)
-    #    for augmentation in ood_cases:
-    #        dataset_eval = Nii_Gz_Dataset(aug_type=augmentation)
-    #        self.exp.dataset = dataset_eval
-    #        loss_log = self.test(diceLoss, tag='ood/' + str(augmentation) + '/')
-    #        for key in loss_log.keys():
-    #            self.exp.write_scalar('ood/Dice/' + str(key) + ", " + str(augmentation), sum(loss_log[key].values())/len(loss_log[key]), epoch)
-    #            self.exp.write_histogram('ood/Dice/' + str(key) + ", " + str(augmentation) + '/byPatient', np.fromiter(loss_log[key].values(), dtype=float), epoch)
-    #    self.exp.dataset = dataset_train
 
 
     def labelVariance(self, images, mean, img_mri, img_id, targets, showResults=False):
@@ -327,7 +299,6 @@ class BaseAgent():
         stdd = np.sqrt(stdd)
 
         if showResults:
-            #print(img_mri)
             image1 = img_mri[0, :, img_mri.shape[2] // 2, :, 0]
             image2 = mean[0, :, mean.shape[2] // 2, :,  0]
             image3 = stdd[0, :, stdd.shape[2] // 2, :,  0]
@@ -360,24 +331,23 @@ class BaseAgent():
 
         print("NQM Score: ", np.sum(stdd) / np.sum(mean))
 
-        # Save files refactor
         if False:
             nib_save = np.expand_dims(img_mri[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_image.nii.gz"))
             
             nib_save = np.expand_dims(targets[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_gt.nii.gz"))
 
             nib_save = np.expand_dims(stdd[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_variance.nii.gz"))
 
             nib_save = np.expand_dims(mean[0, ..., 0], axis=-1) 
             nib_save[nib_save > 0.5] = 1 
             nib_save[nib_save != 1] = 0
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_label.nii.gz"))
         
             f = open(os.path.join("path", str(img_id) + "_score.txt"), "a")
@@ -458,7 +428,7 @@ class BaseAgent():
                         out = patient_id + ", "
                         for m in range(patient_3d_image.shape[3]):
                             if(1 in np.unique(patient_3d_label[...,m].detach().cpu().numpy())):
-                                loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item() #,, mask = patient_3d_label[...,4].bool()
+                                loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item()
 
                                 if math.isnan(loss_log[m][patient_id]):
                                     loss_log[m][patient_id] = 0
@@ -492,12 +462,9 @@ class BaseAgent():
                     patient_id = id
                     print('ID:', patient_id)
 
-                    #print(patient_3d_image.shape,patient_3d_label.shape )
                     for m in range(patient_3d_image.shape[-1]):
                         loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item()
-                        # mIoU + HD95 on the binarised prediction (sigmoid since
-                        # model emits logits). Region order matches the dataset:
-                        # 0=WT, 1=TC, 2=ET for BraTS.
+                        # mIoU + HD95 on the sigmoid-binarised prediction; regions 0=WT, 1=TC, 2=ET.
                         pred_prob = torch.sigmoid(patient_3d_image[..., m]).numpy()
                         gt_np = patient_3d_label[..., m].numpy()
                         iou_log[m][patient_id] = iou_score(pred_prob, gt_np)
@@ -516,7 +483,7 @@ class BaseAgent():
                             self.prepare_image_for_display(patient_3d_label[:,:,:,5:6,:].detach().cpu()).numpy(), 
                             encode_image=False), self.exp.currentStep)
 
-                            # REFACTOR: Save predictions
+                            # Save predictions.
                             if False:
                                 label_out = torch.sigmoid(patient_3d_image[0, ...])
                                 nib_save = nib.Nifti1Image(label_out  , np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1))), nib.Nifti1Header())
@@ -551,8 +518,7 @@ class BaseAgent():
                     print("Average HD95 3d: " + str(key) + ", " + str(sum(valid_hd)/len(valid_hd)))
 
             self.exp.set_model_state('train')
-            # Keep the metric dicts on the agent so callers can inspect mIoU/HD95
-            # without changing the long-standing return type (Dice loss_log).
+            # Keep metric dicts on the agent; the return type stays the Dice loss_log.
             self.last_iou_log = iou_log
             self.last_hd95_log = hd95_log
             return loss_log

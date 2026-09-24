@@ -1,36 +1,15 @@
-r"""
-================================================================================
-Agent_GLO_NCA_V3 -- production-runner adapter for the V3 multi-level model.
-================================================================================
-V3 is a single UNIFIED ``nn.Module`` (``GLO_NCA_V3_MultiLevel``) whose forward
-takes channels-last modalities (B,X,Y,Z,4) and returns channels-first logits
-(B,3,X,Y,Z). The existing experiment runner, however, drives the model ONLY
-through the agent interface used by V2:
+r"""Agent adapter that drives the two-level GLO-NCA model through the runner's agent interface.
 
-    prepare_data(data, eval=...)  -> (id, inputs, targets)   [channels-last]
-    get_outputs(data, full_img=?) -> (outputs, targets)      [channels-last,
-                                                               WT/TC/ET last dim]
-    agent.model      : list[nn.Module]     (grad-clip + param count)
-    agent.optimizer  : list[Optimizer]     (zero_grad/step in the training step)
-    agent.scheduler  : list[_LRScheduler]  (step in the training step)
+The model takes channels-last modalities (B,X,Y,Z,4) and returns channels-first logits
+(B,3,X,Y,Z). The runner expects:
 
-This adapter presents EXACTLY that interface around the one V3 model, so the
-runner's training step, loss handling, EMA, checkpoint/resume, evaluation,
-threshold tuning, manifest and graphs are all reused UNCHANGED. Nothing about
-V2 is touched: V2 keeps using ``Agent_GLO_NCA`` with two ``GLO_NCA_Cell`` models.
+    prepare_data(data, eval=...)  -> (id, inputs, targets)   channels-last
+    get_outputs(data, full_img=?) -> (outputs, targets)      channels-last, WT/TC/ET last
+    agent.model / optimizer / scheduler : one-element lists
 
-Design notes:
-  * ``self.model`` is a single-element list ``[v3_model]`` so the base
-    ``Agent_NCA.initialize`` (which branches on ``isinstance(self.model, list)``)
-    builds ONE optimizer + ONE scheduler -- matching V3's single set of params.
-  * ``prepare_data`` does NOT build a V2 seed: V3 seeds each level internally, so
-    it needs the raw modalities channels-last. Targets are kept channels-last
-    with WT/TC/ET in the last dim (as the dataset yields them).
-  * ``get_outputs`` runs the V3 forward and permutes the channels-first logits
-    back to channels-last so the runner's per-region loss/eval code is identical.
-    ``full_img`` is accepted (eval calls it) but V3 processes the whole volume in
-    one pass anyway, so there is no separate patch/full-image code path.
-================================================================================
+self.model is [model], so the base initialize builds one optimizer and one scheduler.
+No seed is built here (the model seeds each level), and the whole volume is processed
+in one pass, so full_img is accepted only for API parity.
 """
 import torch
 
@@ -38,28 +17,21 @@ from src.agents.Agent_NCA import Agent_NCA
 
 
 class Agent_GLO_NCA_V3(Agent_NCA):
-    """Adapter agent that drives the unified V3 multi-level model through the
-    same interface the runner uses for V2."""
+    """Single-model agent for two-level GLO-NCA."""
 
     def initialize(self):
-        # Base Agent_NCA.initialize -> BaseAgent.initialize builds one optimizer +
-        # one ExponentialLR scheduler because self.model is a length-1 list. The
-        # runner then REPLACES the scheduler with a CosineAnnealingLR over the
-        # whole run (identical to V2), so the placeholder here is harmless.
+        # The base initialize builds a placeholder ExponentialLR; the runner replaces it
+        # (WarmupCosineLR in production).
         super().initialize()
 
     def prepare_data(self, data, eval=False):
         r"""Return (id, modalities_cl, targets_cl) on the device.
 
-        Unlike the V2 agent we do NOT call ``make_seed``: the V3 model builds its
-        own per-level seeds. ``inputs`` stay as raw modalities (B,X,Y,Z,4) and
-        ``targets`` stay channels-last (B,X,Y,Z,3), exactly as the dataset emits
-        them, so the runner's per-region loss/metrics indexing is unchanged.
+        No make_seed: the model builds its own per-level seeds. Inputs (B,X,Y,Z,4) and
+        targets (B,X,Y,Z,3) stay channels-last as the dataset emits them.
         """
         id, inputs, targets = data
-        # non_blocking pairs with the loader's pin_memory=True so the host->device
-        # copy can overlap compute. Numerically identical; PyTorch inserts the
-        # needed stream synchronisation before the tensors are used.
+        # non_blocking pairs with pin_memory=True to overlap the copy with compute.
         inputs = inputs.type(torch.FloatTensor).to(self.device, non_blocking=True)
         targets = targets.type(torch.FloatTensor).to(self.device, non_blocking=True)
         if targets.dim() < 5:  # (B,X,Y,Z) -> (B,X,Y,Z,1); normally already 5-D
@@ -67,39 +39,28 @@ class Agent_GLO_NCA_V3(Agent_NCA):
         return id, inputs, targets
 
     def get_outputs(self, data, full_img=False, tag="", **kwargs):
-        r"""Run the unified V3 forward and return channels-last (outputs, targets).
+        r"""Run the forward and return channels-last (outputs, targets).
 
-            #Args
-                data: (id, modalities_cl, targets_cl) from ``prepare_data``.
-                full_img: accepted for API parity with the V2 agent (evaluation
-                    passes it). V3 always processes the whole input volume in a
-                    single forward, so there is no separate patch code path.
-            #Returns
-                outputs_cl: (B, X, Y, Z, 3) logits (WT/TC/ET last), channels-last.
-                targets_cl: (B, X, Y, Z, 3) ground truth, channels-last.
+        #Args
+            data: (id, modalities_cl, targets_cl) from prepare_data.
+            full_img: accepted for API parity; the whole volume is always one forward.
+        #Returns
+            outputs_cl: (B, X, Y, Z, 3) logits, WT/TC/ET last.
+            targets_cl: (B, X, Y, Z, 3) ground truth.
         """
         id, inputs, targets = data
         model = self.model[0]
         logits_cf = model(inputs)                      # (B, 3, X, Y, Z)
-        # With deep supervision the model returns (logits, [aux...]) while
-        # training and a bare tensor in eval(). The (outputs, targets) contract
-        # is unchanged for every caller; the auxiliary logits are stashed for
-        # the training step, which is the only consumer.
+        # Deep supervision: in training the model returns (logits, [aux...]); aux logits
+        # are stashed for the training step, the only consumer.
         self.last_aux_logits = []
         if isinstance(logits_cf, tuple):
             logits_cf, self.last_aux_logits = logits_cf
         outputs_cl = logits_cf.permute(0, 2, 3, 4, 1).contiguous()  # -> channels-last
 
-        # --- ROI-AWARE TARGET ALIGNMENT -------------------------------------
-        # When the model computed its high-resolution level over a region of
-        # interest, the prediction describes only that sub-region. The target
-        # MUST then be cropped with the model's OWN ROI coordinates -- blindly
-        # resizing the full-volume label onto the ROI prediction would compare
-        # different anatomy and silently corrupt training.
-        #
-        # `last_roi_box()` returns [] when no crop happened (roi_fraction == 1,
-        # which is the default and is also forced for evaluation), so the
-        # original resize path below still handles the ordinary case.
+        # ROI alignment: if L2 ran on a region of interest, crop the target with the
+        # model's own ROI box. last_roi_box() is [] when roi_fraction == 1 (production),
+        # so the resize path below handles the normal case.
         boxes = model.last_roi_box() if hasattr(model, "last_roi_box") else []
         if boxes:
             if len(boxes) != outputs_cl.shape[0]:
@@ -110,9 +71,8 @@ class Agent_GLO_NCA_V3(Agent_NCA):
             from src.models.Model_GLO_NCA_GlobalContext import crop_target_to_roi
             targets = crop_target_to_roi(targets, boxes, outputs_cl.shape[1])
         elif targets.shape[1:4] != outputs_cl.shape[1:4]:
-            # No ROI was used: align resolution only (V3's finest level fixes the
-            # output size; the dataset volume may differ). Nearest keeps the
-            # masks strictly binary, so ET subset TC subset WT is preserved.
+            # No ROI: resize the target to the output resolution (L2, 64³ in production).
+            # Nearest keeps masks binary, preserving ET within TC within WT.
             t_cf = targets.permute(0, 4, 1, 2, 3).contiguous()
             t_cf = torch.nn.functional.interpolate(
                 t_cf, size=tuple(outputs_cl.shape[1:4]), mode="nearest")

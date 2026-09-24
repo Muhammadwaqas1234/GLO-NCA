@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Download a complete experiment directory from GCS to the local machine,
-# preserving the exact Phase 1 structure. Read-only against GCS.
+# Download one experiment directory from GCS (read-only against GCS).
 #
 # Usage:
-#   ./cloud/scripts/download_experiment.sh GLO-NCA-V2-YYYYMMDD-HHMMSS [dest_base]
+#   ./cloud/scripts/download_experiment.sh GLO-NCA-PRODUCTION-YYYYMMDD-HHMMSS [dest_base]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 require_gcloud_auth

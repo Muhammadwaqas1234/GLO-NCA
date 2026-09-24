@@ -3,19 +3,10 @@ import os
 
 
 class Data_Container():
-    r"""Bounded in-memory store for preprocessed volumes.
+    r"""Bounded LRU store for preprocessed volumes (per process).
 
-    This was an unbounded dict: every case loaded in a process stayed resident
-    for the lifetime of that process. At 128^3 a case costs ~56 MB (4 modality
-    volumes + 3 region masks, float32), so 898 training cases need ~49 GB and
-    each DataLoader worker keeps its OWN copy. A worker was OOM-killed at
-    16.3 GB RSS after roughly 298 cases.
-
-    The store is now an LRU capped at ``GLO_RAM_CACHE_CASES`` entries
-    (default 24, about 1.3 GB at 128^3). Durable reuse is the job of the
-    on-disk preprocessing cache, which already exists and survives across
-    epochs and processes; this layer only avoids repeated work within a short
-    window. Set the variable to 0 to disable in-memory retention entirely.
+    Capped at GLO_RAM_CACHE_CASES entries (default 24, about 1.3 GB at 128³; 0 disables it).
+    An unbounded dict OOM-killed workers; durable reuse is the on-disk preprocessing cache.
     """
 
     DEFAULT_MAX_ENTRIES = 24
@@ -31,11 +22,7 @@ class Data_Container():
         self.data = OrderedDict()
 
     def get_data(self, key):
-        r"""Return previously processed data, or False when absent.
-
-        Returning False (not None) preserves the original contract: callers
-        test the result for truthiness.
-        """
+        r"""Return stored data, or False when absent (callers test truthiness)."""
         if key in self.data:
             self.data.move_to_end(key)
             return self.data[key]

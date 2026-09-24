@@ -5,65 +5,40 @@ import cv2
 import numpy as np
 
 def dump_pickle_file(file, path):
-    r"""Dump pickle file in path
-        #Args:
-            file: the file to dump
-            path: location to dump file to
-    """
+    r"""Pickle ``file`` to ``path``."""
     with open(path, 'wb') as output_file:
         pickle.dump(file, output_file)
 
 def load_pickle_file(path):
-    r"""Load pickle file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load a pickle from ``path``."""
     with open(path, 'rb') as input_file:
         file = pickle.load(input_file)
     return file
 
 def dump_compressed_pickle_file(file, path):
-    r"""Dump compressed pickle file in path
-        #Args:
-            file: the file to dump
-            path: location to dump file to
-    """
+    r"""Compressed-pickle ``file`` to ``path``."""
     with bz2.BZ2File(path, 'w') as output_file:
         pickle.dump(file, output_file)
 
 def load_compressed_pickle_file(path):
-    r"""Load compressed pickle file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load a compressed pickle from ``path``."""
     with bz2.BZ2File(path, 'rb') as input_file:
         file = pickle.load(input_file)
     return file
     
 def dump_json_file(file, path):
-    r"""Dump json file in path
-        #Args:
-            file: the json file to dump
-            path: location to dump file to
-    """
+    r"""Write ``file`` as JSON to ``path``."""
     with open(path, 'w') as output_file:
         json.dump(file, output_file)
 
 def load_json_file(path):
-    r"""Load json file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load JSON from ``path``."""
     with open(path, 'r') as input_file:
         file =  json.load(input_file)
     return file
 
 def convert_image(img, prediction, label=None, encode_image=True):
-    r"""Convert an image plus an optional label into one image that can be dealt with by Pillow and similar to display
-        TODO: Write nicely and optmiize output, currently only for displaying intermediate results
-        #Args
-
-            """
+    r"""Combine an image and optional label into one displayable image (visualisation only)."""
     img_rgb = img 
     img_rgb = img_rgb - np.amin(img_rgb)
     img_rgb = img_rgb * img_rgb 
@@ -119,11 +94,7 @@ def orderArray(array):
 
 
 def encode(img_rgb, size=(150, 100)):
-    r"""Encode an image
-        #Args:
-            img_rgb: the input image
-            size: size of the image
-    """
+    r"""Encode an RGB image of the given size."""
     size_img = img_rgb.shape
     size_img = [1, size_img[0]/ size_img[1]]
 
