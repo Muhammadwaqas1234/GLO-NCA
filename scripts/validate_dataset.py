@@ -28,6 +28,11 @@ def main() -> int:
     ap.add_argument("--config", default=None, help="YAML config to read dataset.root/modalities from")
     ap.add_argument("--limit", type=int, default=None, help="validate only the first N patients")
     ap.add_argument("--report", default=None, help="write the JSON report to this path")
+    ap.add_argument("--policy", default=None,
+                    help="data-quality policy file (default: the config's "
+                         "data.quality_policy_file, else split/data_quality_policy.json)")
+    ap.add_argument("--strict", action="store_true",
+                    help="ignore the data-quality policy (any label outside {0..4} fails)")
     args = ap.parse_args()
 
     modalities = None
@@ -39,7 +44,18 @@ def main() -> int:
         root = root or cfg.get("dataset", "root")
 
     root = resolve_data_root(root)
-    report = validate_dataset(root, modalities=modalities, limit=args.limit)
+    # Same policy as the runner, so tolerated cases pass here as they do in training.
+    from src.experiment.data_quality import load_policy
+    dq_path = args.policy or "__unset__"   # "__unset__" -> the default policy file
+    if args.policy is None and args.config:
+        dq_path = (cfg.section("data") or {}).get("quality_policy_file", "__unset__")
+    policy = None if (args.strict or dq_path is None) else load_policy(
+        None if dq_path == "__unset__" else dq_path)
+    print(f"data-quality policy: {policy.describe() if policy else 'none (strict)'}")
+    report = validate_dataset(root, modalities=modalities, limit=args.limit, policy=policy)
+    bad = [p["patient"] for p in report.get("patients", []) if not p.get("ok")]
+    if bad:
+        print(f"failed cases: {bad}")
     print(summarize(report))
 
     if args.report:
