@@ -10,7 +10,8 @@ Requires=docker.service
 Type=simple
 EnvironmentFile=/etc/glo-nca.env
 # The repo path is in the env file; the wrapper reads /etc/glo-nca.env itself.
-ExecStart=/bin/bash -lc '"${GLO_REPO}"/cloud/scripts/_train_entrypoint.sh'
+# Run through bash so the unit does not depend on the script's executable bit.
+ExecStart=/bin/bash -lc 'exec /bin/bash "${GLO_REPO}"/cloud/scripts/_train_entrypoint.sh'
 Restart=no
 # Long stop timeout so an in-flight checkpoint write can finish.
 TimeoutStopSec=120
