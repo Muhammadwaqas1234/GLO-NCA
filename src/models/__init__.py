@@ -1,4 +1,1 @@
-"""
-Models go here.
-
-"""
+"""Models go here."""

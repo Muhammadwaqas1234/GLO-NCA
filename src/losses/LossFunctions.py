@@ -2,23 +2,14 @@ import torch
 import torch.nn.functional as F
 
 class DiceLoss(torch.nn.Module):
-    r"""Dice Loss
-    """
+    r"""Dice loss."""
     def __init__(self, useSigmoid = True):
-        r"""Initialisation method of DiceLoss
-            #Args:
-                useSigmoid: Whether to use sigmoid
-        """
+        r"""useSigmoid: apply a sigmoid to the input."""
         self.useSigmoid = useSigmoid
         super(DiceLoss, self).__init__()
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-                smooth: Smoothing value
-        """
+        r"""Forward function"""
         if self.useSigmoid:
             input = torch.sigmoid(input)  
         input = torch.flatten(input)
@@ -29,24 +20,14 @@ class DiceLoss(torch.nn.Module):
         return 1 - dice
 
 class DiceLoss_mask(torch.nn.Module):
-    r"""Dice Loss mask, that only calculates on masked values
-    """
+    r"""Dice loss computed on masked voxels only."""
     def __init__(self, useSigmoid = True):
-        r"""Initialisation method of DiceLoss mask
-            #Args:
-                useSigmoid: Whether to use sigmoid
-        """
+        r"""useSigmoid: apply a sigmoid to the input."""
         self.useSigmoid = useSigmoid
         super(DiceLoss_mask, self).__init__()
 
     def forward(self, input, target, mask = None, smooth=1):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-                smooth: Smoothing value
-                mask: The mask which defines which values to consider
-        """
+        r"""Forward function"""
         if self.useSigmoid:
             input = torch.sigmoid(input)  
         input = torch.flatten(input)
@@ -61,23 +42,14 @@ class DiceLoss_mask(torch.nn.Module):
         return 1 - dice
 
 class DiceBCELoss(torch.nn.Module):
-    r"""Dice BCE Loss
-    """
+    r"""Dice + BCE loss."""
     def __init__(self, useSigmoid = True):
-        r"""Initialisation method of DiceBCELoss
-            #Args:
-                useSigmoid: Whether to use sigmoid
-        """
+        r"""Initialisation method of DiceBCELoss"""
         self.useSigmoid = useSigmoid
         super(DiceBCELoss, self).__init__()
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-                smooth: Smoothing value
-        """
+        r"""Forward function"""
         input = torch.sigmoid(input)       
         input = torch.flatten(input) 
         target = torch.flatten(target)
@@ -90,23 +62,14 @@ class DiceBCELoss(torch.nn.Module):
         return Dice_BCE
 
 class BCELoss(torch.nn.Module):
-    r"""BCE Loss
-    """
+    r"""BCE loss."""
     def __init__(self, useSigmoid = True):
-        r"""Initialisation method of DiceBCELoss
-            #Args:
-                useSigmoid: Whether to use sigmoid
-        """
+        r"""Initialisation method of DiceBCELoss"""
         self.useSigmoid = useSigmoid
         super(BCELoss, self).__init__()
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-                smooth: Smoothing value
-        """
+        r"""Forward function"""
         input = torch.sigmoid(input)       
         input = torch.flatten(input) 
         target = torch.flatten(target)
@@ -115,24 +78,15 @@ class BCELoss(torch.nn.Module):
         return BCE
 
 class FocalLoss(torch.nn.Module):
-    r"""Focal Loss
-    """
+    r"""Focal loss."""
     def __init__(self, gamma=2, eps=1e-7):
-        r"""Initialisation method of DiceBCELoss
-            #Args:
-                gamma
-                eps
-        """
+        r"""Initialisation method of DiceBCELoss"""
         super(FocalLoss, self).__init__()
         self.gamma = gamma
         self.eps = eps
 
     def forward(self, input, target):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-        """
+        r"""Forward function"""
         input = torch.sigmoid(input)
         input = torch.flatten(input)
         target = torch.flatten(target)
@@ -141,30 +95,21 @@ class FocalLoss(torch.nn.Module):
         logit = logit.clamp(self.eps, 1. - self.eps)
 
         loss_bce = torch.nn.functional.binary_cross_entropy(input, target, reduction='mean')
-        loss = loss_bce * (1 - logit) ** self.gamma  # focal loss
+        loss = loss_bce * (1 - logit) ** self.gamma  # focal term
         loss = loss.mean()
         return loss
 
 
 class DiceFocalLoss(FocalLoss):
-    r"""Dice Focal Loss
-    """
+    r"""Dice + focal loss."""
     def __init__(self, gamma=2, eps=1e-7):
-        r"""Initialisation method of DiceBCELoss
-            #Args:
-                gamma
-                eps
-        """
+        r"""Initialisation method of DiceBCELoss"""
         super(DiceFocalLoss, self).__init__()
         self.gamma = gamma
         self.eps = eps
 
     def forward(self, input, target):
-        r"""Forward function
-            #Args:
-                input: input array
-                target: target array
-        """
+        r"""Forward function"""
         input = torch.sigmoid(input)
         input = torch.flatten(input)
         target = torch.flatten(target)
@@ -176,25 +121,13 @@ class DiceFocalLoss(FocalLoss):
         logit = logit.clamp(self.eps, 1. - self.eps)
 
         loss_bce = torch.nn.functional.binary_cross_entropy(input, target, reduction='mean')
-        focal = loss_bce * (1 - logit) ** self.gamma  # focal loss
+        focal = loss_bce * (1 - logit) ** self.gamma  # focal term
         dice_focal = focal.mean() + dice_loss
         return dice_focal
 
 
 class DiceCELoss(torch.nn.Module):
-    r"""Dice + Cross-Entropy loss for multi-class / multi-label segmentation.
-
-    Designed for BraTS, where the tumor regions (ET / TC / WT) are *nested*
-    and therefore treated as independent binary channels (multi-label) rather
-    than mutually exclusive softmax classes. Each channel gets a sigmoid, a
-    Dice term and a binary-cross-entropy term; the per-channel losses are
-    averaged. This matches the per-region Dice the Agent loop already computes.
-
-    #Args:
-        useSigmoid: apply sigmoid to logits (set False if inputs are already
-            probabilities).
-        dice_weight / ce_weight: relative weighting of the two terms.
-    """
+    r"""Dice + Cross-Entropy loss for multi-class / multi-label segmentation."""
     def __init__(self, useSigmoid=True, dice_weight=1.0, ce_weight=1.0):
         super(DiceCELoss, self).__init__()
         self.useSigmoid = useSigmoid
@@ -202,16 +135,7 @@ class DiceCELoss(torch.nn.Module):
         self.ce_weight = ce_weight
 
     def forward(self, input, target, smooth=1):
-        r"""Forward function.
-
-        Accepts either a single channel (input shape == target shape) or a
-        stack of channels, where the last dim indexes the region. The loss is
-        averaged over channels so it is comparable across region counts.
-            #Args:
-                input: raw logits (or probabilities if useSigmoid=False)
-                target: binary ground-truth, same shape as input
-                smooth: Dice smoothing value
-        """
+        r"""Loss averaged over the region channels."""
         if self.useSigmoid:
             input = torch.sigmoid(input)
 
@@ -229,19 +153,7 @@ class DiceCELoss(torch.nn.Module):
 
 
 class TverskyCELoss(torch.nn.Module):
-    r"""Tversky + BCE loss - tuned for small, imbalanced regions (ET / TC).
-
-    Tversky generalises Dice with separate penalties for false positives
-    (alpha) and false negatives (beta). For tiny structures like the enhancing
-    tumour, setting beta > alpha (e.g. 0.7 / 0.3) penalises MISSED tumour voxels
-    harder than false alarms, which raises recall and typically lifts ET/TC Dice
-    compared with plain Dice. A small BCE term keeps gradients stable.
-
-    #Args:
-        alpha: weight on false positives.
-        beta:  weight on false negatives (use beta > alpha for small regions).
-        ce_weight: weight of the auxiliary BCE term.
-    """
+    r"""Tversky + BCE loss - tuned for small, imbalanced regions (ET / TC)."""
     def __init__(self, alpha=0.3, beta=0.7, ce_weight=0.5, useSigmoid=True):
         super(TverskyCELoss, self).__init__()
         self.alpha = alpha
@@ -263,18 +175,7 @@ class TverskyCELoss(torch.nn.Module):
 
 
 class FocalTverskyCELoss(torch.nn.Module):
-    r"""Focal Tversky + BCE - focuses learning on the hard, small regions (ET).
-
-    Focal Tversky raises the Tversky loss to a power gamma > 1, which
-    down-weights easy (already well-segmented) voxels and concentrates gradient
-    on the hard cases. Combined with beta > alpha (recall focus), this is the
-    standard SOTA choice for the tiny enhancing-tumour region on BraTS.
-
-    #Args:
-        alpha / beta: false-positive / false-negative weights (beta > alpha).
-        gamma:  focal exponent (1.0 = plain Tversky; ~1.33 is common).
-        ce_weight: weight of the auxiliary BCE term.
-    """
+    r"""Focal Tversky + BCE - focuses learning on the hard, small regions (ET)."""
     def __init__(self, alpha=0.3, beta=0.7, gamma=1.33, ce_weight=0.5, useSigmoid=True):
         super(FocalTverskyCELoss, self).__init__()
         self.alpha = alpha

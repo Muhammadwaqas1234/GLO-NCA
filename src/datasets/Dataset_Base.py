@@ -2,37 +2,22 @@ from torch.utils.data import Dataset
 from src.datasets.Data_Instance import Data_Container
 
 class Dataset_Base(Dataset):
-    r"""Base class for any dataset within this project
-        .. WARNING:: Not to be used directly!
-    """
+    r"""Base class for all datasets."""
     def __init__(self, resize=True): 
         self.resize = resize
         self.count = 42
         self.data = Data_Container()
 
     def set_size(self, size):
-        r"""Set size of images
-            #Args
-                size (int, int): Size of images
-        """
+        r"""Set the image size."""
         self.size = tuple(size)
 
     def set_experiment(self, experiment):
-        r"""Set experiment
-            #Args
-                experiment: The experiment class
-        """
+        r"""Attach the experiment."""
         self.exp = experiment
 
     def setPaths(self, images_path, images_list, labels_path, labels_list):
-        r"""Set the important image paths
-            #Args
-                images_path (String): The path to the images
-                images_list ([String]): A list of the names of all images
-                labels_path (String): The path to the labels
-                labels_list ([String]): A list of the names of all labels
-            .. TODO:: Refactor
-        """
+        r"""Set the image and label paths and file lists."""
         self.images_path = images_path
         self.images_list = images_list
         self.labels_path = labels_path
@@ -40,23 +25,15 @@ class Dataset_Base(Dataset):
         self.length = len(self.images_list)
 
     def getImagePaths(self):
-        r"""Get a list of all images in dataset
-            #Returns:
-                list ([String]): List of images
-        """
+        r"""List of all images in the dataset."""
         return self.images_list
 
     def __len__(self):
-        r"""Get number of items in dataset"""
+        r"""Number of items in the dataset."""
         return self.length
 
     def getItemByName(self, name):
-        r"""Get item by its name
-            #Args
-                name (String)
-            #Returns:
-                item (tensor): The image tensor
-        """
+        r"""Get an item by its name."""
         idx = self.images_list.index(name)
         return self.__getitem__(idx)
 

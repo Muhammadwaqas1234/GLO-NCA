@@ -1,0 +1,20 @@
+# Only src/, glo_nca/, configs/, train.py and docker/*.txt go into the image.
+.git/
+.gitignore
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+legacy/
+tests/
+cloud/
+experiments/
+*.ipynb
+*.pth
+*.nii
+*.nii.gz
+*.png
+*.md
+LICENSE

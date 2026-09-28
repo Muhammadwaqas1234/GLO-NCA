@@ -1,4 +1,1 @@
-"""
-Contains base datasets as well as datasets classes.
-
-"""
+"""Contains base datasets as well as datasets classes."""

@@ -1,0 +1,43 @@
+# GLO-NCA cascade: the Kaggle v7 recipe (commit c24c172) with a 300-epoch budget.
+
+experiment:
+  name: GLO-NCA-CASCADE
+  seed: 42                        # also the split seed
+
+data:
+  base: /kaggle/input             # searched for the BraTS root; override with --data-root
+  n_patients: null                # null = every case folder found
+  modalities: [t1n, t1c, t2w, t2f]
+  foreground_crop: true
+  nonzero_norm: true
+  # Recorded as in v7 (USE_AUG = True), but v7's loader applies no augmentation.
+  augmentation: true
+
+model:
+  channel_n: 24
+  hidden: 128
+  use_spatial: true               # spatial global-context block (SE is always on)
+  steps: [20, 20]                 # NCA steps: low-res level, high-res level
+  fire_rate: 0.6
+  dropout: 0.1
+  input_size: [[32, 32, 24], [64, 64, 48]]   # level sizes; the last is the resample target
+  prioritize_region: 2            # patch sampling biased toward ET
+
+training:
+  epochs: 300                     # v7 used 150
+  batch_size: 1
+  workers: 4
+  device: "cuda:0"
+  lr_start: 1.6e-3
+  lr_min: 1.0e-5                  # per-step cosine annealing to this value
+  grad_clip: 1.0                  # element-wise gradient clamp (backward hooks)
+  ema: true
+  ema_decay: 0.999
+
+loss:                             # FocalTverskyCELoss, alpha = 1 - beta, ce_weight 0.5
+  tversky_beta: 0.75
+  focal_gamma: 1.33
+
+evaluation:                       # final test only; validation is plain
+  ensemble_n: 10
+  tta: true
