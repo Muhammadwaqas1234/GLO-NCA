@@ -1,0 +1,18 @@
+# GLO-NCA cascade training service; Restart=no so a finished or failed run is never looped.
+[Unit]
+Description=GLO-NCA cascade training (Docker, GPU)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/glo-nca-cascade.env
+# Run through bash so the unit does not depend on the script's executable bit.
+ExecStart=/bin/bash -lc 'exec /bin/bash "${GLO_REPO}"/cloud/scripts/_train_entrypoint.sh'
+Restart=no
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

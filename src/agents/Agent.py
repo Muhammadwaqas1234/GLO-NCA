@@ -17,14 +17,7 @@ except Exception:  # scipy optional; HD95 simply returns NaN if missing
 
 
 def iou_score(pred, target, threshold=0.5, smooth=1e-6):
-    r"""Intersection-over-Union (Jaccard) for one binary region.
-        #Args
-            pred (np.ndarray): probabilities or logits-after-sigmoid
-            target (np.ndarray): binary ground truth
-            threshold (float): probability cut-off for the prediction
-        #Returns
-            float IoU in [0, 1]
-    """
+    r"""Intersection-over-Union (Jaccard) for one binary region."""
     pred_bin = (pred >= threshold).astype(np.uint8)
     target_bin = (target >= 0.5).astype(np.uint8)
     intersection = np.logical_and(pred_bin, target_bin).sum()
@@ -37,22 +30,13 @@ def iou_score(pred, target, threshold=0.5, smooth=1e-6):
 
 def _surface_distances(a, b):
     r"""Distances from every surface voxel of ``a`` to the surface of ``b``."""
-    # Surface = foreground voxels minus their eroded interior is overkill here;
-    # distance_transform_edt on the complement gives distance-to-foreground.
+    # Distance to the foreground via the distance transform of the complement.
     dt_b = distance_transform_edt(~b)
     return dt_b[a]
 
 
 def hd95_score(pred, target, threshold=0.5):
-    r"""95th-percentile Hausdorff Distance (in voxels) for one binary region.
-
-    Lower is better. Returns NaN when scipy is unavailable, and 0.0 when both
-    masks are empty (perfect). When exactly one mask is empty the distance is
-    undefined, so NaN is returned and such cases are skipped in averaging.
-        #Args
-            pred (np.ndarray): probabilities, same shape as target
-            target (np.ndarray): binary ground truth
-    """
+    r"""95th-percentile Hausdorff Distance (in voxels) for one binary region."""
     if not _SCIPY_AVAILABLE:
         return float('nan')
     pred_bin = (pred >= threshold)
@@ -67,24 +51,19 @@ def hd95_score(pred, target, threshold=0.5):
     return float(np.percentile(all_d, 95))
 
 class BaseAgent():
-    """Base class for all agents. Handles basic training and only needs to be adapted if special use cases are necessary.
-    
-    .. note:: In many cases only the data preparation and outputs need to be changed."""
+    """Base class for all agents."""
     def __init__(self, model):
         self.model = model
 
     def set_exp(self, exp):
-        r"""Set experiment of agent and initialize.
-            #Args
-                exp (Experiment): Experiment class"""
+        r"""Set experiment of agent and initialize."""
         self.exp = exp
         self.initialize()
 
     def initialize(self):
-        r"""Initialize agent with optimizers and schedulers
-        """
+        r"""Build optimizers and schedulers for the agent's models."""
         self.device = torch.device(self.exp.get_from_config('device'))
-        # If stacked NCAs
+        # One optimizer and scheduler per model when several models are stacked.
         if isinstance(self.model, list):
             self.optimizer = []
             self.scheduler = []
@@ -96,10 +75,7 @@ class BaseAgent():
             self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, self.exp.get_from_config('lr_gamma'))
 
     def _make_optimizer(self, params):
-        r"""Build the optimizer from config. Defaults to AdamW (decoupled weight
-            decay), which is the choice in the thesis methodology; set
-            config['optimizer'] to 'adam' to reproduce the original behaviour.
-        """
+        r"""Build the optimizer from the config (AdamW by default)."""
         name = (self.exp.get_from_config('optimizer') or 'adamw').lower()
         lr = self.exp.get_from_config('lr')
         betas = self.exp.get_from_config('betas')
@@ -111,48 +87,29 @@ class BaseAgent():
         return optim.AdamW(params, lr=lr, betas=betas, weight_decay=weight_decay)
 
     def printIntermediateResults(self, loss, epoch):
-        r"""Prints intermediate results of training and adds it to tensorboard
-            #Args 
-                loss (torch)
-                epoch (int) 
-        """
+        r"""Print intermediate training results and log them to TensorBoard."""
         print(epoch, "loss =", loss.item())
         self.exp.save_model()
         self.exp.write_scalar('Loss/train', loss, epoch)
 
     def prepare_data(self, data, eval=False):
-        r"""If any data preparation needs to be done do it here. 
-            #Args
-                data ([]): The data to be processed.
-                eval (Bool): Whether or not its for evaluation. 
-        """
+        r"""Prepare a batch for the model."""
         return data
 
     def get_outputs(self, data, **kwargs):
-        r"""Get the output of the model.
-            #Args 
-                data (torch): The data to be passed to the model.
-        """
+        r"""Get the output of the model."""
         return self.model(data)
 
     def initialize_epoch(self):
-        r"""Everything that should happen once before each epoch should be defined here.
-        """
+        r"""Hook run once before each epoch."""
         return
 
     def conclude_epoch(self):
-        r"""Everything that should happen once after each epoch should be defined here.
-        """
+        r"""Hook run once after each epoch."""
         return
 
     def batch_step(self, data, loss_f):
-        r"""Execute a single batch training step
-            #Args
-                data (tensor, tensor): inputs, targets
-                loss_f (torch.nn.Module): loss function
-            #Returns:
-                loss item
-        """
+        r"""Run one training step on a batch and return the per-region losses."""
         data = self.prepare_data(data)
         outputs, targets = self.get_outputs(data)
         self.optimizer.zero_grad()
@@ -177,11 +134,7 @@ class BaseAgent():
         return loss_ret
 
     def intermediate_results(self, epoch, loss_log):
-        r"""Write intermediate results to tensorboard
-            #Args
-                epoch (int): Current epoch
-                los_log ([loss]): Array of losses
-        """
+        r"""Write intermediate results to TensorBoard."""
         for key in loss_log.keys():
             if len(loss_log[key]) != 0:
                 average_loss = sum(loss_log[key]) / len(loss_log[key])
@@ -191,10 +144,7 @@ class BaseAgent():
             self.exp.write_scalar('Loss/train/' + str(key), average_loss, epoch)
 
     def plot_results_byPatient(self, loss_log):
-        r"""Plot losses in a per patient fashion with seaborn to display in tensorboard.
-            #Args
-                loss_log ({name: loss}: Dictionary of losses
-        """
+        r"""Plot per-patient losses for TensorBoard."""
         print(loss_log)
         sns.set_theme()
         plot = sns.scatterplot(x=loss_log.keys(), y=loss_log.values())
@@ -203,12 +153,7 @@ class BaseAgent():
         return plot
 
     def intermediate_evaluation(self, dataloader, epoch):
-        r"""Do an intermediate evluation during training 
-            .. todo:: Make variable for more evaluation scores (Maybe pass list of metrics)
-            #Args
-                dataset (Dataset)
-                epoch (int)
-        """
+        r"""Run an intermediate evaluation during training."""
         diceLoss = DiceLoss(useSigmoid=True)
         loss_log = self.test(diceLoss)
         for key in loss_log.keys():
@@ -218,40 +163,29 @@ class BaseAgent():
                 self.exp.write_scalar('Dice/test/mask' + str(key), sum(loss_log[key].values())/len(loss_log[key]), epoch)
                 self.exp.write_histogram('Dice/test/byPatient/mask' + str(key), np.fromiter(loss_log[key].values(), dtype=float), epoch)
         param_lst = []
-        # TODO: ADD AGAIN 
-        #for param in self.model.parameters():
-        #    param_lst.extend(np.fromiter(param.flatten(), dtype=float))
-        #self.exp.write_histogram('Model/weights', np.fromiter(param_lst, dtype=float), epoch)
 
     def getAverageDiceScore(self, useSigmoid=True, tag = "", pseudo_ensemble=False, showResults=False):
-        r"""Get the average Dice test score.
-            #Returns:
-                return (float): Average Dice score of test set. """
+        r"""Get the average Dice test score."""
         diceLoss = DiceLoss(useSigmoid=useSigmoid)
         loss_log = self.test(diceLoss, save_img=[], pseudo_ensemble=pseudo_ensemble, showResults=showResults)
 
         return loss_log
 
     def save_state(self, model_path):
-        r"""Save state of current model
-        """
+        r"""Save the current model state."""
         os.makedirs(model_path, exist_ok=True)
         torch.save(self.model.state_dict(), os.path.join(model_path, 'model.pth'))
         torch.save(self.optimizer.state_dict(), os.path.join(model_path, 'optimizer.pth'))
         torch.save(self.scheduler.state_dict(), os.path.join(model_path, 'scheduler.pth'))
 
     def load_state(self, model_path):
-        r"""Load state of current model
-        """
+        r"""Load a saved model state."""
         self.model.load_state_dict(torch.load(os.path.join(model_path, 'model.pth')))
         self.optimizer.load_state_dict(torch.load(os.path.join(model_path, 'optimizer.pth')))
         self.scheduler.load_state_dict(torch.load(os.path.join(model_path, 'scheduler.pth')))
 
     def train(self, dataloader, loss_f):
-        r"""Execute training of model
-            #Args
-                dataloader (Dataloader): contains training data
-                loss_f (nn.Model): The loss for training"""
+        r"""Train the model."""
         for epoch in range(self.exp.currentStep, self.exp.get_max_steps()+1):
             print("Epoch: " + str(epoch))
             loss_log = {}
@@ -267,9 +201,6 @@ class BaseAgent():
             if epoch % self.exp.get_from_config('evaluate_interval') == 0:
                 print("Evaluate model")
                 self.intermediate_evaluation(dataloader, epoch)
-            #if epoch % self.exp.get_from_config('ood_interval') == 0:
-            #    print("Evaluate model in OOD cases")
-            #    self.ood_evaluation(epoch=epoch)
             if epoch % self.exp.get_from_config('save_interval') == 0:
                 print("Model saved")
                 self.save_state(os.path.join(self.exp.get_from_config('model_path'), 'models', 'epoch_' + str(self.exp.currentStep)))
@@ -277,36 +208,14 @@ class BaseAgent():
             self.exp.increase_epoch()
 
     def prepare_image_for_display(self, image):
-        r"""Prepare an image to be displayed in tensorboard. Since images need to be in a specific format these modifications these can be done here.
-            #Args
-                image (torch): The image to be processed for display. 
-        """
+        r"""Prepare an image for display in TensorBoard."""
         return image
 
 
-    #def ood_evaluation(self, ood_cases=["random_noise", "random_spike", "random_anitrosopy"], epoch=0):
-    #    print("OOD EVALUATION")
-    #    dataset_train = self.exp.dataset
-    #    diceLoss = DiceLoss(useSigmoid=True)
-    #    for augmentation in ood_cases:
-    #        dataset_eval = Nii_Gz_Dataset(aug_type=augmentation)
-    #        self.exp.dataset = dataset_eval
-    #        loss_log = self.test(diceLoss, tag='ood/' + str(augmentation) + '/')
-    #        for key in loss_log.keys():
-    #            self.exp.write_scalar('ood/Dice/' + str(key) + ", " + str(augmentation), sum(loss_log[key].values())/len(loss_log[key]), epoch)
-    #            self.exp.write_histogram('ood/Dice/' + str(key) + ", " + str(augmentation) + '/byPatient', np.fromiter(loss_log[key].values(), dtype=float), epoch)
-    #    self.exp.dataset = dataset_train
 
 
     def labelVariance(self, images, mean, img_mri, img_id, targets, showResults=False):
-        r"""Calculate variance over all predictions
-            #Args
-                images (torch): The inferences
-                mean: The mean of all inferences
-                img_mri: The mri image
-                img_id: The id of the image
-                targets: The target segmentation
-        """
+        r"""Plot the variance over repeated predictions."""
         mean = np.sum(images, axis=0) / images.shape[0]
         stdd = 0
         for id in range(images.shape[0]):
@@ -317,7 +226,6 @@ class BaseAgent():
         stdd = np.sqrt(stdd)
 
         if showResults:
-            #print(img_mri)
             image1 = img_mri[0, :, img_mri.shape[2] // 2, :, 0]
             image2 = mean[0, :, mean.shape[2] // 2, :,  0]
             image3 = stdd[0, :, stdd.shape[2] // 2, :,  0]
@@ -333,7 +241,7 @@ class BaseAgent():
             axs[1].imshow(image2, cmap='Purples')
             axs[1].axis('off')  # Turn off axis
 
-            # Display the second image
+            # Display the third image
             im = axs[2].imshow(image3)
             axs[2].axis('off')  # Turn off axis
 
@@ -350,24 +258,24 @@ class BaseAgent():
 
         print("NQM Score: ", np.sum(stdd) / np.sum(mean))
 
-        # Save files refactor
+        # Save the figure.
         if False:
             nib_save = np.expand_dims(img_mri[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_image.nii.gz"))
             
             nib_save = np.expand_dims(targets[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_gt.nii.gz"))
 
             nib_save = np.expand_dims(stdd[0, ..., 0], axis=-1) 
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_variance.nii.gz"))
 
             nib_save = np.expand_dims(mean[0, ..., 0], axis=-1) 
             nib_save[nib_save > 0.5] = 1 
             nib_save[nib_save != 1] = 0
-            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) #np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+            nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_label.nii.gz"))
         
             f = open(os.path.join("path", str(img_id) + "_score.txt"), "a")
@@ -377,13 +285,7 @@ class BaseAgent():
         return
 
     def test(self, loss_f, save_img = None, tag='test/img/', pseudo_ensemble=False, showResults=False, **kwargs):
-        r"""Evaluate model on testdata by merging it into 3d volumes first
-            TODO: Clean up code and write nicer. Replace fixed images for saving in tensorboard.
-            #Args
-                dataset (Dataset)
-                loss_f (torch.nn.Module)
-                steps (int): Number of steps to do for inference
-        """
+        r"""Evaluate on the test split after merging slices into 3D volumes."""
         with torch.no_grad():
             # Prepare dataset for testing
             dataset = self.exp.dataset
@@ -402,7 +304,7 @@ class BaseAgent():
             if save_img == None:
                 save_img = [1, 2, 3, 4, 5, 32, 45, 89, 357, 53, 122, 267, 97, 389]
 
-            # For each data sample
+            # Iterate over the samples.
             for i, data in enumerate(dataloader):
                 print("__________________________ CASE " + str(i) + " __________________________")
                 data = self.prepare_data(data, eval=True)
@@ -420,8 +322,8 @@ class BaseAgent():
                         slice = None
 
 
-                # Run inference 10 times to create a pseudo ensemble
-                if pseudo_ensemble: # 5 + 5 times
+                # Run inference 10 times as a pseudo-ensemble.
+                if pseudo_ensemble:
                     outputs2, _ = self.get_outputs(data, full_img=True, tag="1")
                     outputs3, _ = self.get_outputs(data, full_img=True, tag="2")
                     outputs4, _ = self.get_outputs(data, full_img=True, tag="3")
@@ -434,21 +336,21 @@ class BaseAgent():
                         outputs10, _ = self.get_outputs(data, full_img=True, tag="9")
                         stack = torch.stack([outputs, outputs2, outputs3, outputs4, outputs5, outputs6, outputs7, outputs8, outputs9, outputs10], dim=0)
                         
-                        # Calculate mean
+                        # Mean over the ensemble.
                         outputs = torch.mean(stack, dim=0)
                         self.labelVariance(torch.sigmoid(stack).detach().cpu().numpy(), torch.sigmoid(outputs).detach().cpu().numpy(), inputs.detach().cpu().numpy(), id, targets.detach().cpu().numpy(), showResults=showResults)
 
                     else:
                         outputs, _ = torch.mean(torch.stack([outputs, outputs2, outputs3, outputs4, outputs5], dim=0), dim=0)
 
-                # --------------- 2D ---------------------
+                # 2D
                 if dataset.slice is not None:
-                    # If next patient
+                    # Start of the next patient.
                     if id != patient_id and patient_id != None:
                         out = patient_id + ", "
                         for m in range(patient_3d_image.shape[3]):
                             if(1 in np.unique(patient_3d_label[...,m].detach().cpu().numpy())):
-                                loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item() #,, mask = patient_3d_label[...,4].bool()
+                                loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item()
 
                                 if math.isnan(loss_log[m][patient_id]):
                                     loss_log[m][patient_id] = 0
@@ -457,7 +359,7 @@ class BaseAgent():
                                 out = out + " , "
                         print(out)
                         patient_id, patient_3d_image, patient_3d_label = id, None, None
-                    # If first slice of volume
+                    # First slice of the volume.
                     if patient_3d_image == None:
                         patient_id = id
                         patient_3d_image = outputs.detach().cpu()
@@ -474,7 +376,7 @@ class BaseAgent():
                         self.prepare_image_for_display(outputs.detach().cpu()).numpy(), 
                         self.prepare_image_for_display(targets.detach().cpu()).numpy(), 
                         encode_image=False), self.exp.currentStep)
-                # --------------------------------- 3D ----------------------------
+                # 3D
                 else: 
                     patient_3d_image = outputs.detach().cpu()
                     patient_3d_label = targets.detach().cpu()
@@ -482,12 +384,9 @@ class BaseAgent():
                     patient_id = id
                     print('ID:', patient_id)
 
-                    #print(patient_3d_image.shape,patient_3d_label.shape )
                     for m in range(patient_3d_image.shape[-1]):
                         loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item()
-                        # mIoU + HD95 on the binarised prediction (sigmoid since
-                        # model emits logits). Region order matches the dataset:
-                        # 0=WT, 1=TC, 2=ET for BraTS.
+                        # mIoU + HD95 on the binarised prediction (sigmoid since model emits logits).
                         pred_prob = torch.sigmoid(patient_3d_image[..., m]).numpy()
                         gt_np = patient_3d_label[..., m].numpy()
                         iou_log[m][patient_id] = iou_score(pred_prob, gt_np)
@@ -506,7 +405,7 @@ class BaseAgent():
                             self.prepare_image_for_display(patient_3d_label[:,:,:,5:6,:].detach().cpu()).numpy(), 
                             encode_image=False), self.exp.currentStep)
 
-                            # REFACTOR: Save predictions
+                            # Save predictions.
                             if False:
                                 label_out = torch.sigmoid(patient_3d_image[0, ...])
                                 nib_save = nib.Nifti1Image(label_out  , np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1))), nib.Nifti1Header())
@@ -518,7 +417,7 @@ class BaseAgent():
                                 nib_save = nib.Nifti1Image(patient_3d_label[0, ...]  , np.array(((0, 0, 1, 0), (0, 1, 0, 0), (1, 0, 0, 0), (0, 0, 0, 1))), nib.Nifti1Header())
                                 nib.save(nib_save, os.path.join("path", str(len(loss_log[0])) + "_ground.nii.gz"))
 
-            # If 2D
+            # 2D data.
             if dataset.slice is not None:
                 out = patient_id + ", "
                 for m in range(patient_3d_image.shape[3]):
@@ -541,17 +440,13 @@ class BaseAgent():
                     print("Average HD95 3d: " + str(key) + ", " + str(sum(valid_hd)/len(valid_hd)))
 
             self.exp.set_model_state('train')
-            # Keep the metric dicts on the agent so callers can inspect mIoU/HD95
-            # without changing the long-standing return type (Dice loss_log).
+            # Keep the metric dicts on the agent for callers that need mIoU and HD95.
             self.last_iou_log = iou_log
             self.last_hd95_log = hd95_log
             return loss_log
 
 def standard_deviation(loss_log):
-    r"""Calculate the standard deviation
-        #Args
-            loss_log: losses
-    """
+    r"""Standard deviation of the logged losses."""
     mean = sum(loss_log.values())/len(loss_log)
     stdd = 0
     for e in loss_log.values():

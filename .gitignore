@@ -46,3 +46,8 @@ results*.json
 events.out.tfevents.*
 *.json
 extra/
+
+# --- GLO-NCA v7 runs and local cloud settings ---
+experiments/
+cloud/config/gcp.env
+*.tmp

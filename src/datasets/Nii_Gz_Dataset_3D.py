@@ -7,18 +7,13 @@ import random
 import torchio
 
 class Dataset_NiiGz_3D(Dataset_3D):
-    """This dataset is used for all NiiGz 3D datasets. It can handle 3D data on its own, but is also able to split them into slices. """
+    """Dataset for NIfTI (.nii / .nii.gz) volumes."""
 
     def getDataShapes():
         return
 
     def getFilesInPath(self, path):
-        r"""Get files in path ordered by id and slice
-            #Args
-                path (string): The path which should be worked through
-            #Returns:
-                dic (dictionary): {key:patientID, {key:sliceID, img_slice}
-        """
+        r"""Files in a path, ordered by id and slice."""
         dir_files = os.listdir(os.path.join(path))
         dic = {}
         for id_f, f in enumerate(dir_files):
@@ -40,9 +35,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
         return self.load_item(path).shape[axis]
 
     def load_item(self, path):
-        r"""Loads the data of an image of a given path.
-            #Args
-                path (String): The path to the nib file to be loaded."""
+        r"""Load an image from a path."""
         return nib.load(path).get_fdata()
 
     def rotate_image(self, image, angle, label = False):
@@ -55,18 +48,11 @@ class Dataset_NiiGz_3D(Dataset_3D):
         return result
 
     def preprocessing3d(self, img, isLabel=False):
-        r"""Preprocess data to fit the required shape
-            #Args
-                img (numpy): Image data
-                isLabel (numpy): Whether or not data is label
-            #Returns:
-                img (numpy): numpy array
-        """
+        r"""Preprocess an image to the required shape."""
         if not isLabel:
-            # TODO: Currently only single volume, no multi phase
             if len(img.shape) == 4:
                 img = img[..., 0]
-            padded = np.zeros(self.size)#np.random.rand(*self.size) * 0.01
+            padded = np.zeros(self.size)
         else:
             padded = np.zeros(self.size)
         img_shape = img.shape
@@ -75,13 +61,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
         return padded
 
     def rescale3d(self, img, isLabel=False):
-        r"""Rescale input image to fit training size
-            #Args
-                img (numpy): Image data
-                isLabel (numpy): Whether or not data is label
-            #Returns:
-                img (numpy): numpy array
-        """
+        r"""Rescale an image to the training size."""
         if len(self.size) == 3:
             size = (self.size[0], self.size[1])
             size2 = (self.size[2], self.size[0])
@@ -107,14 +87,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
         return img_resized
 
     def patchify(self, img, label):
-        r"""Take a patch of the input. This should be used instead of rescaling if global information is not required.
-            #Args
-                img (numpy): Image data
-                label (numpy): Label data
-            #Returns:
-                img (numpy): Image data
-                label (numpy): Label data
-        """
+        r"""Take a patch of the input."""
         size = self.size
 
         containsMask = (random.uniform(0, 1) < self.exp.get_from_config('priotize_masks'))
@@ -135,13 +108,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
         return img, label
 
     def __getitem__(self, idx):
-        r"""Standard get item function
-            #Args
-                idx (int): Id of item to loa
-            #Returns:
-                img (numpy): Image data
-                label (numpy): Label data
-        """
+        r"""Load one sample."""
         rescale = torchio.RescaleIntensity(out_min_max=(0,1), percentiles=(0.5, 99.5))
         znormalisation = torchio.ZNormalization()
 
@@ -164,7 +131,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
                     img, label = img[:, img_id, :], label[:, img_id, :]
                 elif self.slice == 2:
                     img, label = img[:, :, img_id], label[:, :, img_id]
-                # Remove 4th dimension if multiphase
+                # Drop the 4th dimension of multi-phase data.
                 if len(img.shape) == 4:
                     img = img[...,0] 
                 img, label = self.preprocessing(img), self.preprocessing(label, isLabel=True)
@@ -179,7 +146,7 @@ class Dataset_NiiGz_3D(Dataset_3D):
                     img, label = self.rescale3d(img), self.rescale3d(label, isLabel=True)
                 if self.exp.get_from_config('keep_original_scale') is not None and self.exp.get_from_config('keep_original_scale'):
                     img, label = self.preprocessing3d(img), self.preprocessing3d(label, isLabel=True)  
-                # Add dim to label
+                # Add a channel dimension to the label.
                 if len(label.shape) == 3:
                     label = np.expand_dims(label, axis=-1)
             img_id = "_" + str(p_id) + "_" + str(img_id)
@@ -192,24 +159,24 @@ class Dataset_NiiGz_3D(Dataset_3D):
 
         size = self.size 
         
-        # Create patches from full resolution
+        # Patches from the full-resolution volume.
         if self.exp.get_from_config('patchify') is not None and self.exp.get_from_config('patchify') is True and self.state == "train": 
             img, label = self.patchify(img, label) 
 
         if len(size) > 2:
             size = size[0:2] 
 
-        # Normalize image
+        # Normalise the image.
         img = np.expand_dims(img, axis=0)
         if np.sum(img) > 0:
             img = znormalisation(img)
         img = rescale(img) 
         img = img[0]
 
-        # Merge labels -> For now single label
+        # Merge labels into a single label.
         label[label > 0] = 1
 
-        # Number of defined channels
+        # Number of defined channels.
         if len(self.size) == 2:
             img = img[..., :self.exp.get_from_config('input_channels')]
             label = label[..., :self.exp.get_from_config('output_channels')]
@@ -218,46 +185,14 @@ class Dataset_NiiGz_3D(Dataset_3D):
 
 
 class Dataset_NiiGz_3D_BraTS(Dataset_3D):
-    r"""3D loader for the multi-modal BraTS dataset (Kaggle / official layout).
+    r"""3D loader for the multi-modal BraTS dataset."""
 
-    Each patient lives in its own folder containing four modality volumes and a
-    segmentation mask::
-
-        BraTS20_Training_001/
-            BraTS20_Training_001_t1.nii.gz
-            BraTS20_Training_001_t1ce.nii.gz
-            BraTS20_Training_001_t2.nii.gz
-            BraTS20_Training_001_flair.nii.gz
-            BraTS20_Training_001_seg.nii.gz
-
-    The four modalities are stacked into a 4-channel input (T1, T1ce, T2,
-    FLAIR). The raw label values (1 = NCR, 2 = ED, 4 = ET; some Kaggle copies
-    remap 4 -> 3) are converted into the three standard, nested BraTS regions
-    used for reporting:
-
-        WT (Whole Tumor)      = labels {1, 2, 4}   -> channel 0
-        TC (Tumor Core)       = labels {1, 4}      -> channel 1
-        ET (Enhancing Tumor)  = label  {4}         -> channel 2
-
-    Only the 3D path is supported (``slice`` must be None); BraTS volumes are
-    segmented as full 3D volumes.
-    """
-
-    # Modality suffixes in the fixed channel order T1, T1ce, T2, FLAIR.
-    # BraTS 2024 (BraTS-GLI) uses t1n / t1c / t2w / t2f; override MODALITIES on
-    # the instance if your dataset uses the older t1/t1ce/t2/flair names.
+    # Modality suffixes in channel order.
     MODALITIES = ["t1n", "t1c", "t2w", "t2f"]
     SEG_SUFFIX = "seg"
 
     def getFilesInPath(self, path):
-        r"""Discover patients by folder. The 'images' and 'labels' live in the
-            same per-patient folder, so both image_path and label_path point to
-            the BraTS root.
-            #Args
-                path (string): BraTS root directory (one sub-folder per patient)
-            #Returns:
-                dic (dictionary): {patientID: {0: (folder_name, patientID, 0)}}
-        """
+        r"""Discover cases: one folder per case."""
         dic = {}
         for entry in sorted(os.listdir(path)):
             full = os.path.join(path, entry)
@@ -267,14 +202,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return dic
 
     def _find_modality_file(self, folder, patient, suffix):
-        r"""Locate a modality/seg file in a patient folder, tolerant to naming.
-            #Args
-                folder (str): absolute path to the patient folder
-                patient (str): patient id (folder name)
-                suffix (str): modality suffix, e.g. 't1ce' or 'seg'
-        """
+        r"""Locate a modality/seg file in a patient folder, tolerant to naming."""
         # Common explicit names (underscore or hyphen separator, .nii.gz/.nii).
-        # BraTS 2020: 'BraTS_x_t1.nii.gz'; BraTS 2024: 'BraTS-GLI-x-t1c.nii'.
         for sep in ("_", "-"):
             for ext in (".nii.gz", ".nii"):
                 candidate = os.path.join(folder, f"{patient}{sep}{suffix}{ext}")
@@ -294,15 +223,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
     @staticmethod
     def _foreground_bbox(vol_stack):
-        r"""Bounding box of the non-zero brain across all modalities.
-
-            Swin-UNETR-style CropForeground: removes the black background so the
-            resized patch contains brain only (recovers small ET/TC detail).
-            #Args
-                vol_stack (numpy): (X, Y, Z, C) stacked modalities
-            #Returns
-                (x0,x1,y0,y1,z0,z1) or None if the volume is empty
-        """
+        r"""Bounding box of the non-zero brain across all modalities."""
         fg = np.any(vol_stack > 0, axis=-1)
         if not fg.any():
             return None
@@ -312,13 +233,8 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
 
     def _labels_to_regions(self, seg):
-        r"""Convert raw BraTS segmentation values into nested ET/TC/WT regions.
-            #Args
-                seg (numpy): raw label volume with values in {0,1,2,3,4}
-            #Returns:
-                label (numpy): (X, Y, Z, 3) binary volume, channels = WT, TC, ET
-        """
-        # ET is encoded as 4 in BraTS2020 and sometimes remapped to 3 on Kaggle.
+        r"""Convert raw BraTS segmentation values into nested ET/TC/WT regions."""
+        # ET is label 4 (3 in some remapped copies).
         et = np.logical_or(seg == 4, seg == 3)
         ncr = (seg == 1)
         ed = (seg == 2)
@@ -330,12 +246,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return label
 
     def __getitem__(self, idx):
-        r"""Load and preprocess one BraTS patient.
-            #Returns:
-                id (str): patient identifier, formatted '_<patient>_0'
-                img (numpy): (X, Y, Z, 4) float32, modalities T1/T1ce/T2/FLAIR
-                label (numpy): (X, Y, Z, 3) float32, regions WT/TC/ET
-        """
+        r"""Load and preprocess one BraTS patient."""
         rescale = torchio.RescaleIntensity(out_min_max=(0, 1), percentiles=(0.5, 99.5))
         znormalisation = torchio.ZNormalization()
 
@@ -347,13 +258,13 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             folder_name, p_id, _ = key
             folder = os.path.join(self.images_path, folder_name)
 
-            # --- Load RAW modalities + seg (no resize yet if we crop first) --
+            # Load the raw modalities and segmentation.
             raw_vols = [self.load_item(self._find_modality_file(folder, folder_name, mod))
                         for mod in self.MODALITIES]
             raw = np.stack(raw_vols, axis=-1)  # (X, Y, Z, C) full resolution
             seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
 
-            # --- Foreground crop to the brain bounding box (Swin-UNETR) ------
+            # Crop to the brain bounding box.
             if crop_fg:
                 bbox = self._foreground_bbox(raw)
                 if bbox is not None:
@@ -361,13 +272,13 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                     raw = raw[x0:x1, y0:y1, z0:z1, :]
                     seg = seg[x0:x1, y0:y1, z0:z1]
 
-            # --- Resize to training size -----------------------------------
+            # Resize to the training size.
             if self.exp.get_from_config('rescale') is not False:
                 img = np.stack([self.rescale3d(raw[..., c]) for c in range(raw.shape[-1])], axis=-1)
                 seg = self.rescale3d(seg, isLabel=True)
             else:
                 img = raw
-            label = self._labels_to_regions(seg)  # (X, Y, Z, 3)
+            label = self._labels_to_regions(seg)
 
             img_id = "_" + str(p_id) + "_0"
             self.data.set_data(key=key, data=(img_id, img, label))
@@ -375,14 +286,13 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
 
         img_id, img, label = cached
 
-        # Patchify on the fly for training (global info comes from the
-        # coarse NCA level, so a patch is enough at full resolution).
+        # Training patch; global information comes from the coarse level.
         if self.exp.get_from_config('patchify') is True and self.state == "train":
             img, label = self.patchify_multimodal(img, label)
 
         # Per-modality intensity normalisation.
         if self.exp.get_from_config('nonzero_norm') is True:
-            # Swin-UNETR nonzero z-norm: normalise using brain voxels only.
+            # Nonzero z-norm over brain voxels only.
             img_norm = np.empty_like(img, dtype=np.float32)
             for c in range(img.shape[-1]):
                 ch = img[..., c]
@@ -393,7 +303,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
                 else:
                     img_norm[..., c] = ch
         else:
-            # Original torchio z-norm + rescale-to-[0,1] per channel.
+            # torchio z-norm and rescale to [0, 1] per channel.
             img_norm = np.empty_like(img, dtype=np.float32)
             for c in range(img.shape[-1]):
                 channel = np.expand_dims(img[..., c], axis=0)
@@ -406,9 +316,7 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return (img_id, img, label)
 
     def rescale3d(self, img, isLabel=False):
-        r"""Resize a 3D volume to the configured training size (X, Y, Z).
-            Reuses cubic interpolation for images and nearest for labels.
-        """
+        r"""Resize a 3D volume to the configured training size (X, Y, Z)."""
         size = (self.size[0], self.size[1])
         size2 = (self.size[2], self.size[0])
         interp = cv2.INTER_NEAREST if isLabel else cv2.INTER_CUBIC
@@ -425,22 +333,16 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
         return resized
 
     def patchify_multimodal(self, img, label):
-        r"""Random 3D patch of the configured size, shared across all channels.
-            Optionally biased towards patches containing tumour (WT channel).
-            #Args
-                img (numpy): (X, Y, Z, 4)
-                label (numpy): (X, Y, Z, 3)
-        """
+        r"""Random 3D patch of the configured size, shared across all channels."""
         size = self.size
         prioritize = self.exp.get_from_config('priotize_masks')
         contains_mask = prioritize is not None and (random.uniform(0, 1) < prioritize)
         # Which region to bias the patch toward: 0=WT (default), 1=TC, 2=ET.
-        # Biasing toward ET (the rarest region) improves ET/TC recall.
         region = self.exp.get_from_config('prioritize_region')
         region = 0 if region is None else int(region)
 
         pos_x = pos_y = pos_z = 0
-        for _ in range(50):  # bounded retries to find a region-containing patch
+        for _ in range(50):  # bounded retries for a patch that contains the region
             pos_x = random.randint(0, img.shape[0] - size[0])
             pos_y = random.randint(0, img.shape[1] - size[1])
             pos_z = random.randint(0, img.shape[2] - size[2])
@@ -449,10 +351,10 @@ class Dataset_NiiGz_3D_BraTS(Dataset_3D):
             patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], region]
             if patch.max() > 0:
                 break
-            # Fall back to WT if the target region isn't found (ET can be tiny/absent)
+            # Fall back to WT when the target region is not found.
             wt_patch = label[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], 0]
             if region != 0 and wt_patch.max() > 0:
-                # keep looking for the target region, but remember this WT-valid pos
+                # remember a WT-valid position while searching
                 continue
 
         img = img[pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]

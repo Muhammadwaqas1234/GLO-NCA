@@ -1,4 +1,1 @@
-"""
-Utility functions are stored here.
-
-"""
+"""Utility functions are stored here."""

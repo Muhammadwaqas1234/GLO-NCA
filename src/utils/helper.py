@@ -14,66 +14,40 @@ import nibabel as nib
 import os
 
 def dump_pickle_file(file, path):
-    r"""Dump pickle file in path
-        #Args:
-            file: the file to dump
-            path: location to dump file to
-    """
+    r"""Save an object as a pickle file."""
     with open(path, 'wb') as output_file:
         pickle.dump(file, output_file)
 
 def load_pickle_file(path):
-    r"""Load pickle file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load a pickle file."""
     with open(path, 'rb') as input_file:
         file = pickle.load(input_file)
     return file
 
 def dump_compressed_pickle_file(file, path):
-    r"""Dump compressed pickle file in path
-        #Args:
-            file: the file to dump
-            path: location to dump file to
-    """
+    r"""Save an object as a compressed pickle file."""
     with bz2.BZ2File(path, 'w') as output_file:
         pickle.dump(file, output_file)
 
 def load_compressed_pickle_file(path):
-    r"""Load compressed pickle file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load a compressed pickle file."""
     with bz2.BZ2File(path, 'rb') as input_file:
         file = pickle.load(input_file)
     return file
     
 def dump_json_file(file, path):
-    r"""Dump json file in path
-        #Args:
-            file: the json file to dump
-            path: location to dump file to
-    """
+    r"""Save an object as JSON."""
     with open(path, 'w') as output_file:
         json.dump(file, output_file)
 
 def load_json_file(path):
-    r"""Load json file
-        #Args:
-            path: location to dump file to
-    """
+    r"""Load a JSON file."""
     with open(path, 'r') as input_file:
         file =  json.load(input_file)
     return file
 
 def get_img_from_fig(fig, dpi=400, size = (1700, 1700)):
-    r"""Convert figure to img
-        #Args:
-            fig: the figure to convert
-            dpi: the dots per inch when converting
-            size: the preferred output size
-    """
+    r"""Convert a matplotlib figure to an image."""
     buf = io.BytesIO()
 
     size_inch = fig.get_size_inches()
@@ -85,11 +59,7 @@ def get_img_from_fig(fig, dpi=400, size = (1700, 1700)):
     return img.read()
 
 def visualize_perceptive_range(img, cell_fire_rate=0.5):
-    r"""Visualize the current perceptive range by replicating the activation
-        #Args:
-            img: the input image
-            cell_fire_rate: the chance a cell is active
-    """
+    r"""Visualise the current perceptive range."""
     if np.max(img) == 0:
         img[int(img.shape[0] / 2), int(img.shape[1] / 2), :] = 1
     else:
@@ -109,14 +79,7 @@ def visualize_perceptive_range(img, cell_fire_rate=0.5):
 
 
 def visualize_all_channels_fast(img, replace_firstImage = None, min=1, max=100, labels = None):
-    r"""Visualize all nca channels in a simplified setup
-        #Args:
-            img: the input image
-            replace_firstImage: what to replace first image with
-            min: min value
-            max: max value
-            labels: whether to show label overlay
-    """
+    r"""Visualise all cell channels (simple view)."""
     if img.shape[0] == 1:
         img = img[0]
     if labels is not None and labels.shape[0] == 1:
@@ -176,14 +139,7 @@ def visualize_all_channels_fast(img, replace_firstImage = None, min=1, max=100, 
 
 
 def visualize_all_channels(img, replace_firstImage = None, divide_by=3, labels = None, color_map="nipy_spectral", size = (1700, 1700)):
-    r"""Visualize all nca channels in a nicer but slower setup (interactive vs recording)
-        #Args:
-            img: the input image
-            replace_firstImage: what to replace first image with
-            min: min value
-            max: max value
-            labels: whether to show label overlay
-    """
+    r"""Visualise all cell channels (detailed, slower view)."""
     if img.shape[0] == 1:
         img = img[0]
     if labels is not None and labels.shape[0] == 1:
@@ -225,7 +181,7 @@ def visualize_all_channels(img, replace_firstImage = None, divide_by=3, labels =
         figsize_Def = (2,1)
     fig, axes = plt.subplots(figsize=figsize_def)
     pos = axes.imshow(img_all_channels, norm=colors.SymLogNorm(linthresh=0.3, linscale=0.3,
-                                              vmin=-10.0, vmax=10.0), cmap=color_map)#cmap='RdBu', aspect='auto', vmin=-100, vmax=100)
+                                              vmin=-10.0, vmax=10.0), cmap=color_map)
     
     divider = make_axes_locatable(axes)
     cax = divider.append_axes("right", size="5%", pad = 0.05)
@@ -244,11 +200,7 @@ def visualize_all_channels(img, replace_firstImage = None, divide_by=3, labels =
     return fig 
 
 def convert_image(img, prediction, label=None, encode_image=True):
-    r"""Convert an image plus an optional label into one image that can be dealt with by Pillow and similar to display
-        TODO: Write nicely and optmiize output, currently only for displaying intermediate results
-        #Args
-
-            """
+    r"""Combine an image and optional label into one displayable image."""
     img_rgb = img 
     img_rgb = img_rgb - np.amin(img_rgb)
     img_rgb = img_rgb * img_rgb 
@@ -263,7 +215,7 @@ def convert_image(img, prediction, label=None, encode_image=True):
     label_pred = np.stack((label_pred, label_pred, label_pred), axis=-1)
     
 
-    # Overlay Label on Image
+    # Overlay the label on the image.
     if label is not None:
         sobel_x = cv2.Sobel(src=label, ddepth=cv2.CV_64F, dx=1, dy=0, ksize=3)
         sobel_y = cv2.Sobel(src=label, ddepth=cv2.CV_64F, dx=0, dy=1, ksize=3)
@@ -304,11 +256,7 @@ def orderArray(array):
 
 
 def encode(img_rgb, size=(150, 100)):
-    r"""Encode an image
-        #Args:
-            img_rgb: the input image
-            size: size of the image
-    """
+    r"""Encode an image."""
     size_img = img_rgb.shape
     size_img = [1, size_img[0]/ size_img[1]]
 
@@ -329,13 +277,7 @@ def encode(img_rgb, size=(150, 100)):
     return img_rgb
 
 def saveNiiGz(output, label, patient_id, path):
-    r"""Save NiiGz file
-        #Args:
-            output: the image / output of nca
-            label: the label of the image
-            patient_id: the patient id
-            path: the path to save file in 
-    """
+    r"""Save a NIfTI file."""
     output = np.round(output.cpu().detach().numpy())
     output[output < 0] = 0
     output[output > 0] = 1
@@ -345,8 +287,6 @@ def saveNiiGz(output, label, patient_id, path):
     nib.save(nib_label, os.path.join(path, patient_id + "_label.nii.gz"))  
     
 
-r"""Plot individual patient scores
-    TODO: 
-"""
+# Plot individual patient scores.
 def loss_log_to_image(loss_log):
     sns.scatterplot(data=loss_log, x="id", y="Dice")

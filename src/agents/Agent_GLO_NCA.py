@@ -1,49 +1,41 @@
 import torch
 import numpy as np
-from src.agents.Agent_Multi_NCA import Agent_Multi_NCA
+from src.agents.Agent_GLO_NCA_Multi import Agent_GLO_NCA_Multi
 import os
 import random
 import math
 import nibabel as nib
 
-class Agent_GLO_NCA(Agent_Multi_NCA):
-    """GLO-NCA (Global Context-Aware NCA) training agent.
-
-    Uses a coarse-to-fine multi-level Neural Cellular Automata with a global
-    context mechanism (the lightweight SE block in BasicNCA3D) and 3D patches
-    across n-levels during training to keep VRAM low.
-    """
+class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
+    """GLO-NCA cascade agent: coarse-to-fine inference over the model levels."""
     def initialize(self):
         super().initialize()
         self.stacked_models = self.exp.get_from_config('stacked_models')
         self.scaling_factor = self.exp.get_from_config('scaling_factor')
 
     def get_outputs(self, data, full_img=False, tag="", **kwargs):
-        r"""Get the outputs of the model
-            #Args
-                data (int, tensor, tensor): id, inputs, targets
-        """
+        r"""Run the cascade and return (outputs, targets)."""
         id, inputs, targets = data
 
         if len(targets.shape) < 5:
             targets = torch.unsqueeze(targets, 4)
         
-        # Set scaling factor
+        # Scaling factor between levels.
         scale_fac = 2
         if self.exp.get_from_config('scale_factor') is not None:
             scale_fac = self.exp.get_from_config('scale_factor')
 
-        # Choose Pooling
+        # Pooling used to downscale.
         max_pool = torch.nn.MaxPool3d(2, 2, 0)
         
         targets_loc = targets 
 
-        # Scale Image to Initial Size
+        # Downscale the input to the first level.
         full_res = inputs
         full_res_gt = targets
         inputs_loc = inputs
 
-        # Scale image down square(scale_factor) -> Replace with single downscaling step
+        # Downscale once per level.
         for i in range(self.exp.get_from_config('train_model')*int(math.log2(scale_fac))):
             inputs_loc = inputs_loc.transpose(1,4)
             inputs_loc = max_pool(inputs_loc)
@@ -55,10 +47,10 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
         input_channel = self.exp.get_from_config('input_channels')
         
 
-        # After training run inference on full image
+        # Evaluation: inference on the full image.
         if full_img == True:
 
-            # REFACTOR: Visualisation
+            # Optional visualisation.
             save4d = False
             slice_all_Channels = False
             if not slice_all_Channels:
@@ -69,17 +61,16 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                 label_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
                 img_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
             step = 0
-            # -------------------------
             
             with torch.no_grad():
-                # Start with low res lvl and go to high res level
+                # From the low-resolution level to the high-resolution level.
                 for m in range(self.exp.get_from_config('train_model')+1):
                     if m == self.exp.get_from_config('train_model'):
                         if type(self.getInferenceSteps()) is list:
                             stp = self.getInferenceSteps()[m]
                         else:
                             stp = self.getInferenceSteps()
-                        # REFACTOR: Visualisation
+                        # Optional visualisation.
                         if save4d:
                             outputs = inputs_loc
                             for i in range(self.getInferenceSteps()[m]):
@@ -95,13 +86,13 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
 
                                 step = step +1 
                         else:
-                            # Standard inference
+                            # Final level: standard inference.
                             outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                    # Scale m-1 times 
+                    # Downscale m-1 times. 
                     else:
                         up = torch.nn.Upsample(scale_factor=scale_fac, mode='nearest')
 
-                        # REFACTOR: Visualisation
+                        # Optional visualisation.
                         if save4d:
                             outputs = inputs_loc
                             for i in range(self.getInferenceSteps()[m]):
@@ -136,7 +127,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                         inputs_loc = torch.concat((next_res[...,:input_channel], outputs[...,input_channel:]), 4)
                         targets_loc = targets
             
-            # REFACTOR: Visualisation
+            # Optional visualisation.
             if save4d:
                 if not slice_all_Channels:
                     nib_save = torch.sigmoid(torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0)))).numpy()
@@ -152,11 +143,11 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                 nib_save = torch.sigmoid(torch.from_numpy(np.transpose(img_mri_4d, (1, 2, 3, 0)))).numpy()
                 nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
                 nib.save(nib_save, os.path.join("path", str(id)+"_img.nii.gz"))
-        # During training run inference on patches
+        # Training: inference on patches.
         else:
-            # For number of downscaling levels
+            # Over the downscaling levels.
             for m in range(self.exp.get_from_config('train_model')+1): 
-                # If last step -> run normal inference on final patch
+                # Last level: standard inference on the final patch.
                 if m == self.exp.get_from_config('train_model'):
                     if type(self.getInferenceSteps()) is list:
                         stp = self.getInferenceSteps()[m]
@@ -177,7 +168,7 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                         next_res_gt = max_pool(next_res_gt)
                         next_res_gt = next_res_gt.transpose(1,4)
 
-                    # Run model inference on patch
+                    # Inference on the patch.
                     outputs = self.model[m](inputs_loc, steps=self.getInferenceSteps()[m], fire_rate=self.exp.get_from_config('cell_fire_rate'))
                     
                     # Upscale lowres features to next level
@@ -188,23 +179,23 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                     # Concat lowres features with higher res image
                     inputs_loc = torch.concat((next_res[...,:input_channel], outputs[...,input_channel:]), 4)
 
-                    # Array to store intermediate states
+                    # Intermediate states.
                     targets_loc = next_res_gt
                     size = self.exp.get_from_config('input_size')[0]
                     inputs_loc_temp = inputs_loc
                     targets_loc_temp = targets_loc
 
-                    # Array to store next states
+                    # Next states.
                     inputs_loc = torch.zeros((inputs_loc_temp.shape[0], size[0], size[1], size[2] , inputs_loc_temp.shape[4])).to(self.exp.get_from_config('device'))
                     targets_loc = torch.zeros((targets_loc_temp.shape[0], size[0], size[1], size[2] , targets_loc_temp.shape[4])).to(self.exp.get_from_config('device'))
                     full_res_new = torch.zeros((full_res.shape[0], int(full_res.shape[1]/scale_fac), int(full_res.shape[2]/scale_fac), int(full_res.shape[3]/scale_fac), full_res.shape[4])).to(self.exp.get_from_config('device'))
                     full_res_gt_new = torch.zeros((full_res.shape[0], int(full_res.shape[1]/scale_fac), int(full_res.shape[2]/scale_fac), int(full_res.shape[3]/scale_fac), full_res_gt.shape[4])).to(self.exp.get_from_config('device'))
 
-                    # Scaling factors
+                    # Scaling factors.
                     factor = self.exp.get_from_config('train_model') - m -1
                     factor_pow = math.pow(2, factor)
 
-                    # Choose random patch of image for each element in batch
+                    # Random patch per batch element.
                     for b in range(inputs_loc.shape[0]): 
                         while True:
                             pos_x = random.randint(0, inputs_loc_temp.shape[1] - size[0])
@@ -212,27 +203,27 @@ class Agent_GLO_NCA(Agent_Multi_NCA):
                             pos_z = random.randint(0, inputs_loc_temp.shape[3] - size[2])
                             break
 
-                        # Randomized start position for patch
+                        # Random start position of the patch.
                         pos_x_full = int(pos_x * factor_pow)
                         pos_y_full = int(pos_y * factor_pow)
                         pos_z_full = int(pos_z * factor_pow)
                         size_full = [int(full_res.shape[1]/scale_fac), int(full_res.shape[2]/scale_fac), int(full_res.shape[3]/scale_fac)]
 
-                        # Set current patch of inputs and targets
+                        # Current patch of inputs and targets.
                         inputs_loc[b] = inputs_loc_temp[b, pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]
                         if len(targets_loc.shape) > 4:
                             targets_loc[b] = targets_loc_temp[b, pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]
                         else:
                             targets_loc[b] = targets_loc_temp[b, pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2]]
 
-                        # Update full res image to patch of full res image
+                        # Crop the full-resolution image to the patch.
                         full_res_new[b] = full_res[b, pos_x_full:pos_x_full+size_full[0], pos_y_full:pos_y_full+size_full[1], pos_z_full:pos_z_full+size_full[2], :]
                         full_res_gt_new[b] = full_res_gt[b, pos_x_full:pos_x_full+size_full[0], pos_y_full:pos_y_full+size_full[1], pos_z_full:pos_z_full+size_full[2], :]
 
                     full_res = full_res_new
                     full_res_gt = full_res_gt_new
 
-        # Add pooling - not functional
+        # Pooling option (not used).
         if self.exp.get_from_config('Persistence'):
             if np.random.random() < self.exp.get_from_config('pool_chance'):
                 self.epoch_pool.addToPool(outputs.detach().cpu(), id)

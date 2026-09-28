@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Start the GPU VM, creating it on first use (service account with cloud-platform scope).
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+load_config
+require_gcloud_auth
+
+# shellcheck disable=SC2086
+if gcloud compute instances describe "${VM_NAME}" $(vm_flags) >/dev/null 2>&1; then
+  state=$(gcloud compute instances describe "${VM_NAME}" $(vm_flags) \
+          --format="value(status)")
+  if [[ "${state}" == "RUNNING" ]]; then
+    pass "VM ${VM_NAME} already RUNNING"
+  else
+    # Restarting a stopped GPU VM resumes billing, so confirm first.
+    log "VM ${VM_NAME} is ${state}; starting it resumes GPU billing"
+    confirm "Start existing GPU VM ${VM_NAME} (${MACHINE_TYPE}, ${GPU_TYPE}) -- billing resumes?"
+    gcloud compute instances start "${VM_NAME}" $(vm_flags)
+    pass "VM ${VM_NAME} started"
+  fi
+else
+  log "VM ${VM_NAME} does not exist -- creating it"
+  log "  machine=${MACHINE_TYPE} gpu=${GPU_TYPE}x${GPU_COUNT} disk=${DISK_SIZE_GB}GB"
+  log "  image=${IMAGE_FAMILY}/${IMAGE_PROJECT} zone=${GCP_ZONE}"
+  # SPOT (preemptible, cheaper) or STANDARD; Spot stops rather than deletes the VM on preemption.
+  PROVISIONING_MODEL="${PROVISIONING_MODEL:-STANDARD}"
+  spot_flags=()
+  if [ "${PROVISIONING_MODEL}" = "SPOT" ]; then
+    spot_flags=(--provisioning-model=SPOT --instance-termination-action=STOP)
+    log "  provisioning=SPOT (preemptible; terminate action STOP)"
+  else
+    log "  provisioning=STANDARD (on-demand)"
+  fi
+  confirm "Creating a GPU VM starts billing while it is RUNNING. Continue?"
+  # shellcheck disable=SC2086
+  gcloud compute instances create "${VM_NAME}" $(vm_flags) \
+    --machine-type="${MACHINE_TYPE}" \
+    --accelerator="type=${GPU_TYPE},count=${GPU_COUNT}" \
+    --maintenance-policy=TERMINATE \
+    "${spot_flags[@]}" \
+    --image-family="${IMAGE_FAMILY}" \
+    --image-project="${IMAGE_PROJECT}" \
+    --boot-disk-size="${DISK_SIZE_GB}GB" \
+    --boot-disk-type=pd-ssd \
+    --scopes=cloud-platform \
+    --metadata="install-nvidia-driver=True"
+  pass "VM ${VM_NAME} created and starting (${PROVISIONING_MODEL})"
+fi
+
+echo
+log "reminder: a RUNNING GPU VM costs money. Stop it when idle:"
+log "  ./cloud/scripts/stop_vm.sh"
