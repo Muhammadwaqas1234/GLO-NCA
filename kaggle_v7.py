@@ -72,8 +72,10 @@ REGIONS     = ["WT", "TC", "ET"]
 MODALITIES  = ["t1n", "t1c", "t2w", "t2f"]
 
 REPO_URL = "https://github.com/Muhammadwaqas1234/GLO-NCA.git"
-REPO_DIR = "/kaggle/working/GLO-NCA"
-OUT_DIR  = "/kaggle/working/glo_v7"
+# GCP: paths come from the environment; Kaggle defaults unchanged.
+REPO_DIR = os.environ.get("GLO_V7_REPO", "/kaggle/working/GLO-NCA")
+OUT_DIR  = os.environ.get("GLO_V7_OUT", "/kaggle/working/glo_v7")
+DATA_BASE = os.environ.get("GLO_V7_DATA", "/kaggle/input")
 
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torchio"], check=False)
 if not os.path.isdir(os.path.join(REPO_DIR, "src")):
@@ -165,8 +167,8 @@ def find_data_root(base="/kaggle/input"):
     return None, 0
 
 
-DATA_ROOT, nf = find_data_root("/kaggle/input")
-assert DATA_ROOT, "BraTS not found under /kaggle/input — attach the dataset."
+DATA_ROOT, nf = find_data_root(DATA_BASE)
+assert DATA_ROOT, f"BraTS not found under {DATA_BASE} — attach the dataset."
 print(f"DATA_ROOT = {DATA_ROOT} ({nf} patients)")
 
 
@@ -175,7 +177,9 @@ def set_seed(s):
 
 
 def make_split(seed):
-    pats = sorted(d for d in os.listdir(DATA_ROOT) if os.path.isdir(os.path.join(DATA_ROOT, d)))
+    # Case folders only (a folder holding scans); skips e.g. a nested cohort folder.
+    pats = sorted(d for d in os.listdir(DATA_ROOT) if os.path.isdir(os.path.join(DATA_ROOT, d))
+                  and any(f.endswith((".nii", ".nii.gz")) for f in os.listdir(os.path.join(DATA_ROOT, d))))
     random.Random(seed).shuffle(pats)
     if N_PATIENTS:
         pats = pats[:N_PATIENTS]
