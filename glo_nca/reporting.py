@@ -17,7 +17,23 @@ def show(lab, t):
     print(f"{lab:<24}{t['WT']['dice']:<8.3f}{t['TC']['dice']:<8.3f}{t['ET']['dice']:<8.3f}{m:<8.3f}")
 
 
-def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak):
+def report_tuned(tuned):
+    """Print the tuned post-processing result (thresholds chosen on validation)."""
+    th, mc = tuned["thresholds"], tuned["min_component_voxels"]
+    print("-" * 60)
+    print("Tuned post-processing (chosen on validation, applied once to test):")
+    print("thresholds " + " ".join(f"{r}={th[r]:.2f}" for r in REGIONS)
+          + " | min component " + " ".join(f"{r}={mc[r]}" for r in REGIONS)
+          + f" | full resolution {tuned['full_resolution']}")
+    if tuned["val_tuned"]:
+        show("val (tuned)", {r: {"dice": tuned["val_tuned"][r]} for r in REGIONS})
+    show("test (tuned)", tuned["test"])
+    for r in REGIONS:
+        t = tuned["test"][r]
+        print(f"{r:<8}{t['dice']:<12.4f}{t['iou']:<12.4f}{t['hd95']:<12.3f}")
+
+
+def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None):
     print("\n" + "=" * 60)
     print(f"GLO-NCA cascade - FINAL TEST (best @ epoch {ck_ep})")
     print("=" * 60)
@@ -34,12 +50,16 @@ def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time
     print("-" * 60)
     print(f"{'mean':<8}{mean:<12.4f}")
     print(f"train time {train_time:.0f}s | peak VRAM {peak:.2f} GB | params {n_params}")
+    if tuned is not None:
+        report_tuned(tuned)
 
     with open(os.path.join(out_dir, "results.json"), "w") as fh:
         json.dump({"test": test, "test_plain": test_plain, "history": hist, "best_epoch": ck_ep,
-                   "params": n_params, "train_time": train_time, "peak_vram": peak,
+                   "test_tuned": tuned, "params": n_params, "train_time": train_time, "peak_vram": peak,
                    "config": {"steps": C.STEPS, "fire": C.FIRE_RATE, "patch": C.INPUT_SIZE,
-                              "beta": C.TVERSKY_BETA, "aug": C.USE_AUG}},
+                              "beta": C.TVERSKY_BETA, "aug": C.USE_AUG,
+                              "augment": C.AUGMENT, "region_weights": C.REGION_WEIGHTS,
+                              "split_seed": C.SPLIT_SEED}},
                   fh, indent=2, default=str)
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(14, 5))

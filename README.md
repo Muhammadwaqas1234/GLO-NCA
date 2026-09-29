@@ -30,7 +30,9 @@ All values live in `configs/glo_nca_cascade.yaml`.
 
 ```
 train.py                  command-line entry point
+evaluate.py               re-evaluate a run or an ensemble of runs
 configs/glo_nca_cascade.yaml   the recipe settings
+configs/experiments/      optional improvements (inherit a base config)
 glo_nca/                  training package
   config.py               YAML -> settings
   data.py                 dataset, data-root discovery, split
@@ -40,7 +42,7 @@ glo_nca/                  training package
   reporting.py            final table, results JSON, curves
 src/                      model, agent, dataset and loss code (unchanged from v7)
 legacy/kaggle/            the original Kaggle scripts (v4-v7)
-tests/                    equivalence test against legacy/kaggle/kaggle_v7.py
+tests/                    equivalence test against legacy/kaggle/kaggle_v7.py, option checks
 docker/                   training image
 cloud/                    GCP scripts and systemd unit
 ```
@@ -89,10 +91,37 @@ Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes and at
 the end. A Spot preemption loses at most the current epoch: `last.pth` is written
 after every epoch and `resume_training.sh` continues from it.
 
+## Optional improvements
+
+All are off by default, so the base configs reproduce the v7 recipe exactly. The
+configs in `configs/experiments/` switch them on through `base:` inheritance.
+
+| Setting | Effect |
+|---|---|
+| `data.augment` | training-only flips, in-plane 90-degree rotations and intensity jitter |
+| `model.input_size` | working resolution, e.g. `[[48,48,48],[96,96,96]]` (`brats2021_res96`) |
+| `loss.tversky_beta`, `loss.region_weights` | recall/precision balance and extra loss weight for WT, TC, ET |
+| `evaluation.tune_thresholds` | per-region threshold and small-component clean-up size, chosen on validation |
+| `evaluation.min_component_voxels` | fixed clean-up size, used when not tuning |
+| `evaluation.full_resolution` | score in the original scan space instead of the working resolution |
+| `experiment.split_seed` | fixed split, so runs trained with other seeds can be ensembled |
+
+The tuned result is reported next to the plain one (`test_tuned` in `results.json`).
+Existing runs can be re-scored without retraining, and several runs averaged:
+
+```bash
+python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS --tune-thresholds --full-resolution
+python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run experiments/<run-c>     --data-root /path/to/BraTS --tune-thresholds --full-resolution
+```
+
+Ensemble members must share `split.json` and the working resolution; train them with
+`--override experiment.seed=<n>` on a config that sets `experiment.split_seed`.
+
 ## Verify
 
 ```bash
 python tests/test_equivalence.py /path/to/small/BraTS
+python tests/test_options.py
 ```
 
 ## Credits

@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+r"""Unit checks for the optional improvements (no data or GPU needed)."""
+import os
+import random
+import sys
+import tempfile
+
+import numpy as np
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+
+from glo_nca.config import load_config  # noqa: E402
+from glo_nca.data import BraTS_FG  # noqa: E402
+from glo_nca.evaluation import remove_small_components, score, to_full_resolution, tune_thresholds  # noqa: E402
+
+RESULTS = []
+
+
+def check(name, ok, detail=""):
+    RESULTS.append(ok)
+    print(f"  {'PASS' if ok else 'FAIL'}  {name:<58}{detail}")
+
+
+def test_config():
+    base = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
+    check("defaults reproduce the original recipe",
+          base.SPLIT_SEED == base.SEED and not base.AUGMENT and base.REGION_WEIGHTS == [1, 1, 1]
+          and not base.improved_eval)
+    exp = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_improved.yaml"))
+    check("base: inheritance merges nested sections",
+          exp.MODALITIES == base.MODALITIES and exp.INPUT_SIZE[-1] == [96, 96, 96]
+          and exp.TVERSKY_BETA == 0.65 and exp.CHANNEL_N == base.CHANNEL_N)
+    ovr = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_improved.yaml"),
+                      ["experiment.seed=7"])
+    check("model seed changes, split seed stays fixed", ovr.SEED == 7 and ovr.SPLIT_SEED == 42)
+
+
+def test_augmentation():
+    random.seed(0)
+    img = np.random.rand(16, 16, 8, 4).astype(np.float32)
+    label = (img[..., :3] > 0.5).astype(np.float32)
+    ok = True
+    for _ in range(20):
+        a, b = BraTS_FG._augment_spatial(img, label)
+        ok &= np.array_equal(b, (a[..., :3] > 0.5).astype(np.float32)) and a.flags["C_CONTIGUOUS"]
+    check("spatial augmentation keeps image and label aligned", bool(ok))
+    z = img.copy(); z[:4] = 0
+    out = BraTS_FG._augment_intensity(z)
+    check("intensity augmentation leaves background at zero",
+          bool((out[:4] == 0).all() and not np.allclose(out[4:], z[4:])))
+
+
+def test_components():
+    m = np.zeros((20, 20, 20), bool); m[2:8, 2:8, 2:8] = True; m[15, 15, 15] = True
+    r = remove_small_components(m, 10)
+    check("small components are removed, large ones kept", bool(r.sum() == 216 and not r[15, 15, 15]))
+
+
+def test_tuning():
+    rng = np.random.default_rng(0)
+    cases = []
+    for i in range(4):
+        gt = np.zeros((16, 16, 16, 3), np.uint8); gt[4:12, 4:12, 4:12] = 1
+        prob = np.where(gt > 0, 0.4, 0.1) + rng.uniform(0, 0.05, gt.shape)
+        prob[1, 1, 1] = 0.9   # isolated false positive
+        cases.append((f"c{i}", prob.astype(np.float16), gt))
+    th, sizes, val = tune_thresholds(cases)
+    check("tuning finds the lower threshold and a clean-up size",
+          all(th[r] <= 0.4 and sizes[r] > 0 and val[r] > 0.99 for r in th), f"{th} {sizes}")
+    res = score(cases, th, sizes)
+    check("scoring with tuned settings", all(res[r]["dice"] > 0.99 for r in res))
+
+
+class _FakeDS:
+    MODALITIES = ["a", "b"]
+    SEG_SUFFIX = "seg"
+    use_foreground_crop = True
+    _foreground_bbox = staticmethod(BraTS_FG._foreground_bbox)
+    _labels_to_regions = BraTS_FG._labels_to_regions
+
+    def __init__(self, root, vols):
+        self.images_path, self.vols = root, vols
+
+    def _find_modality_file(self, folder, case, m):
+        return m
+
+    def load_item(self, key):
+        return self.vols[key]
+
+
+def test_full_resolution():
+    raw = np.zeros((40, 40, 30)); raw[10:30, 5:35, 4:24] = 1.0
+    seg = np.zeros_like(raw); seg[15:25, 10:30, 8:20] = 2
+    ds = _FakeDS(tempfile.gettempdir(), {"a": raw, "b": raw, "seg": seg})
+    prob = np.zeros((10, 15, 10, 3), np.float32)
+    prob[2:8, 2:13, 2:8, 0] = 1.0   # WT in the cropped, downsampled frame
+    full, gt = to_full_resolution(ds, "case", prob)
+    wt = full[..., 0] >= 0.5
+    dice = 2 * (wt & (gt[..., 0] > 0)).sum() / (wt.sum() + gt[..., 0].sum())
+    check("full resolution maps back to the original scan",
+          full.shape == (40, 40, 30, 3) and not wt[:10].any() and dice > 0.8, f"dice {dice:.3f}")
+
+
+if __name__ == "__main__":
+    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution):
+        t()
+    print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
+    raise SystemExit(0 if all(RESULTS) else 1)
