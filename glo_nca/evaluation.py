@@ -189,6 +189,9 @@ def improved_evaluation(C, dataset, val_cases, test_cases):
     if C.TUNE_THRESHOLDS:
         thresholds, min_component, val_tuned = tune_thresholds(val_cases, dataset,
                                                                C.FULL_RESOLUTION_EVAL)
+    else:
+        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL)
+        val_tuned = {r: val[r]["dice"] for r in REGIONS}
     test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
             "full_resolution": C.FULL_RESOLUTION_EVAL, "val_tuned": val_tuned, "test": test}
