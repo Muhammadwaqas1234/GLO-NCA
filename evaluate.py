@@ -96,11 +96,13 @@ def main() -> int:
     tuned = improved_evaluation(C0, ds, cases["val"], cases["test"])
     report_tuned(tuned)
     mean = float(np.mean([tuned["test"][r]["dice"] for r in REGIONS]))
-    print(f"test mean Dice {mean:.4f} over {len(cases['test'])} cases, {len(runs)} model(s)")
+    val_mean = float(np.mean([tuned["val_tuned"][r] for r in REGIONS]))
+    print(f"val mean Dice {val_mean:.4f} over {len(cases['val'])} cases | "
+          f"test mean Dice {mean:.4f} over {len(cases['test'])} cases, {len(runs)} model(s)")
 
     out = args.output or os.path.join(runs[0], "evaluation.json")
     with open(out, "w", encoding="utf-8") as fh:
-        json.dump({"runs": runs, **tuned, "test_mean_dice": mean}, fh, indent=2, default=str)
+        json.dump({"runs": runs, **tuned, "val_mean_dice": val_mean, "test_mean_dice": mean}, fh, indent=2, default=str)
     print("Saved to", out)
     return 0
 

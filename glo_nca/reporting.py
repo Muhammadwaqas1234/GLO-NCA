@@ -26,7 +26,7 @@ def report_tuned(tuned):
           + " | min component " + " ".join(f"{r}={mc[r]}" for r in REGIONS)
           + f" | full resolution {tuned['full_resolution']}")
     if tuned["val_tuned"]:
-        show("val (tuned)", {r: {"dice": tuned["val_tuned"][r]} for r in REGIONS})
+        show("val", {r: {"dice": tuned["val_tuned"][r]} for r in REGIONS})
     show("test (tuned)", tuned["test"])
     for r in REGIONS:
         t = tuned["test"][r]
