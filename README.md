@@ -79,6 +79,12 @@ Copy `cloud/config/gcp.env.example` to `cloud/config/gcp.env` and fill it in, th
 ./cloud/scripts/stop_vm.sh                       # from your machine
 ```
 
+BraTS 2021 (1,251 glioma cases) uses its own config and data folder:
+
+```bash
+./cloud/scripts/run_training.sh --config configs/glo_nca_cascade_brats2021.yaml --data-root /data/brats2021 --stop-after-epoch 10 --auto-stop
+```
+
 Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes and at
 the end. A Spot preemption loses at most the current epoch: `last.pth` is written
 after every epoch and `resume_training.sh` continues from it.

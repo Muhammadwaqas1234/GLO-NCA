@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--stop-after-epoch N] [--auto-stop]
+# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-RUN_ID="${1:-}"; [[ -n "${RUN_ID}" ]] || die "usage: resume_training.sh <run_id> [--stop-after-epoch N] [--auto-stop]"
+RUN_ID="${1:-}"; [[ -n "${RUN_ID}" ]] || die "usage: resume_training.sh <run_id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop]"
 shift
 EXTRA_ARGS=""; AUTO_STOP=0
 while [[ $# -gt 0 ]]; do
@@ -11,6 +11,7 @@ while [[ $# -gt 0 ]]; do
     --stop-after-epoch) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || die "--stop-after-epoch needs a positive number"
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
+    --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done

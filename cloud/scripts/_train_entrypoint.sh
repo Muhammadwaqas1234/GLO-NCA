@@ -28,7 +28,7 @@ if [[ "${GLO_MODE}" == "resume" ]]; then
   docker run "${COMMON[@]}" --resume "/out/${RUN_ID}" --data-root "${GLO_DATA}" \
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 else
-  docker run "${COMMON[@]}" --config configs/glo_nca_cascade.yaml --data-root "${GLO_DATA}" \
+  docker run "${COMMON[@]}" --config "${GLO_CONFIG:-configs/glo_nca_cascade.yaml}" --data-root "${GLO_DATA}" \
     --output /out --experiment-id "${RUN_ID}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 fi
 RC=$?

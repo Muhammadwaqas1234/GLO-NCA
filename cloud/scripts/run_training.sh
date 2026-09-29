@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Start a run under systemd: run_training.sh [--stop-after-epoch N] [--auto-stop]
+# Start a run under systemd: run_training.sh [--config PATH] [--data-root DIR] [--stop-after-epoch N] [--auto-stop]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-EXTRA_ARGS=""; AUTO_STOP=0
+EXTRA_ARGS=""; AUTO_STOP=0; CONFIG="configs/glo_nca_cascade.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stop-after-epoch) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || die "--stop-after-epoch needs a positive number"
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
+    --config) CONFIG="${2:?--config needs a path}"; shift 2 ;;
+    --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -18,9 +20,11 @@ command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1 || die "NVID
 pass "GPU visible: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 assert_image_matches_repo "${GLO_WORKSPACE}"
 [[ -d "${GLO_DATA_ROOT}" ]] || die "dataset not found at ${GLO_DATA_ROOT}"
+[[ -f "${GLO_WORKSPACE}/${CONFIG}" ]] || die "config not found: ${CONFIG}"
 mkdir -p "${VM_OUT_DIR}"
 
-RUN_ID="GLO-NCA-CASCADE-$(date -u +%Y%m%d-%H%M%S)"
+RUN_PREFIX="$(basename "${CONFIG}" .yaml | tr "a-z_" "A-Z-")"
+RUN_ID="${RUN_PREFIX}-$(date -u +%Y%m%d-%H%M%S)"
 sudo cp "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-training.service" "/etc/systemd/system/${TRAIN_UNIT}.service"
 sudo systemctl daemon-reload
 sudo tee /etc/glo-nca-cascade.env >/dev/null <<EOF
@@ -28,6 +32,7 @@ GLO_REPO=${GLO_WORKSPACE}
 GLO_DATA=${GLO_DATA_ROOT}
 GLO_OUT=${VM_OUT_DIR}
 GLO_RUN_ID=${RUN_ID}
+GLO_CONFIG=${CONFIG}
 GLO_MODE=new
 GLO_EXTRA_ARGS="${EXTRA_ARGS}"
 GLO_AUTO_STOP=${AUTO_STOP}
