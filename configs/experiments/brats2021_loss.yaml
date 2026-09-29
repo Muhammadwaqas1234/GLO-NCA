@@ -1,0 +1,9 @@
+# BraTS 2021 recipe with a lower Tversky beta and extra loss weight on TC and ET.
+base: ../glo_nca_cascade_brats2021.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-LOSS
+
+loss:
+  tversky_beta: 0.65
+  region_weights: [1.0, 1.5, 1.5]   # WT, TC, ET

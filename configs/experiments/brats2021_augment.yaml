@@ -1,0 +1,8 @@
+# BraTS 2021 recipe plus training augmentation (flips, in-plane rotations, intensity jitter).
+base: ../glo_nca_cascade_brats2021.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-AUGMENT
+
+data:
+  augment: true

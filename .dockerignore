@@ -10,7 +10,7 @@ venv/
 legacy/
 tests/
 cloud/
-experiments/
+/experiments/
 *.ipynb
 *.pth
 *.nii
