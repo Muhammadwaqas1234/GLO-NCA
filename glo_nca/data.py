@@ -15,6 +15,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
 
     use_foreground_crop = True
     use_nonzero_norm = True
+    augment = False
 
     @staticmethod
     def _foreground_bbox(vol_stack):
@@ -60,7 +61,9 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
         img_id, img, label = cached
         if self.exp.get_from_config('patchify') is True and self.state == "train":
             img, label = self.patchify_multimodal(img, label)
-        # No augmentation is applied here.
+        augment = self.augment and self.state == "train"
+        if augment:
+            img, label = self._augment_spatial(img, label)
         if self.use_nonzero_norm:
             out = np.empty_like(img, dtype=np.float32)
             for c in range(img.shape[-1]):
@@ -68,7 +71,29 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
                 out[..., c] = np.where(mask, (ch - ch[mask].mean()) / (ch[mask].std() + 1e-8), 0.0) \
                     if mask.sum() > 0 else ch
             img = out
+        if augment:
+            img = self._augment_intensity(img)
         return (img_id, img.astype(np.float32), label.astype(np.float32))
+
+    @staticmethod
+    def _augment_spatial(img, label):
+        """Random axis flips and in-plane 90-degree rotations, applied to image and label alike."""
+        for axis in range(3):
+            if random.random() < 0.5:
+                img, label = np.flip(img, axis), np.flip(label, axis)
+        if img.shape[0] == img.shape[1]:
+            k = random.randint(0, 3)
+            img, label = np.rot90(img, k, axes=(0, 1)), np.rot90(label, k, axes=(0, 1))
+        return np.ascontiguousarray(img), np.ascontiguousarray(label)
+
+    @staticmethod
+    def _augment_intensity(img, scale=0.1, shift=0.1):
+        """Per-channel random intensity scale and shift on brain voxels only."""
+        out = img.astype(np.float32, copy=True)
+        for c in range(out.shape[-1]):
+            mask = out[..., c] != 0
+            out[..., c][mask] = out[..., c][mask] * random.uniform(1 - scale, 1 + scale)                 + random.uniform(-shift, shift)
+        return out
 
 
 def find_data_root(base="/kaggle/input"):

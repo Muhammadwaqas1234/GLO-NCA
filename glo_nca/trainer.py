@@ -7,6 +7,7 @@ import math
 import os
 import random
 import time
+import types
 
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ from src.utils.Experiment import Experiment
 from . import checkpoint as ckpt
 from .config import REGIONS, CascadeConfig
 from .data import BraTS_FG, find_data_root, make_split
-from .evaluation import evaluate
+from .evaluation import collect_probs, evaluate, improved_evaluation
 from .reporting import final_report
 
 
@@ -44,27 +45,10 @@ def _write_history(out_dir, hist):
                         hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]])
 
 
-def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = False,
-        stop_after_epoch: int = None) -> dict:
-    os.makedirs(out_dir, exist_ok=True)
-    last_path = os.path.join(out_dir, "last.pth")
-    best_path = os.path.join(out_dir, "best.pth")
-    if resume and not os.path.exists(last_path):
-        raise FileNotFoundError(f"cannot resume: {last_path} not found")
-
-    DATA_ROOT, nf = find_data_root(data_root or C.DATA_BASE)
-    assert DATA_ROOT, f"BraTS not found under {data_root or C.DATA_BASE}"
-    print(f"DATA_ROOT = {DATA_ROOT} ({nf} patients)")
-
-    # Setup; the order of operations fixes the random sequence.
-    set_seed(C.SEED)
-    tr, va, te = make_split(DATA_ROOT, C.SEED, C.N_PATIENTS)
-    print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
-    print(f"GLO-NCA cascade: ch={C.CHANNEL_N} hidden={C.HIDDEN} steps={C.STEPS} fire={C.FIRE_RATE} "
-          f"patch={C.INPUT_SIZE[-1]} beta={C.TVERSKY_BETA} aug={C.USE_AUG} ep={C.EPOCHS}", flush=True)
-    with open(os.path.join(out_dir, "split.json"), "w") as fh:
-        json.dump({"train": tr, "validation": va, "test": te, "seed": C.SEED}, fh, indent=2)
-
+def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
+    """Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
+    tr, va, te = splits
+    DATA_ROOT = data_root
     config = [{
         "img_path": DATA_ROOT, "label_path": DATA_ROOT, "model_path": os.path.join(out_dir, "m"),
         "device": C.DEVICE, "unlock_CPU": True,
@@ -79,7 +63,7 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "patchify": True, "priotize_masks": 0.7, "prioritize_region": C.PRIORITIZE_REGION,
     }]
-    ds = BraTS_FG(); ds.MODALITIES = C.MODALITIES
+    ds = BraTS_FG(); ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
     ds.use_foreground_crop = C.USE_FOREGROUND_CROP; ds.use_nonzero_norm = C.USE_NONZERO_NORM
     dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=4,
@@ -93,6 +77,58 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
         exp.data_split.images[sp] = {p: {0: entry(p)} for p in ids}
         exp.data_split.labels[sp] = {p: {0: entry(p)} for p in ids}
     exp.set_model_state("train")
+    return ds, ca, agent, dev
+
+
+def _weighted_batch_step(weights):
+    """Agent_GLO_NCA_Multi.batch_step with a per-region loss weight."""
+    def batch_step(self, data, loss_f):
+        data = self.prepare_data(data)
+        outputs, targets = self.get_outputs(data)
+        for m in range(self.exp.get_from_config('train_model')+1):
+            self.optimizer[m].zero_grad()
+        loss = 0
+        loss_ret = {}
+        for m in range(outputs.shape[-1]):
+            if 1 in targets[..., m]:
+                loss_loc = weights[m] * loss_f(outputs[..., m], targets[..., m])
+                loss = loss + loss_loc
+                loss_ret[m] = loss_loc.item()
+        if loss != 0:
+            loss.backward()
+            for m in range(self.exp.get_from_config('train_model')+1):
+                self.optimizer[m].step()
+                self.scheduler[m].step()
+        return loss_ret
+    return batch_step
+
+
+def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = False,
+        stop_after_epoch: int = None) -> dict:
+    os.makedirs(out_dir, exist_ok=True)
+    last_path = os.path.join(out_dir, "last.pth")
+    best_path = os.path.join(out_dir, "best.pth")
+    if resume and not os.path.exists(last_path):
+        raise FileNotFoundError(f"cannot resume: {last_path} not found")
+
+    DATA_ROOT, nf = find_data_root(data_root or C.DATA_BASE)
+    assert DATA_ROOT, f"BraTS not found under {data_root or C.DATA_BASE}"
+    print(f"DATA_ROOT = {DATA_ROOT} ({nf} patients)")
+
+    # Setup; the order of operations fixes the random sequence.
+    set_seed(C.SEED)
+    tr, va, te = make_split(DATA_ROOT, C.SPLIT_SEED, C.N_PATIENTS)
+    print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
+    print(f"GLO-NCA cascade: ch={C.CHANNEL_N} hidden={C.HIDDEN} steps={C.STEPS} fire={C.FIRE_RATE} "
+          f"patch={C.INPUT_SIZE[-1]} beta={C.TVERSKY_BETA} aug={C.USE_AUG} ep={C.EPOCHS}", flush=True)
+    if C.AUGMENT or C.REGION_WEIGHTS != [1.0, 1.0, 1.0] or C.improved_eval:
+        print(f"Options: augment={C.AUGMENT} region_weights={C.REGION_WEIGHTS} "
+              f"tune_thresholds={C.TUNE_THRESHOLDS} min_component={C.MIN_COMPONENT} "
+              f"full_resolution={C.FULL_RESOLUTION_EVAL}", flush=True)
+    with open(os.path.join(out_dir, "split.json"), "w") as fh:
+        json.dump({"train": tr, "validation": va, "test": te, "seed": C.SPLIT_SEED}, fh, indent=2)
+
+    ds, ca, agent, dev = build(C, DATA_ROOT, out_dir, (tr, va, te))
 
     spe = max(1, math.ceil(len(tr) / C.BATCH_SIZE)); total = C.EPOCHS * spe
     agent.scheduler = [torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total, eta_min=C.LR_MIN)
@@ -100,6 +136,8 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
 
     loss_f = FocalTverskyCELoss(alpha=1 - C.TVERSKY_BETA, beta=C.TVERSKY_BETA,
                                 gamma=C.FOCAL_GAMMA, ce_weight=0.5)
+    if C.REGION_WEIGHTS != [1.0, 1.0, 1.0]:
+        agent.batch_step = types.MethodType(_weighted_batch_step(C.REGION_WEIGHTS), agent)
 
     # Gradient clipping via backward hooks (element-wise clamp; batch_step steps the optimizer).
     if C.GRAD_CLIP and C.GRAD_CLIP > 0:
@@ -196,7 +234,14 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     _write_status(out_dir, state="testing", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best)
     test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
     test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
-    final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak)
+    tuned = None
+    if C.improved_eval:
+        # Post-processing is tuned on validation only; the test split is scored once.
+        _write_status(out_dir, state="tuning", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best)
+        val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
+        test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
+        tuned = improved_evaluation(C, ds, val_cases, test_cases)
+    final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned)
     _write_status(out_dir, state="completed", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best,
                   best_epoch=ck["ep"])
     return {"status": "completed", "best_epoch": ck["ep"]}
