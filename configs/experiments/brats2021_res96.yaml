@@ -1,0 +1,8 @@
+# BraTS 2021 recipe at a 96^3 working resolution (about 3.4x the voxels of 64x64x48).
+base: ../glo_nca_cascade_brats2021.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96
+
+model:
+  input_size: [[48, 48, 48], [96, 96, 96]]

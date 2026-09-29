@@ -1,0 +1,21 @@
+# BraTS 2021 with all improvements: augmentation, 96^3, tuned loss and tuned post-processing.
+base: ../glo_nca_cascade_brats2021.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-IMPROVED
+  split_seed: 42                  # fixed split, so runs with other seeds can be ensembled
+
+data:
+  augment: true
+
+model:
+  input_size: [[48, 48, 48], [96, 96, 96]]
+
+loss:
+  tversky_beta: 0.65
+  region_weights: [1.0, 1.5, 1.5]   # WT, TC, ET
+
+evaluation:
+  tune_thresholds: true           # threshold and clean-up size chosen on validation only
+  min_component_voxels: {WT: 0, TC: 0, ET: 0}   # fixed clean-up size, used only without tuning
+  full_resolution: true           # score in the original 240x240x155 scan space

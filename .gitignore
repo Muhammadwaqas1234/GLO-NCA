@@ -48,6 +48,6 @@ events.out.tfevents.*
 extra/
 
 # --- GLO-NCA v7 runs and local cloud settings ---
-experiments/
+/experiments/
 cloud/config/gcp.env
 *.tmp
