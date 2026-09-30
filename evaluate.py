@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--ensemble-n", type=int, default=None,
                     help="stochastic passes per model (default: each run's evaluation.ensemble_n)")
     ap.add_argument("--no-tta", action="store_true", help="disable flip test-time augmentation")
+    ap.add_argument("--no-hd95", action="store_true",
+                    help="skip HD95 (the slowest metric at full resolution); Dice and IoU only")
     args = ap.parse_args()
 
     import numpy as np
@@ -47,7 +49,7 @@ def main() -> int:
 
     from glo_nca.config import REGIONS, load_config
     from glo_nca.data import find_data_root
-    from glo_nca.evaluation import collect_probs, improved_evaluation
+    from glo_nca.evaluation import collect_probs, improved_evaluation, score_streaming
     from glo_nca.reporting import report_tuned
     from glo_nca.trainer import build, set_seed
 
@@ -65,12 +67,16 @@ def main() -> int:
         print(f"FAILED: BraTS not found under {args.data_root}")
         return 2
 
-    sums, ds, C0 = {"val": None, "test": None}, None, None
+    models, ds, C0 = [], None, None
     for r in runs:
         C = load_config(os.path.join(r, "config.yaml"))
+        if C0 is not None and C.INPUT_SIZE != C0.INPUT_SIZE:
+            print("FAILED: ensemble members differ in working resolution.")
+            return 2
         C0 = C0 or C
         set_seed(C.SEED)
-        ds, ca, agent, dev = build(C, data_root, r, splits[0])
+        ds_r, ca, agent, dev = build(C, data_root, r, splits[0])
+        ds = ds or ds_r
         ck = torch.load(os.path.join(r, "best.pth"), map_location=dev, weights_only=False)
         for m, sd in zip(ca, ck["m"]):
             m.load_state_dict(sd)
@@ -78,27 +84,45 @@ def main() -> int:
         tta = C.USE_TTA and not args.no_tta
         print(f"{os.path.basename(r)}: best epoch {ck['ep']} (val {ck['val_mean']:.3f}), "
               f"ensemble {n}, tta {tta}", flush=True)
-        for state in ("val", "test"):
-            cases = collect_probs(agent, ds, state, ensemble=n, tta=tta)
-            if sums[state] is None:
-                sums[state] = [(c, p.astype(np.float32), g) for c, p, g in cases]
-            else:
-                if [(c, p.shape) for c, p, _ in cases] != [(c, s.shape) for c, s, _ in sums[state]]:
-                    print("FAILED: ensemble members differ in cases or working resolution.")
-                    return 2
-                sums[state] = [(c, s + p.astype(np.float32), g)
-                               for (c, s, g), (c2, p, _) in zip(sums[state], cases)]
-    cases = {k: [(c, (p / len(runs)).astype(np.float16), g) for c, p, g in v] for k, v in sums.items()}
+        models.append((agent, n, tta))
 
     C0.TUNE_THRESHOLDS = args.tune_thresholds
     C0.MIN_COMPONENT = _parse_min_component(args.min_component)
     C0.FULL_RESOLUTION_EVAL = args.full_resolution
-    tuned = improved_evaluation(C0, ds, cases["val"], cases["test"])
+    out = args.output or os.path.join(runs[0], "evaluation.json")
+    if args.tune_thresholds:
+        # Tuning needs every validation probability map at once.
+        cases = {}
+        for state in ("val", "test"):
+            per_model = [collect_probs(agent, ds, state, ensemble=n, tta=tta) for agent, n, tta in models]
+            cases[state] = [(c, np.mean([m[i][1].astype(np.float32) for m in per_model], axis=0)
+                             .astype(np.float16), g) for i, (c, _, g) in enumerate(per_model[0])]
+        tuned = improved_evaluation(C0, ds, cases["val"], cases["test"])
+    else:
+        # Fixed post-processing: score case by case with a resumable progress file.
+        thresholds = {r: 0.5 for r in REGIONS}
+        progress = out + ".progress.jsonl"
+        settings = {"runs": runs, "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
+                    "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
+        if os.path.exists(progress):
+            with open(progress, encoding="utf-8") as fh:
+                first = json.loads(fh.readline() or "{}")
+            if first.get("settings") != json.loads(json.dumps(settings)):
+                print(f"FAILED: {progress} was written with other settings; delete it to start over.")
+                return 2
+        else:
+            with open(progress, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"settings": settings}) + "\n")
+        res = {state: score_streaming(models, ds, state, progress, thresholds, C0.MIN_COMPONENT,
+                                      args.full_resolution, not args.no_hd95)
+               for state in ("val", "test")}
+        tuned = {"thresholds": thresholds, "min_component_voxels": C0.MIN_COMPONENT,
+                 "full_resolution": args.full_resolution,
+                 "val_tuned": {r: res["val"][r]["dice"] for r in REGIONS}, "test": res["test"]}
     report_tuned(tuned)
     mean = float(np.mean([tuned["test"][r]["dice"] for r in REGIONS]))
     val_mean = float(np.mean([tuned["val_tuned"][r] for r in REGIONS]))
-    print(f"val mean Dice {val_mean:.4f} over {len(cases['val'])} cases | "
-          f"test mean Dice {mean:.4f} over {len(cases['test'])} cases, {len(runs)} model(s)")
+    print(f"val mean Dice {val_mean:.4f} | test mean Dice {mean:.4f} | {len(runs)} model(s)")
 
     out = args.output or os.path.join(runs[0], "evaluation.json")
     with open(out, "w", encoding="utf-8") as fh:

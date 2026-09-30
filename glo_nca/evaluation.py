@@ -1,6 +1,7 @@
 """Evaluation: Dice, mIoU and HD95 per region, plain and with tuned post-processing."""
 from __future__ import annotations
 
+import json
 import math
 import os
 
@@ -62,30 +63,99 @@ def case_id(img_id):
     return img_id[1:-2]
 
 
+def predict_case(agent, data, ensemble=1, tta=False):
+    """Mean probability map for one collated case: (case, prob float32, gt bool)."""
+    data = agent.prepare_data(data, eval=True)
+    idx, inp0, tgt = data
+    flips = [None, (1,), (2,), (3,)] if tta else [None]
+    probs = []
+    for fl in flips:
+        inp = torch.flip(inp0, dims=fl) if fl is not None else inp0
+        for _ in range(ensemble):
+            out, targets = agent.get_outputs((idx, inp, tgt), full_img=True)
+            p = torch.sigmoid(out)
+            if fl is not None:
+                p = torch.flip(p, dims=fl)
+            probs.append(p.detach().cpu().numpy())
+    prob = np.mean(probs, axis=0)[0]
+    gt = targets.detach().cpu().numpy()[0] >= 0.5
+    return case_id(idx[0]), prob, gt
+
+
 def collect_probs(agent, dataset, state, ensemble=1, tta=False):
     """Mean probability map per case as a list of (case, prob float16, gt uint8)."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
-    flips = [None, (1,), (2,), (3,)] if tta else [None]
     cases = []
     with torch.no_grad():
         for data in loader:
-            data = agent.prepare_data(data, eval=True)
-            idx, inp0, tgt = data
-            probs = []
-            for fl in flips:
-                inp = torch.flip(inp0, dims=fl) if fl is not None else inp0
-                for _ in range(ensemble):
-                    out, targets = agent.get_outputs((idx, inp, tgt), full_img=True)
-                    p = torch.sigmoid(out)
-                    if fl is not None:
-                        p = torch.flip(p, dims=fl)
-                    probs.append(p.detach().cpu().numpy())
-            prob = np.mean(probs, axis=0)[0]
-            gt = targets.detach().cpu().numpy()[0] >= 0.5
-            cases.append((case_id(idx[0]), prob.astype(np.float16), gt.astype(np.uint8)))
+            case, prob, gt = predict_case(agent, data, ensemble, tta)
+            cases.append((case, prob.astype(np.float16), gt.astype(np.uint8)))
     agent.exp.set_model_state("train")
     return cases
+
+
+def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True):
+    """Per-region Dice, IoU and (optionally) HD95 for one case."""
+    out = {}
+    for i, r in enumerate(REGIONS):
+        p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
+        t = gt[..., i] > 0
+        pf, tf = p.astype(np.float32), t.astype(np.float32)
+        out[r] = {"dice": float(_dice(p, t)), "iou": float(iou_score(pf, tf)),
+                  "hd95": float(hd95_score(pf, tf)) if with_hd95 else float("nan")}
+    return out
+
+
+def _mean_metrics(rows):
+    out = {}
+    for r in REGIONS:
+        hd = [x[r]["hd95"] for x in rows if not math.isnan(x[r]["hd95"])]
+        out[r] = {"dice": float(np.mean([x[r]["dice"] for x in rows])),
+                  "iou": float(np.mean([x[r]["iou"] for x in rows])),
+                  "hd95": float(np.mean(hd)) if hd else float("nan")}
+    return out
+
+
+def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
+                    full_resolution=False, with_hd95=True):
+    """Score one split case by case, averaging ``models`` (agent, ensemble, tta).
+
+    Each finished case is appended to ``progress_path`` (JSON lines), so an interrupted
+    run resumes from the next case and memory stays at one case at a time.
+    """
+    done = {}
+    if os.path.exists(progress_path):
+        with open(progress_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue   # a line cut short by an interruption
+                if row.get("split") == state:
+                    done[row["case"]] = row["metrics"]
+    for agent, _, _ in models:
+        agent.exp.set_model_state(state)
+    keys = list(dataset.images_list)
+    todo = [(i, k) for i, k in enumerate(keys) if k[0] not in done]
+    print(f"{state}: {len(keys)} cases, {len(keys) - len(todo)} already scored", flush=True)
+    with torch.no_grad(), open(progress_path, "a", encoding="utf-8") as fh:
+        for n, (i, key) in enumerate(todo, 1):
+            data = torch.utils.data.default_collate([dataset[i]])
+            preds = [predict_case(agent, data, ens, tta) for agent, ens, tta in models]
+            case, gt = preds[0][0], preds[0][2]
+            prob = np.mean([p for _, p, _ in preds], axis=0)
+            if full_resolution:
+                prob, gt = to_full_resolution(dataset, case, prob)
+            metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95)
+            fh.write(json.dumps({"split": state, "case": case, "metrics": metrics}) + "\n")
+            fh.flush(); os.fsync(fh.fileno())
+            done[case] = metrics
+            if n % 20 == 0 or n == len(todo):
+                print(f"  {state}: {len(keys) - len(todo) + n}/{len(keys)}", flush=True)
+    for agent, _, _ in models:
+        agent.exp.set_model_state("train")
+    return _mean_metrics([done[k[0]] for k in keys])
 
 
 def remove_small_components(mask, min_voxels):
