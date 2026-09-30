@@ -1,4 +1,4 @@
-# Long 96^3 run with augmentation: v7 learning rate, validation every 5 epochs, early stopping.
+# Long 96^3 run with augmentation: baseline learning rate, validation every 5 epochs, early stopping.
 base: brats2021_res96_aug.yaml
 
 experiment:

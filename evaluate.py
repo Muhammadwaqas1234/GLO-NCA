@@ -1,10 +1,5 @@
 #!/usr/bin/env python
-r"""Re-evaluate trained runs: tuned thresholds, component clean-up, full resolution, run ensembles.
-
-One --run re-scores that model; several --run folders average their probabilities (an ensemble
-of independently trained models). All runs must share the same split.json. Post-processing is
-tuned on the validation split only and the test split is scored once.
-"""
+r"""Re-evaluate one run or an ensemble of runs; resumable, with optional tuned post-processing."""
 import argparse
 import json
 import os
@@ -16,6 +11,7 @@ if _HERE not in sys.path:
 
 
 def _parse_min_component(text):
+    r"""Parse 'WT=0,TC=50,ET=50' into a per-region minimum component size."""
     out = {"WT": 0, "TC": 0, "ET": 0}
     for item in filter(None, (text or "").split(",")):
         region, _, value = item.partition("=")
@@ -26,6 +22,7 @@ def _parse_min_component(text):
 
 
 def main() -> int:
+    r"""Re-evaluate one run or an ensemble of runs and write the result JSON."""
     ap = argparse.ArgumentParser(description="Re-evaluate one run or an ensemble of runs.")
     ap.add_argument("--run", action="append", required=True, metavar="RUN_DIR",
                     help="run folder with config.yaml, split.json and best.pth (repeatable)")

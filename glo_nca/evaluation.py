@@ -1,4 +1,4 @@
-"""Evaluation: Dice, mIoU and HD95 per region, plain and with tuned post-processing."""
+r"""Evaluation: Dice, mIoU and HD95 per region, plain and with tuned post-processing."""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,7 @@ from .config import REGIONS
 
 
 def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0):
-    """Evaluate one split; ensemble > 1 averages stochastic passes and tta adds axis flips."""
+    r"""Evaluate one split; ensemble > 1 averages stochastic passes and tta adds axis flips."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
@@ -59,12 +59,12 @@ MIN_COMPONENT_GRID = [0, 10, 25, 50, 100, 200, 400]   # voxels in the space bein
 
 
 def case_id(img_id):
-    """Case folder name from a dataset id of the form ``_<case>_0``."""
+    r"""Case folder name from a dataset id of the form ``_<case>_0``."""
     return img_id[1:-2]
 
 
 def predict_case(agent, data, ensemble=1, tta=False):
-    """Mean probability map for one collated case: (case, prob float32, gt bool)."""
+    r"""Mean probability map for one collated case: (case, prob float32, gt bool)."""
     data = agent.prepare_data(data, eval=True)
     idx, inp0, tgt = data
     flips = [None, (1,), (2,), (3,)] if tta else [None]
@@ -83,7 +83,7 @@ def predict_case(agent, data, ensemble=1, tta=False):
 
 
 def collect_probs(agent, dataset, state, ensemble=1, tta=False):
-    """Mean probability map per case as a list of (case, prob float16, gt uint8)."""
+    r"""Mean probability map per case as a list of (case, prob float16, gt uint8)."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
     cases = []
@@ -96,7 +96,7 @@ def collect_probs(agent, dataset, state, ensemble=1, tta=False):
 
 
 def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True):
-    """Per-region Dice, IoU and (optionally) HD95 for one case."""
+    r"""Per-region Dice, IoU and (optionally) HD95 for one case."""
     out = {}
     for i, r in enumerate(REGIONS):
         p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
@@ -108,6 +108,7 @@ def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True):
 
 
 def _mean_metrics(rows):
+    r"""Average per-case metrics per region, ignoring undefined HD95 values."""
     out = {}
     for r in REGIONS:
         hd = [x[r]["hd95"] for x in rows if not math.isnan(x[r]["hd95"])]
@@ -119,11 +120,7 @@ def _mean_metrics(rows):
 
 def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
                     full_resolution=False, with_hd95=True):
-    """Score one split case by case, averaging ``models`` (agent, ensemble, tta).
-
-    Each finished case is appended to ``progress_path`` (JSON lines), so an interrupted
-    run resumes from the next case and memory stays at one case at a time.
-    """
+    r"""Score one split case by case into a resumable progress file, averaging ``models``."""
     done = {}
     if os.path.exists(progress_path):
         with open(progress_path, encoding="utf-8") as fh:
@@ -159,7 +156,7 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
 
 
 def remove_small_components(mask, min_voxels):
-    """Drop connected components (26-connectivity) smaller than ``min_voxels``."""
+    r"""Drop connected components (26-connectivity) smaller than ``min_voxels``."""
     if min_voxels <= 0 or not mask.any():
         return mask
     lab, sizes = _components(mask)
@@ -169,7 +166,7 @@ def remove_small_components(mask, min_voxels):
 
 
 def to_full_resolution(dataset, case, prob):
-    """Resample a working-resolution prob map into the original scan; returns (prob, gt)."""
+    r"""Resample a working-resolution prob map into the original scan; returns (prob, gt)."""
     folder = os.path.join(dataset.images_path, case)
     raw = np.stack([dataset.load_item(dataset._find_modality_file(folder, case, m))
                     for m in dataset.MODALITIES], axis=-1)
@@ -187,7 +184,7 @@ def to_full_resolution(dataset, case, prob):
 
 
 def _pairs(cases, dataset=None, full_resolution=False):
-    """Yield (prob, gt) per case, resampled to the original scan when requested."""
+    r"""Yield (prob, gt) per case, resampled to the original scan when requested."""
     for case, prob, gt in cases:
         if full_resolution:
             yield to_full_resolution(dataset, case, prob)
@@ -197,11 +194,12 @@ def _pairs(cases, dataset=None, full_resolution=False):
 
 def _dice(p, t):
     # Same formula as evaluate(), so results stay comparable with the plain metric.
+    r"""Dice coefficient of two boolean masks."""
     return (2 * np.logical_and(p, t).sum()) / (p.sum() + t.sum() + 1e-6)
 
 
 def _components(mask):
-    """Connected-component labels (26-connectivity) and the size of each label."""
+    r"""Connected-component labels (26-connectivity) and the size of each label."""
     from scipy import ndimage
     lab, _ = ndimage.label(mask, structure=np.ones((3, 3, 3)))
     return lab, np.bincount(lab.ravel())
@@ -209,10 +207,7 @@ def _components(mask):
 
 def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_GRID,
                     size_grid=MIN_COMPONENT_GRID):
-    """Pick the per-region threshold and minimum component size that maximise mean Dice.
-
-    Use validation cases only; each thresholded mask is labelled once for all sizes.
-    """
+    r"""Pick per-region threshold and clean-up size that maximise validation Dice."""
     table = {r: {(th, sz): [] for th in grid for sz in size_grid} for r in REGIONS}
     for prob, gt in _pairs(cases, dataset, full_resolution):
         for i, r in enumerate(REGIONS):
@@ -235,7 +230,7 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
 
 
 def score(cases, thresholds, min_component, dataset=None, full_resolution=False):
-    """Dice, mIoU and HD95 per region with per-region thresholds and component clean-up."""
+    r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up."""
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     for prob, gt in _pairs(cases, dataset, full_resolution):
         for i, r in enumerate(REGIONS):
@@ -253,7 +248,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False)
 
 
 def improved_evaluation(C, dataset, val_cases, test_cases):
-    """Tune post-processing on validation (if enabled), then score the test cases once."""
+    r"""Tune post-processing on validation (if enabled), then score the test cases once."""
     thresholds, min_component = {r: 0.5 for r in REGIONS}, dict(C.MIN_COMPONENT)
     val_tuned = None
     if C.TUNE_THRESHOLDS:

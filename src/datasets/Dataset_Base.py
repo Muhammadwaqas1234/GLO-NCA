@@ -3,7 +3,8 @@ from src.datasets.Data_Instance import Data_Container
 
 class Dataset_Base(Dataset):
     r"""Base class for all datasets."""
-    def __init__(self, resize=True): 
+    def __init__(self, resize=True):
+        r"""Base dataset state shared by all loaders."""
         self.resize = resize
         self.count = 42
         self.data = Data_Container()
@@ -38,10 +39,13 @@ class Dataset_Base(Dataset):
         return self.__getitem__(idx)
 
     def getFilesInPath(self, path):
+        r"""Files in a path, keyed by case id; implemented by subclasses."""
         raise NotImplementedError("Subclasses should implement this!")
 
     def __getitem__(self, idx):
+        r"""Load one sample; implemented by subclasses."""
         raise NotImplementedError("Subclasses should implement this!")
 
     def setState(self, state):
+        r"""Switch between the train, val and test splits."""
         self.state = state

@@ -51,8 +51,9 @@ def hd95_score(pred, target, threshold=0.5):
     return float(np.percentile(all_d, 95))
 
 class BaseAgent():
-    """Base class for all agents."""
+    r"""Base class for all agents."""
     def __init__(self, model):
+        r"""Keep the models; the experiment is attached later."""
         self.model = model
 
     def set_exp(self, exp):
@@ -230,29 +231,29 @@ class BaseAgent():
             image2 = mean[0, :, mean.shape[2] // 2, :,  0]
             image3 = stdd[0, :, stdd.shape[2] // 2, :,  0]
 
-            # Set up the matplotlib figure and axes
+            # One row of three panels.
             fig, axs = plt.subplots(1, 3, figsize=(10, 5))
 
-            # Display the first image
+            # Input image.
             axs[0].imshow(image1, cmap='gray')
-            axs[0].axis('off')  # Turn off axis
+            axs[0].axis('off')
 
-            # Display the second image
+            # Prediction.
             axs[1].imshow(image2, cmap='Purples')
-            axs[1].axis('off')  # Turn off axis
+            axs[1].axis('off')
 
-            # Display the third image
+            # Ground truth.
             im = axs[2].imshow(image3)
-            axs[2].axis('off')  # Turn off axis
+            axs[2].axis('off')
 
             plt.colorbar(im, ax=axs[2], fraction=0.046, pad=0.04)
 
-            # Add text below each image
+            # Caption under each panel.
             axs[0].text(0.5, -0.1, 'Middle image slice', ha='center', va='center', transform=axs[0].transAxes)
             axs[1].text(0.5, -0.1, 'Mean segmentation before sigmoid', ha='center', va='center', transform=axs[1].transAxes)
             axs[2].text(0.5, -0.1, 'Variance map', ha='center', va='center', transform=axs[2].transAxes)
 
-            # Adjust layout to prevent overlapping
+            # Tight layout without overlap.
             plt.tight_layout()
             plt.show()
 
@@ -260,24 +261,24 @@ class BaseAgent():
 
         # Save the figure.
         if False:
-            nib_save = np.expand_dims(img_mri[0, ..., 0], axis=-1) 
+            nib_save = np.expand_dims(img_mri[0, ..., 0], axis=-1)
             nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_image.nii.gz"))
-            
-            nib_save = np.expand_dims(targets[0, ..., 0], axis=-1) 
+
+            nib_save = np.expand_dims(targets[0, ..., 0], axis=-1)
             nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_gt.nii.gz"))
 
-            nib_save = np.expand_dims(stdd[0, ..., 0], axis=-1) 
+            nib_save = np.expand_dims(stdd[0, ..., 0], axis=-1)
             nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_variance.nii.gz"))
 
-            nib_save = np.expand_dims(mean[0, ..., 0], axis=-1) 
-            nib_save[nib_save > 0.5] = 1 
+            nib_save = np.expand_dims(mean[0, ..., 0], axis=-1)
+            nib_save[nib_save > 0.5] = 1
             nib_save[nib_save != 1] = 0
             nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
             nib.save(nib_save, os.path.join("path", str(img_id) + "_label.nii.gz"))
-        
+
             f = open(os.path.join("path", str(img_id) + "_score.txt"), "a")
             f.write(str(np.sum(stdd) / np.sum(mean)))
             f.close()
@@ -287,11 +288,11 @@ class BaseAgent():
     def test(self, loss_f, save_img = None, tag='test/img/', pseudo_ensemble=False, showResults=False, **kwargs):
         r"""Evaluate on the test split after merging slices into 3D volumes."""
         with torch.no_grad():
-            # Prepare dataset for testing
+            # Switch the dataset to the evaluation split.
             dataset = self.exp.dataset
             self.exp.set_model_state('test')
             dataloader = torch.utils.data.DataLoader(dataset, batch_size=1)
-            # Prepare arrays
+            # Per-region metric accumulators.
             patient_id, patient_3d_image, patient_3d_label, average_loss, patient_count = None, None, None, 0, 0
             patient_real_Img = None
             loss_log = {}
@@ -328,14 +329,14 @@ class BaseAgent():
                     outputs3, _ = self.get_outputs(data, full_img=True, tag="2")
                     outputs4, _ = self.get_outputs(data, full_img=True, tag="3")
                     outputs5, _ = self.get_outputs(data, full_img=True, tag="4")
-                    if True: 
+                    if True:
                         outputs6, _ = self.get_outputs(data, full_img=True, tag="5")
                         outputs7, _ = self.get_outputs(data, full_img=True, tag="6")
                         outputs8, _ = self.get_outputs(data, full_img=True, tag="7")
                         outputs9, _ = self.get_outputs(data, full_img=True, tag="8")
                         outputs10, _ = self.get_outputs(data, full_img=True, tag="9")
                         stack = torch.stack([outputs, outputs2, outputs3, outputs4, outputs5, outputs6, outputs7, outputs8, outputs9, outputs10], dim=0)
-                        
+
                         # Mean over the ensemble.
                         outputs = torch.mean(stack, dim=0)
                         self.labelVariance(torch.sigmoid(stack).detach().cpu().numpy(), torch.sigmoid(outputs).detach().cpu().numpy(), inputs.detach().cpu().numpy(), id, targets.detach().cpu().numpy(), showResults=showResults)
@@ -343,7 +344,7 @@ class BaseAgent():
                     else:
                         outputs, _ = torch.mean(torch.stack([outputs, outputs2, outputs3, outputs4, outputs5], dim=0), dim=0)
 
-                # 2D
+                # 2D data.
                 if dataset.slice is not None:
                     # Start of the next patient.
                     if id != patient_id and patient_id != None:
@@ -369,15 +370,15 @@ class BaseAgent():
                         patient_3d_image = torch.vstack((patient_3d_image, outputs.detach().cpu()))
                         patient_3d_label = torch.vstack((patient_3d_label, targets.detach().cpu()))
                         patient_real_Img = torch.vstack((patient_real_Img, inputs.detach().cpu()))
-                    # Add image to tensorboard
-                    if i in save_img: 
-                        self.exp.write_img(str(tag) + str(patient_id) + "_" + str(len(patient_3d_image)), 
-                        convert_image(self.prepare_image_for_display(inputs.detach().cpu()).numpy(), 
-                        self.prepare_image_for_display(outputs.detach().cpu()).numpy(), 
-                        self.prepare_image_for_display(targets.detach().cpu()).numpy(), 
+                    # Log the image to TensorBoard.
+                    if i in save_img:
+                        self.exp.write_img(str(tag) + str(patient_id) + "_" + str(len(patient_3d_image)),
+                        convert_image(self.prepare_image_for_display(inputs.detach().cpu()).numpy(),
+                        self.prepare_image_for_display(outputs.detach().cpu()).numpy(),
+                        self.prepare_image_for_display(targets.detach().cpu()).numpy(),
                         encode_image=False), self.exp.currentStep)
-                # 3D
-                else: 
+                # 3D data.
+                else:
                     patient_3d_image = outputs.detach().cpu()
                     patient_3d_label = targets.detach().cpu()
                     patient_3d_real_Img = inputs.detach().cpu()
@@ -395,14 +396,14 @@ class BaseAgent():
                               " | IoU:", round(iou_log[m][patient_id], 4),
                               " | HD95:", round(hd95_log[m][patient_id], 3)
                               if not math.isnan(hd95_log[m][patient_id]) else "nan", ",")
-                        # Add image to tensorboard
-                        if True: 
+                        # Log the image to TensorBoard.
+                        if True:
                             if len(patient_3d_label.shape) == 4:
                                 patient_3d_label = patient_3d_label.unsqueeze(dim=-1)
-                            self.exp.write_img(str(tag) + str(patient_id) + "_" + str(len(patient_3d_image)), 
-                            convert_image(self.prepare_image_for_display(patient_3d_real_Img[:,:,:,5:6,:].detach().cpu()).numpy(), 
-                            self.prepare_image_for_display(patient_3d_image[:,:,:,5:6,:].detach().cpu()).numpy(), 
-                            self.prepare_image_for_display(patient_3d_label[:,:,:,5:6,:].detach().cpu()).numpy(), 
+                            self.exp.write_img(str(tag) + str(patient_id) + "_" + str(len(patient_3d_image)),
+                            convert_image(self.prepare_image_for_display(patient_3d_real_Img[:,:,:,5:6,:].detach().cpu()).numpy(),
+                            self.prepare_image_for_display(patient_3d_image[:,:,:,5:6,:].detach().cpu()).numpy(),
+                            self.prepare_image_for_display(patient_3d_label[:,:,:,5:6,:].detach().cpu()).numpy(),
                             encode_image=False), self.exp.currentStep)
 
                             # Save predictions.
@@ -422,12 +423,12 @@ class BaseAgent():
                 out = patient_id + ", "
                 for m in range(patient_3d_image.shape[3]):
                     if(1 in np.unique(patient_3d_label[...,m].detach().cpu().numpy())):
-                        loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item() 
+                        loss_log[m][patient_id] = 1 - loss_f(patient_3d_image[...,m], patient_3d_label[...,m], smooth = 0).item()
                         out = out + str(loss_log[m][patient_id]) + ", "
                     else:
-                        out = out + " , " 
+                        out = out + " , "
                 print(out)
-            # Print dice / mIoU / HD95 per label (region)
+            # Print Dice, mIoU and HD95 per region.
             for key in loss_log.keys():
                 if len(loss_log[key]) > 0:
                     print("Average Dice 3d: " + str(key) + ", " + str(sum(loss_log[key].values())/len(loss_log[key])))

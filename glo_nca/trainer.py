@@ -1,4 +1,4 @@
-"""Training loop, best-model selection, final test, checkpointing and resume."""
+r"""Training loop, best-model selection, final test, checkpointing and resume."""
 from __future__ import annotations
 
 import csv
@@ -18,17 +18,19 @@ from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
 from src.utils.Experiment import Experiment
 
 from . import checkpoint as ckpt
-from .config import REGIONS, CascadeConfig
-from .data import BraTS_FG, find_data_root, make_split
+from .config import REGIONS, GLO_NCA_Config
+from .data import Dataset_BraTS_Foreground, find_data_root, make_split
 from .evaluation import collect_probs, evaluate, improved_evaluation
 from .reporting import final_report
 
 
 def set_seed(s):
+    r"""Seed Python, NumPy and torch."""
     random.seed(s); np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
 
 
 def _write_status(out_dir, **fields):
+    r"""Atomically write status.json for monitoring."""
     fields["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     tmp = os.path.join(out_dir, "status.json.tmp")
     with open(tmp, "w") as fh:
@@ -37,6 +39,7 @@ def _write_status(out_dir, **fields):
 
 
 def _write_history(out_dir, hist):
+    r"""Write the per-epoch history to history.csv."""
     with open(os.path.join(out_dir, "history.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["epoch", "loss", "lr", "val_mean", "val_WT", "val_TC", "val_ET"])
@@ -45,8 +48,8 @@ def _write_history(out_dir, hist):
                         hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]])
 
 
-def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
-    """Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
+def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> tuple:
+    r"""Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
     tr, va, te = splits
     DATA_ROOT = data_root
     config = [{
@@ -63,7 +66,7 @@ def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "patchify": True, "priotize_masks": 0.7, "prioritize_region": C.PRIORITIZE_REGION,
     }]
-    ds = BraTS_FG(); ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
+    ds = Dataset_BraTS_Foreground(); ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
     ds.use_foreground_crop = C.USE_FOREGROUND_CROP; ds.use_nonzero_norm = C.USE_NONZERO_NORM
     dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=4,
@@ -72,7 +75,9 @@ def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
                      use_attention=True, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT)]
     agent = Agent_GLO_NCA(ca)
     exp = Experiment(config, ds, ca, agent); ds.set_experiment(exp)
-    def entry(p): return (p, p, 0)
+    def entry(p):
+        r"""Split entry for one case: (image, label, slice)."""
+        return (p, p, 0)
     for sp, ids in (("train", tr), ("val", va), ("test", te)):
         exp.data_split.images[sp] = {p: {0: entry(p)} for p in ids}
         exp.data_split.labels[sp] = {p: {0: entry(p)} for p in ids}
@@ -81,7 +86,7 @@ def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
 
 
 def last_gain_epoch(hist, min_delta):
-    """Last validated epoch whose mean Dice beat the running reference by more than min_delta."""
+    r"""Last validated epoch whose mean Dice beat the running reference by more than min_delta."""
     ref, last = -math.inf, 0
     for e, v in zip(hist["epoch"], hist["val_mean"]):
         if not math.isnan(v) and v > ref + min_delta:
@@ -90,8 +95,9 @@ def last_gain_epoch(hist, min_delta):
 
 
 def _weighted_batch_step(weights):
-    """Agent_GLO_NCA_Multi.batch_step with a per-region loss weight."""
+    r"""Agent_GLO_NCA_Multi.batch_step with a per-region loss weight."""
     def batch_step(self, data, loss_f):
+        r"""One optimisation step with per-region loss weights."""
         data = self.prepare_data(data)
         outputs, targets = self.get_outputs(data)
         for m in range(self.exp.get_from_config('train_model')+1):
@@ -112,8 +118,9 @@ def _weighted_batch_step(weights):
     return batch_step
 
 
-def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = False,
+def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = False,
         stop_after_epoch: int = None) -> dict:
+    r"""Train, validate, checkpoint and test one run; supports resume and planned pauses."""
     os.makedirs(out_dir, exist_ok=True)
     last_path = os.path.join(out_dir, "last.pth")
     best_path = os.path.join(out_dir, "best.pth")
@@ -162,6 +169,7 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     if C.USE_EMA:
         ema = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in ca]
     def ema_update():
+        r"""Blend the live weights into the EMA copy."""
         if ema is None:
             return
         for e, m in zip(ema, ca):

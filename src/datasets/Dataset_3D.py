@@ -4,7 +4,8 @@ import numpy as np
 
 class Dataset_3D(Dataset_Base):
     r"""Base class for 3D datasets."""
-    def __init__(self, slice=None, resize=True): 
+    def __init__(self, slice=None, resize=True):
+        r"""3D dataset with an optional resize target."""
         self.slice = slice
         self.count = 42
         super().__init__(resize)
@@ -17,23 +18,23 @@ class Dataset_3D(Dataset_Base):
         r"""Get an item by its name."""
         idx = self.images_list.index(name)
         return self.__getitem__(idx)
-    
+
     def resize_image(self, img, isLabel):
         r"""Get an item by index."""
         if not isLabel:
-            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_CUBIC) 
+            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_CUBIC)
         else:
-            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_NEAREST) 
+            img = cv2.resize(img, dsize=self.size, interpolation=cv2.INTER_NEAREST)
         return img
-    
+
     def preprocessing(self, img, isLabel=False):
         r"""Preprocess an image slice."""
         if not isLabel:
             img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        
+
         # Keep a single phase.
         if len(img.shape) > 2:
-            img = img[:, :, 0] 
+            img = img[:, :, 0]
 
         img = np.expand_dims(img, axis=-1)
 

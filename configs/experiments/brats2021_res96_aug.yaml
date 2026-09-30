@@ -1,4 +1,4 @@
-# 96^3 with training augmentation (flips, in-plane rotations, intensity jitter); v7 learning rate.
+# 96^3 with training augmentation (flips, in-plane rotations, intensity jitter); baseline learning rate.
 base: brats2021_res96.yaml
 
 experiment:

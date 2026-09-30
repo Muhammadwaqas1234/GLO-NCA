@@ -3,7 +3,7 @@ from src.agents.Agent_GLO_NCA_Base import Agent_GLO_NCA_Base
 import os
 
 class Agent_GLO_NCA_Multi(Agent_GLO_NCA_Base):
-    """Agent for several GLO-NCA models trained together (one per cascade level)."""
+    r"""Agent for several GLO-NCA models trained together (one per cascade level)."""
     def batch_step(self, data, loss_f):
         r"""Run one training step on a batch and return the per-region losses."""
         data = self.prepare_data(data)
@@ -21,7 +21,7 @@ class Agent_GLO_NCA_Multi(Agent_GLO_NCA_Base):
         if loss != 0:
             loss.backward()
             for m in range(self.exp.get_from_config('train_model')+1):
-                self.optimizer[m].step() 
+                self.optimizer[m].step()
                 self.scheduler[m].step()
         return loss_ret
 

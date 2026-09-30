@@ -1,4 +1,4 @@
-"""Data pipeline: dataset, data-root discovery and the random split."""
+r"""Data pipeline: dataset, data-root discovery and the random split."""
 from __future__ import annotations
 
 import os
@@ -10,8 +10,8 @@ import numpy as np
 from src.datasets.Nii_Gz_Dataset_3D import Dataset_NiiGz_3D_BraTS
 
 
-class BraTS_FG(Dataset_NiiGz_3D_BraTS):
-    """BraTS loader with foreground crop, cubic resize and nonzero z-norm."""
+class Dataset_BraTS_Foreground(Dataset_NiiGz_3D_BraTS):
+    r"""BraTS loader with foreground crop, cubic resize and nonzero z-norm."""
 
     use_foreground_crop = True
     use_nonzero_norm = True
@@ -19,6 +19,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
 
     @staticmethod
     def _foreground_bbox(vol_stack):
+        r"""Bounding box of the non-zero brain across all modalities."""
         fg = np.any(vol_stack > 0, axis=-1)
         if not fg.any():
             return None
@@ -28,6 +29,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
         return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
 
     def _resize_to(self, vol, size, is_label=False):
+        r"""Resize a volume slice-wise: cubic for images, nearest for labels."""
         interp = cv2.INTER_NEAREST if is_label else cv2.INTER_CUBIC
         out = np.zeros((size[0], size[1], vol.shape[2]), np.float32)
         for z in range(vol.shape[2]):
@@ -38,6 +40,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
         return out
 
     def __getitem__(self, idx):
+        r"""Load, crop, resize and normalise one case; patchify and augment in training."""
         key = self.images_list[idx]
         cached = self.data.get_data(key=key)
         if not cached:
@@ -77,7 +80,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
 
     @staticmethod
     def _augment_spatial(img, label):
-        """Random axis flips and in-plane 90-degree rotations, applied to image and label alike."""
+        r"""Random axis flips and in-plane 90-degree rotations, applied to image and label alike."""
         for axis in range(3):
             if random.random() < 0.5:
                 img, label = np.flip(img, axis), np.flip(label, axis)
@@ -88,7 +91,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
 
     @staticmethod
     def _augment_intensity(img, scale=0.1, shift=0.1):
-        """Per-channel random intensity scale and shift on brain voxels only."""
+        r"""Per-channel random intensity scale and shift on brain voxels only."""
         out = img.astype(np.float32, copy=True)
         for c in range(out.shape[-1]):
             mask = out[..., c] != 0
@@ -97,7 +100,7 @@ class BraTS_FG(Dataset_NiiGz_3D_BraTS):
 
 
 def find_data_root(base="/kaggle/input"):
-    """First folder under ``base`` that holds at least two case folders with scans."""
+    r"""First folder under ``base`` that holds at least two case folders with scans."""
     for root, dirs, files in os.walk(base):
         c = 0
         for d in dirs:
@@ -112,7 +115,7 @@ def find_data_root(base="/kaggle/input"):
 
 
 def make_split(data_root, seed, n_patients=None):
-    """Seeded random 70/15/15 split of the case folders in ``data_root``."""
+    r"""Seeded random 70/15/15 split of the case folders in ``data_root``."""
     # Case folders only: a folder that holds scans (skips nested cohort folders).
     pats = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))
                   and any(f.endswith((".nii", ".nii.gz")) for f in os.listdir(os.path.join(data_root, d))))

@@ -6,6 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Experiment():
     r"""Experiment: config, folders, datasets, checkpoints and logging."""
     def __init__(self, config, dataset, model, agent):
+        r"""Create the experiment state."""
         self.projectConfig = config
         self.add_required_to_config()
         self.config = self.projectConfig[0]
@@ -63,6 +64,7 @@ class Experiment():
         dump_json_file(self.projectConfig, os.path.join(self.config['model_path'], 'config.dt'))
 
     def new_datasplit(self):
+        r"""Create a new train/val/test split of the dataset."""
         return DataSplit(self.config['img_path'], self.config['label_path'], data_split = self.config['data_split'], dataset = self.dataset)
 
     def temporarly_overwrite_config(self, config):
@@ -88,9 +90,10 @@ class Experiment():
         if os.path.exists(model_path):
             print("Reload State " + str(self.currentStep))
             self.agent.load_state(model_path)
-    
+
     def set_size(self):
         # Multi-level input_size is a list of per-level sizes; the dataset uses the last level.
+        r"""Set the dataset's working size from the config."""
         first = self.config['input_size'][0]
         if isinstance(first, (tuple, list)):
             self.dataset.set_size(self.config['input_size'][-1])
@@ -148,7 +151,7 @@ class Experiment():
             else:
                 m.eval()
 
-        
+
     def get_from_config(self, tag):
         r"""Get a value from the config."""
         if tag in self.config.keys():
@@ -198,6 +201,7 @@ class Experiment():
 class DataSplit():
     r"""Train / validation / test split of the data."""
     def __init__(self, path_image, path_label, data_split, dataset):
+        r"""Create empty image and label splits."""
         self.images = self.split_files(self.getFilesInFolder(path_image, dataset), data_split)
         self.labels = self.split_files(self.getFilesInFolder(path_label, dataset), data_split)
 
@@ -228,7 +232,7 @@ class DataSplit():
         for index, key in enumerate(files):
             if index / len(files) < data_split[0]:
                 dic['train'][key] = files[key]
-            elif index / len(files) < data_split[0] + data_split[1]: 
+            elif index / len(files) < data_split[0] + data_split[1]:
                 dic['val'][key] = files[key]
             else:
                 dic['test'][key] = files[key]
@@ -237,5 +241,4 @@ class DataSplit():
 
     def getFilesInFolder(self, path, dataset):
         r"""Files in a folder."""
-        return  dataset.getFilesInPath(path) 
-    
+        return  dataset.getFilesInPath(path)
