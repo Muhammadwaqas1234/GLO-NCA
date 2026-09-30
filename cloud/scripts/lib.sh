@@ -11,6 +11,8 @@ CONFIG_FILE="${CLOUD_DIR}/config/gcp.env"
 IMAGE="glo-nca-cascade:latest"
 TRAIN_UNIT="glo-nca-cascade-training"
 TRAIN_LOCK="/tmp/glo-nca-cascade-training.lock"
+KEEPALIVE_FILE="/var/lib/glo-nca-cascade/keepalive.env"
+AUTORESUME_UNIT="glo-nca-cascade-autoresume"
 
 # --- logging -----------------------------------------------------------------
 if [[ -t 1 ]]; then _G=$'\033[32m'; _Y=$'\033[33m'; _R=$'\033[31m'; _N=$'\033[0m'
@@ -63,6 +65,7 @@ vm_flags() { echo "--zone=${GCP_ZONE} --project=${GCP_PROJECT_ID}"; }
 
 confirm() { # confirm "message" -- interactive guard for anything that costs money
   local msg="${1:-Proceed?}"
+  [[ "${ASSUME_YES:-0}" == "1" ]] && { log "${msg} [yes: ASSUME_YES=1]"; return 0; }
   read -r -p "${msg} [y/N] " ans
   [[ "${ans}" == "y" || "${ans}" == "Y" ]] || die "aborted by user."
 }
@@ -89,6 +92,18 @@ assert_no_training_running() {
   systemctl is-active --quiet glo-nca-training 2>/dev/null \
     && die "the production unit 'glo-nca-training' is ACTIVE on this GPU; stop it first."
   rm -f "${TRAIN_LOCK}"
+}
+
+enable_keep_alive() {  # enable_keep_alive <run-id> <config> <data-root> <stop-after-epoch or empty>
+  sudo mkdir -p "$(dirname "${KEEPALIVE_FILE}")"
+  printf 'KEEP_RUN_ID=%s
+KEEP_CONFIG=%s
+KEEP_DATA_ROOT=%s
+KEEP_STOP_AFTER=%s
+'     "$1" "$2" "$3" "${4:-}" | sudo tee "${KEEPALIVE_FILE}" >/dev/null
+  sudo cp "${GLO_WORKSPACE}/cloud/systemd/${AUTORESUME_UNIT}.service" /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --quiet "${AUTORESUME_UNIT}"
+  pass "keep-alive on: after a restart this VM resumes run $1 on its own."
 }
 
 write_training_lock() {

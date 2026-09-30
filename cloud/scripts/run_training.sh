@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Start a run under systemd: run_training.sh [--config PATH] [--data-root DIR] [--stop-after-epoch N] [--auto-stop]
+# Start a run under systemd: run_training.sh [--config PATH] [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
-EXTRA_ARGS=""; AUTO_STOP=0; CONFIG="configs/glo_nca_cascade.yaml"
+EXTRA_ARGS=""; AUTO_STOP=0; KEEP_ALIVE=0; CONFIG="configs/glo_nca_cascade.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stop-after-epoch) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || die "--stop-after-epoch needs a positive number"
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
+    --keep-alive) KEEP_ALIVE=1; shift ;;
     --config) CONFIG="${2:?--config needs a path}"; shift 2 ;;
     --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
@@ -46,6 +47,9 @@ write_training_lock "${RUN_ID}"
 sudo systemctl reset-failed "${TRAIN_UNIT}" 2>/dev/null || true
 sudo systemctl start "${TRAIN_UNIT}"
 pass "cascade run ${RUN_ID} started under systemd unit '${TRAIN_UNIT}'."
+if [[ "${KEEP_ALIVE}" == "1" ]]; then
+  enable_keep_alive "${RUN_ID}" "${CONFIG:-}" "${GLO_DATA_ROOT}" "${EXTRA_ARGS#--stop-after-epoch }"
+fi
 log "logs:   sudo journalctl -u ${TRAIN_UNIT} -f"
 log "status: ./cloud/scripts/status.sh ${RUN_ID}"
 log "GCS:    ${GCS_EXPERIMENTS}/${RUN_ID}/"

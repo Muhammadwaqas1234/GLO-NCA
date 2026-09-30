@@ -87,6 +87,20 @@ BraTS 2021 (1,251 glioma cases) uses its own config and data folder:
 ./cloud/scripts/run_training.sh --config configs/glo_nca_cascade_brats2021.yaml --data-root /data/brats2021 --stop-after-epoch 10 --auto-stop
 ```
 
+For long runs on Spot, add `--keep-alive`: after any restart the VM resumes the run on its
+own (a boot service), and `watchdog.sh`, run from any machine with gcloud, restarts the VM
+only after a preemption. A stop by the run itself (finished, paused or failed) or by you
+ends the watchdog; a run that makes no progress over three restarts is not retried.
+
+```bash
+./cloud/scripts/run_training.sh --config configs/experiments/brats2021_res96_long.yaml \
+    --data-root /data/brats2021 --auto-stop --keep-alive        # on the VM
+./cloud/scripts/watchdog.sh                                     # on your machine
+```
+
+To end a keep-alive run early, stop training and remove the marker on the VM:
+`sudo systemctl stop glo-nca-cascade-training && sudo rm /var/lib/glo-nca-cascade/keepalive.env`.
+
 Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes and at
 the end. A Spot preemption loses at most the current epoch: `last.pth` is written
 after every epoch and `resume_training.sh` continues from it.
@@ -105,6 +119,8 @@ configs in `configs/experiments/` switch them on through `base:` inheritance.
 | `evaluation.min_component_voxels` | fixed clean-up size, used when not tuning |
 | `evaluation.full_resolution` | score in the original scan space instead of the working resolution |
 | `experiment.split_seed` | fixed split, so runs trained with other seeds can be ensembled |
+| `training.val_every` | validate every N epochs (always on the last and the pause epoch) |
+| `evaluation.val_workers` | parallel data loading for the validation pass |
 
 The tuned result is reported next to the plain one (`test_tuned` in `results.json`).
 Existing runs can be re-scored without retraining, and several runs averaged:

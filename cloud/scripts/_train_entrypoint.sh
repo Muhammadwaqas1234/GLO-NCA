@@ -33,6 +33,8 @@ else
 fi
 RC=$?
 set -e
+# Exit code for the keep-alive boot hook; a preemption never reaches this line.
+[[ -d /var/lib/glo-nca-cascade ]] && echo "${RC}" > /var/lib/glo-nca-cascade/last_rc
 kill "${SYNC_PID}" 2>/dev/null || true
 
 # --- final sync, attempted on every exit path --------------------------------
