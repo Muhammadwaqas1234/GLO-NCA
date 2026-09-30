@@ -1,0 +1,16 @@
+# Resumes the keep-alive run at boot; enabled by run_training.sh / resume_training.sh --keep-alive.
+[Unit]
+Description=GLO-NCA cascade: resume the keep-alive run after a restart
+Wants=network-online.target
+After=docker.service network-online.target
+Requires=docker.service
+ConditionPathExists=/var/lib/glo-nca-cascade/keepalive.env
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/glo-nca-cascade/cloud/scripts/_autoresume.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

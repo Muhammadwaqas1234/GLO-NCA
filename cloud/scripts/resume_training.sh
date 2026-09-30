@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop]
+# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
 RUN_ID="${1:-}"; [[ -n "${RUN_ID}" ]] || die "usage: resume_training.sh <run_id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop]"
 shift
-EXTRA_ARGS=""; AUTO_STOP=0
+EXTRA_ARGS=""; AUTO_STOP=0; KEEP_ALIVE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stop-after-epoch) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || die "--stop-after-epoch needs a positive number"
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
+    --keep-alive) KEEP_ALIVE=1; shift ;;
     --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -50,4 +51,8 @@ write_training_lock "${RUN_ID}"
 sudo systemctl reset-failed "${TRAIN_UNIT}" 2>/dev/null || true
 sudo systemctl start "${TRAIN_UNIT}"
 pass "cascade run ${RUN_ID} resumed under systemd unit '${TRAIN_UNIT}'."
+if [[ "${KEEP_ALIVE}" == "1" ]]; then
+  # Keep the original config, needed only if the run must restart before its first checkpoint.
+  enable_keep_alive "${RUN_ID}" "$(sed -n 's/^KEEP_CONFIG=//p' "${KEEPALIVE_FILE}" 2>/dev/null)" "${GLO_DATA_ROOT}" "${EXTRA_ARGS#--stop-after-epoch }"
+fi
 log "logs: sudo journalctl -u ${TRAIN_UNIT} -f"

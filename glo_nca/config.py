@@ -49,6 +49,8 @@ class CascadeConfig:
     TUNE_THRESHOLDS: bool = False
     MIN_COMPONENT: Dict[str, int] = field(default_factory=lambda: {"WT": 0, "TC": 0, "ET": 0})
     FULL_RESOLUTION_EVAL: bool = False
+    VAL_EVERY: int = 1
+    VAL_WORKERS: int = 0
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -115,5 +117,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> CascadeConf
         TUNE_THRESHOLDS=bool(v.get("tune_thresholds", False)),
         MIN_COMPONENT=min_comp,
         FULL_RESOLUTION_EVAL=bool(v.get("full_resolution", False)),
+        VAL_EVERY=max(1, int(t.get("val_every", 1))),
+        VAL_WORKERS=int(v.get("val_workers", 0)),
         raw=raw,
     )

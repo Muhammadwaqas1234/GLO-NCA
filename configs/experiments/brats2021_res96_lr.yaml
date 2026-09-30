@@ -1,0 +1,11 @@
+# 96^3 with half the peak learning rate, to steady training at the higher resolution.
+base: brats2021_res96.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-LR
+
+training:
+  lr_start: 8.0e-4                # v7: 1.6e-3
+
+evaluation:
+  val_workers: 4                  # parallel loading for the per-epoch validation pass

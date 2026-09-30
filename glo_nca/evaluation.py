@@ -14,10 +14,10 @@ from src.agents.Agent import iou_score, hd95_score
 from .config import REGIONS
 
 
-def evaluate(agent, dataset, state, ensemble=1, tta=False):
+def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0):
     """Evaluate one split; ensemble > 1 averages stochastic passes and tta adds axis flips."""
     agent.exp.set_model_state(state)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=1)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     flips = [None]
     if tta:

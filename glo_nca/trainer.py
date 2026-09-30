@@ -121,8 +121,8 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
     print(f"GLO-NCA cascade: ch={C.CHANNEL_N} hidden={C.HIDDEN} steps={C.STEPS} fire={C.FIRE_RATE} "
           f"patch={C.INPUT_SIZE[-1]} beta={C.TVERSKY_BETA} aug={C.USE_AUG} ep={C.EPOCHS}", flush=True)
-    if C.AUGMENT or C.REGION_WEIGHTS != [1.0, 1.0, 1.0] or C.improved_eval:
-        print(f"Options: augment={C.AUGMENT} region_weights={C.REGION_WEIGHTS} "
+    if C.AUGMENT or C.REGION_WEIGHTS != [1.0, 1.0, 1.0] or C.improved_eval or C.VAL_EVERY > 1:
+        print(f"Options: augment={C.AUGMENT} region_weights={C.REGION_WEIGHTS} val_every={C.VAL_EVERY} "
               f"tune_thresholds={C.TUNE_THRESHOLDS} min_component={C.MIN_COMPONENT} "
               f"full_resolution={C.FULL_RESOLUTION_EVAL}", flush=True)
     with open(os.path.join(out_dir, "split.json"), "w") as fh:
@@ -196,15 +196,27 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
             if ep == start_epoch and (i + 1) % 20 == 0:
                 print(f"  [epoch {ep+1}] {i+1}/{spe} ({time.time()-t0:.0f}s)...", flush=True)
         cur_lr = agent.optimizer[0].param_groups[0]["lr"]
-        val = evaluate(agent, ds, "val")
-        vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
         hist["epoch"].append(ep+1); hist["loss"].append(float(np.mean(losses)) if losses else 0)
-        hist["lr"].append(cur_lr); hist["val_mean"].append(vm)
-        for r in REGIONS:
-            hist[f"val_{r}"].append(val[r]["dice"])
-        print(f"ep {ep+1}/{C.EPOCHS} | lr {cur_lr:.2e} | loss {hist['loss'][-1]:.3f} | "
-              f"val mean {vm:.3f} (WT {val['WT']['dice']:.3f} TC {val['TC']['dice']:.3f} "
-              f"ET {val['ET']['dice']:.3f}) | {time.time()-t0:.0f}s", flush=True)
+        hist["lr"].append(cur_lr)
+        # Validate every VAL_EVERY epochs, and always on the last and the pause epoch.
+        validate = ((ep + 1) % C.VAL_EVERY == 0 or ep + 1 == C.EPOCHS
+                    or (stop_after_epoch is not None and ep + 1 >= stop_after_epoch))
+        if validate:
+            val = evaluate(agent, ds, "val", workers=C.VAL_WORKERS)
+            vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
+            hist["val_mean"].append(vm)
+            for r in REGIONS:
+                hist[f"val_{r}"].append(val[r]["dice"])
+            print(f"ep {ep+1}/{C.EPOCHS} | lr {cur_lr:.2e} | loss {hist['loss'][-1]:.3f} | "
+                  f"val mean {vm:.3f} (WT {val['WT']['dice']:.3f} TC {val['TC']['dice']:.3f} "
+                  f"ET {val['ET']['dice']:.3f}) | {time.time()-t0:.0f}s", flush=True)
+        else:
+            vm = -1.0
+            hist["val_mean"].append(float("nan"))
+            for r in REGIONS:
+                hist[f"val_{r}"].append(float("nan"))
+            print(f"ep {ep+1}/{C.EPOCHS} | lr {cur_lr:.2e} | loss {hist['loss'][-1]:.3f} | "
+                  f"validation skipped | {time.time()-t0:.0f}s", flush=True)
         if vm > best:
             best = vm
             save_states = ema if ema is not None else [m.state_dict() for m in ca]
