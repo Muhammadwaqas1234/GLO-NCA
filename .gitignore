@@ -42,7 +42,6 @@ results*.json
 *_results.json
 
 # --- Local tooling / misc ---
-.claude/
 events.out.tfevents.*
 *.json
 extra/
