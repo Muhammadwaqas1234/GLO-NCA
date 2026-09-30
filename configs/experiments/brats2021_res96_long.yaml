@@ -8,3 +8,5 @@ experiment:
 training:
   epochs: 150                     # the cosine schedule spans exactly this many epochs
   val_every: 5                    # also validates on the last and the pause epoch
+  early_stop_patience: 20         # stop when validation Dice has not gained...
+  early_stop_min_delta: 0.01      # ...more than this in 20 epochs; best.pth keeps the best epoch

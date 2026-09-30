@@ -51,6 +51,8 @@ class CascadeConfig:
     FULL_RESOLUTION_EVAL: bool = False
     VAL_EVERY: int = 1
     VAL_WORKERS: int = 0
+    EARLY_STOP_PATIENCE: int = 0
+    EARLY_STOP_MIN_DELTA: float = 0.0
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -119,5 +121,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> CascadeConf
         FULL_RESOLUTION_EVAL=bool(v.get("full_resolution", False)),
         VAL_EVERY=max(1, int(t.get("val_every", 1))),
         VAL_WORKERS=int(v.get("val_workers", 0)),
+        EARLY_STOP_PATIENCE=int(t.get("early_stop_patience", 0)),
+        EARLY_STOP_MIN_DELTA=float(t.get("early_stop_min_delta", 0.0)),
         raw=raw,
     )
