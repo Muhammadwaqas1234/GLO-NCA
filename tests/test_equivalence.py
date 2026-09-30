@@ -20,12 +20,13 @@ R = []
 
 
 def check(name, ok, detail=""):
+    r"""Record and print one check result."""
     R.append(bool(ok))
     print(f"  {'PASS' if ok else 'FAIL'}  {name:52s} {detail}", flush=True)
 
 
 def max_diff(a, b):
-    """Largest absolute difference between two nested JSON structures of numbers."""
+    r"""Largest absolute difference between two nested JSON structures of numbers."""
     if isinstance(a, dict):
         return max([max_diff(a[k], b[k]) for k in a] or [0.0])
     if isinstance(a, list):
@@ -38,6 +39,7 @@ def max_diff(a, b):
 
 
 def run(cmd, env, cwd=REPO):
+    r"""Run a command and return its exit code."""
     p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
     if p.returncode != 0:
         print(p.stdout[-3000:], p.stderr[-3000:])
@@ -45,6 +47,7 @@ def run(cmd, env, cwd=REPO):
 
 
 def main():
+    r"""Run the original script and the trainer, then compare their outputs."""
     ap = argparse.ArgumentParser()
     ap.add_argument("data_dir")
     ap.add_argument("--tol", type=float, default=1e-6)

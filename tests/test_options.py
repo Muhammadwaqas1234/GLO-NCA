@@ -11,18 +11,20 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from glo_nca.config import load_config  # noqa: E402
-from glo_nca.data import BraTS_FG  # noqa: E402
+from glo_nca.data import Dataset_BraTS_Foreground  # noqa: E402
 from glo_nca.evaluation import remove_small_components, score, to_full_resolution, tune_thresholds  # noqa: E402
 
 RESULTS = []
 
 
 def check(name, ok, detail=""):
+    r"""Record and print one check result."""
     RESULTS.append(ok)
     print(f"  {'PASS' if ok else 'FAIL'}  {name:<58}{detail}")
 
 
 def test_config():
+    r"""Defaults, base inheritance and the fixed split seed."""
     base = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
     check("defaults reproduce the original recipe",
           base.SPLIT_SEED == base.SEED and not base.AUGMENT and base.REGION_WEIGHTS == [1, 1, 1]
@@ -37,27 +39,30 @@ def test_config():
 
 
 def test_augmentation():
+    r"""Augmentation keeps labels aligned and background at zero."""
     random.seed(0)
     img = np.random.rand(16, 16, 8, 4).astype(np.float32)
     label = (img[..., :3] > 0.5).astype(np.float32)
     ok = True
     for _ in range(20):
-        a, b = BraTS_FG._augment_spatial(img, label)
+        a, b = Dataset_BraTS_Foreground._augment_spatial(img, label)
         ok &= np.array_equal(b, (a[..., :3] > 0.5).astype(np.float32)) and a.flags["C_CONTIGUOUS"]
     check("spatial augmentation keeps image and label aligned", bool(ok))
     z = img.copy(); z[:4] = 0
-    out = BraTS_FG._augment_intensity(z)
+    out = Dataset_BraTS_Foreground._augment_intensity(z)
     check("intensity augmentation leaves background at zero",
           bool((out[:4] == 0).all() and not np.allclose(out[4:], z[4:])))
 
 
 def test_components():
+    r"""Small components are removed, large ones kept."""
     m = np.zeros((20, 20, 20), bool); m[2:8, 2:8, 2:8] = True; m[15, 15, 15] = True
     r = remove_small_components(m, 10)
     check("small components are removed, large ones kept", bool(r.sum() == 216 and not r[15, 15, 15]))
 
 
 def test_tuning():
+    r"""Threshold and clean-up tuning on synthetic cases."""
     rng = np.random.default_rng(0)
     cases = []
     for i in range(4):
@@ -73,23 +78,28 @@ def test_tuning():
 
 
 class _FakeDS:
+    r"""Minimal dataset stand-in for the full-resolution test."""
     MODALITIES = ["a", "b"]
     SEG_SUFFIX = "seg"
     use_foreground_crop = True
-    _foreground_bbox = staticmethod(BraTS_FG._foreground_bbox)
-    _labels_to_regions = BraTS_FG._labels_to_regions
+    _foreground_bbox = staticmethod(Dataset_BraTS_Foreground._foreground_bbox)
+    _labels_to_regions = Dataset_BraTS_Foreground._labels_to_regions
 
     def __init__(self, root, vols):
+        r"""Store the fake volumes."""
         self.images_path, self.vols = root, vols
 
     def _find_modality_file(self, folder, case, m):
+        r"""Return the modality key itself."""
         return m
 
     def load_item(self, key):
+        r"""Return the stored volume."""
         return self.vols[key]
 
 
 def test_full_resolution():
+    r"""Predictions map back to the original scan space."""
     raw = np.zeros((40, 40, 30)); raw[10:30, 5:35, 4:24] = 1.0
     seg = np.zeros_like(raw); seg[15:25, 10:30, 8:20] = 2
     ds = _FakeDS(tempfile.gettempdir(), {"a": raw, "b": raw, "seg": seg})
@@ -103,6 +113,7 @@ def test_full_resolution():
 
 
 def test_early_stop():
+    r"""Early stopping counts only gains above min_delta."""
     from glo_nca.trainer import last_gain_epoch
     nan = float("nan")
     h = {"epoch": [1, 2, 3, 4, 5, 6], "val_mean": [0.60, nan, 0.65, 0.655, 0.66, 0.70]}

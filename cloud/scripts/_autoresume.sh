@@ -16,8 +16,7 @@ if [[ "${STATE}" == "completed" ]] \
   rm -f "${KEEPALIVE_FILE}" "${TRIES_FILE}"; exit 0
 fi
 
-# Count only runs that failed on their own (the entrypoint records the exit code; a preemption
-# records nothing); give up after three failures at the same epoch so a broken run cannot loop.
+# Only failures count (a preemption leaves no exit code); three at one epoch end the keep-alive.
 RC_FILE="$(dirname "${KEEPALIVE_FILE}")/last_rc"
 LAST_RC=$(cat "${RC_FILE}" 2>/dev/null || echo none); rm -f "${RC_FILE}"
 read -r PREV_EPOCH FAILS <<< "$(cat "${TRIES_FILE}" 2>/dev/null || echo "-1 0")"

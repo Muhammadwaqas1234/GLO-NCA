@@ -1,4 +1,4 @@
-"""Final report: test table, results JSON and training curves."""
+r"""Final report: test table, results JSON and training curves."""
 from __future__ import annotations
 
 import json
@@ -13,12 +13,13 @@ from .config import REGIONS
 
 
 def show(lab, t):
+    r"""Print one row of the Dice table."""
     m = np.mean([t[r]['dice'] for r in REGIONS])
     print(f"{lab:<24}{t['WT']['dice']:<8.3f}{t['TC']['dice']:<8.3f}{t['ET']['dice']:<8.3f}{m:<8.3f}")
 
 
 def report_tuned(tuned):
-    """Print the tuned post-processing result (thresholds chosen on validation)."""
+    r"""Print the tuned post-processing result (thresholds chosen on validation)."""
     th, mc = tuned["thresholds"], tuned["min_component_voxels"]
     print("-" * 60)
     print("Tuned post-processing (chosen on validation, applied once to test):")
@@ -34,6 +35,7 @@ def report_tuned(tuned):
 
 
 def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None):
+    r"""Print the test table and write results.json and the training curves."""
     print("\n" + "=" * 60)
     print(f"GLO-NCA cascade - FINAL TEST (best @ epoch {ck_ep})")
     print("=" * 60)

@@ -12,22 +12,26 @@ if _HERE not in sys.path:
 
 
 class _Tee:
-    """Mirror stdout into <run>/train.log."""
+    r"""Mirror stdout into <run>/train.log."""
 
     def __init__(self, path):
+        r"""Open the log file next to stdout."""
         self._file = open(path, "a", encoding="utf-8", buffering=1)
         self._out = sys.stdout
 
     def write(self, s):
+        r"""Write to stdout and the log."""
         self._out.write(s)
         self._file.write(s)
 
     def flush(self):
+        r"""Flush stdout and the log."""
         self._out.flush()
         self._file.flush()
 
 
 def main() -> int:
+    r"""Parse arguments and start, resume or pause a training run."""
     ap = argparse.ArgumentParser(description="GLO-NCA cascade training (Kaggle v7 recipe).")
     ap.add_argument("--config", default=None, help="YAML config, e.g. configs/glo_nca_cascade.yaml")
     ap.add_argument("--resume", metavar="RUN_DIR", default=None,

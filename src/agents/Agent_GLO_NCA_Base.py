@@ -5,14 +5,16 @@ from src.agents.Agent import BaseAgent
 import os
 
 class Agent_GLO_NCA_Base(BaseAgent):
-    """Base agent for GLO-NCA models: seeding, data preparation and output handling."""
+    r"""Base agent for GLO-NCA models: seeding, data preparation and output handling."""
     def initialize(self):
+        r"""Read channel counts and create the output pool."""
         super().initialize()
         self.input_channels = self.exp.get_from_config('input_channels')
         self.output_channels = self.exp.get_from_config('output_channels')
         self.pool = Pool()
 
-    def loss_noOcillation(self, x, target, freeChange=True):
+    def loss_no_oscillation(self, x, target, freeChange=True):
+        r"""Penalty on large cell updates to damp oscillation."""
         if freeChange:
             x[x <= 1] = 0
             loss = x.sum() / torch.numel(x)
@@ -43,16 +45,16 @@ class Agent_GLO_NCA_Base(BaseAgent):
 
     def make_seed(self, img):
         r"""Create the initial cell state with the input channels in the first channels."""
-        # 2D
+        # 2D data.
         if( self.exp.dataset.slice != None):
             if len(img.shape) == 3:
                 seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)
                 seed[..., :img.shape[3]] = img
             else:
                 seed = torch.zeros((img.shape[0], img.shape[1], img.shape[2], self.exp.get_from_config('channel_n')), dtype=torch.float32, device=self.device)
-                seed[..., 0:img.shape[-1]] = img 
+                seed[..., 0:img.shape[-1]] = img
 
-        # 3D
+        # 3D data.
         else:
             channel_n = self.exp.get_from_config('channel_n')
             seed = torch.zeros(
@@ -113,14 +115,17 @@ class Agent_GLO_NCA_Base(BaseAgent):
         return
 
     def prepare_image_for_display(self, image):
+        r"""First three channels of an image for display."""
         return image[...,0:3]
 
 class Pool():
     r"""Pool of previous model outputs."""
     def __init__(self):
+        r"""Create an empty pool."""
         self.pool = {}
 
     def __len__(self):
+        r"""Number of stored outputs."""
         return len(self.pool)
 
     def addToPool(self, outputs, ids):
@@ -128,11 +133,10 @@ class Pool():
         for i, key in enumerate(ids):
             self.pool[key] = outputs[i]
 
-    def getFromPool(self, inputs, ids, device):   
+    def getFromPool(self, inputs, ids, device):
         r"""Get outputs from the pool."""
         for i, key in enumerate(ids):
             if key in self.pool.keys():
                 inputs[i] = self.pool[key].to(device)
         return inputs
 
-    

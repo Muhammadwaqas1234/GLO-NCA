@@ -1,4 +1,4 @@
-"""Load the YAML config into the training constants."""
+r"""Load the YAML config into the training constants."""
 from __future__ import annotations
 
 import copy
@@ -12,7 +12,8 @@ REGIONS = ["WT", "TC", "ET"]
 
 
 @dataclass
-class CascadeConfig:
+class GLO_NCA_Config:
+    r"""Training settings loaded from YAML; optional fields default to the baseline recipe."""
     NAME: str
     SEED: int
     DATA_BASE: str
@@ -57,12 +58,12 @@ class CascadeConfig:
 
     @property
     def improved_eval(self) -> bool:
-        """True when any evaluation improvement is enabled."""
+        r"""True when any evaluation improvement is enabled."""
         return self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or any(self.MIN_COMPONENT.values())
 
 
 def _merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively merge ``over`` into a copy of ``base``."""
+    r"""Recursively merge ``over`` into a copy of ``base``."""
     out = copy.deepcopy(base)
     for k, v in over.items():
         out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
@@ -70,7 +71,7 @@ def _merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _read(path: str) -> Dict[str, Any]:
-    """Read a config, resolving an optional ``base:`` file relative to it."""
+    r"""Read a config, resolving an optional ``base:`` file relative to it."""
     with open(path, encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
     base = raw.pop("base", None)
@@ -80,14 +81,15 @@ def _read(path: str) -> Dict[str, Any]:
 
 
 def _set(raw: Dict[str, Any], dotted: str, value: str) -> None:
-    """Apply one ``section.key=value`` override; the value is parsed as YAML."""
+    r"""Apply one ``section.key=value`` override; the value is parsed as YAML."""
     section, _, key = dotted.partition(".")
     if not key or section not in raw:
         raise KeyError(f"unknown config key: {dotted}")
     raw[section][key] = yaml.safe_load(value)
 
 
-def load_config(path: str, overrides: Optional[List[str]] = None) -> CascadeConfig:
+def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Config:
+    r"""Load a YAML config, resolve its base file and apply overrides."""
     raw = _read(path)
     for item in overrides or []:
         dotted, _, value = item.partition("=")
@@ -95,7 +97,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> CascadeConf
     e, d, m, t, l, v = (raw["experiment"], raw["data"], raw["model"],
                         raw["training"], raw["loss"], raw["evaluation"])
     min_comp = {r: int((v.get("min_component_voxels") or {}).get(r, 0)) for r in REGIONS}
-    return CascadeConfig(
+    return GLO_NCA_Config(
         NAME=str(e["name"]), SEED=int(e["seed"]),
         DATA_BASE=str(d["base"]), N_PATIENTS=d["n_patients"],
         MODALITIES=list(d["modalities"]),

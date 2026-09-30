@@ -1,4 +1,4 @@
-"""Full training checkpoints, so a preempted run resumes where it stopped."""
+r"""Full training checkpoints, so a preempted run resumes where it stopped."""
 from __future__ import annotations
 
 import os
@@ -11,12 +11,14 @@ FORMAT = "glo-nca-cascade-ckpt-1"
 
 
 def capture_rng():
+    r"""Snapshot the Python, NumPy and torch random states."""
     return {"python": random.getstate(), "numpy": np.random.get_state(),
             "torch": torch.get_rng_state(),
             "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
 
 
 def restore_rng(state):
+    r"""Restore random states saved by capture_rng."""
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
     # RNG states must be CPU byte tensors (the checkpoint may be loaded onto the GPU).
@@ -26,7 +28,7 @@ def restore_rng(state):
 
 
 def save_atomic(obj, path):
-    """Write to <path>.tmp, then rename, so a crash never leaves a partial file."""
+    r"""Write to <path>.tmp, then rename, so a crash never leaves a partial file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     torch.save(obj, tmp)
@@ -34,6 +36,7 @@ def save_atomic(obj, path):
 
 
 def build_last(epoch, models, agent, ema, best, hist, train_seconds, config_raw):
+    r"""Assemble the full resume checkpoint written after every epoch."""
     return {"format": FORMAT, "epoch": epoch,
             "models": [m.state_dict() for m in models],
             "optimizers": [o.state_dict() for o in agent.optimizer],
@@ -44,7 +47,7 @@ def build_last(epoch, models, agent, ema, best, hist, train_seconds, config_raw)
 
 
 def load_last(path, models, agent, device):
-    """Restore models, optimizers and schedulers in place; return the checkpoint."""
+    r"""Restore models, optimizers and schedulers in place; return the checkpoint."""
     ck = torch.load(path, map_location=device, weights_only=False)
     if ck.get("format") != FORMAT:
         raise ValueError(f"{path}: not a GLO-NCA cascade checkpoint (format {ck.get('format')!r})")

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 class SEBlock3D(nn.Module):
     r"""Squeeze-and-excitation block: channel global context."""
     def __init__(self, channel_n, reduction=4):
+        r"""Build the block's layers."""
         super(SEBlock3D, self).__init__()
         reduced = max(1, channel_n // reduction)
         self.fc1 = nn.Linear(channel_n, reduced)
@@ -14,12 +15,12 @@ class SEBlock3D(nn.Module):
     def forward(self, x):
         r"""Helper."""
         b, c = x.shape[0], x.shape[1]
-        # Squeeze: global average pool over all spatial dims -> (B, C)
+        # Squeeze: global average pool over all spatial dimensions to (B, C).
         squeezed = x.mean(dim=(2, 3, 4))
-        # Excite: bottleneck MLP -> per-channel gate in [0, 1]
+        # Excite: bottleneck MLP to a per-channel gate in [0, 1].
         gate = F.relu(self.fc1(squeezed))
         gate = torch.sigmoid(self.fc2(gate))
-        # Scale: broadcast gate back over the spatial dims
+        # Scale: broadcast the gate back over the spatial dimensions.
         gate = gate.view(b, c, 1, 1, 1)
         return x * gate
 
@@ -27,6 +28,7 @@ class SEBlock3D(nn.Module):
 class GCSpatialBlock3D(nn.Module):
     r"""Spatial global-context block: per-voxel attention from channel mean and max."""
     def __init__(self, kernel_size=7):
+        r"""Build the block's layers."""
         super(GCSpatialBlock3D, self).__init__()
         padding = (kernel_size - 1) // 2
         self.conv = nn.Conv3d(2, 1, kernel_size=kernel_size, padding=padding)
@@ -40,6 +42,7 @@ class GCSpatialBlock3D(nn.Module):
 
 
 class GLO_NCA_Cell(nn.Module):
+    r"""GLO-NCA cell: perception, SE and global-context blocks, and a stochastic update."""
     def __init__(self, channel_n, fire_rate, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_attention=False, se_reduction=4, use_spatial=False, dropout=0.0):
         r"""GLO-NCA cell: perception, SE and spatial global context, and a residual update MLP."""
         super(GLO_NCA_Cell, self).__init__()

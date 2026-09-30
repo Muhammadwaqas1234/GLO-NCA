@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Restart the VM after a Spot preemption: watchdog.sh [--interval SECONDS]  (runs on any machine with gcloud)
-# Only a preemption triggers a restart; a stop by the run itself or by you ends the watchdog.
+# Restart the VM after Spot preemptions only; any other stop ends it: watchdog.sh [--interval SECONDS]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 require_gcloud_auth

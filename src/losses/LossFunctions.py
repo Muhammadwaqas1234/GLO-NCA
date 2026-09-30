@@ -11,7 +11,7 @@ class DiceLoss(torch.nn.Module):
     def forward(self, input, target, smooth=1):
         r"""Forward function"""
         if self.useSigmoid:
-            input = torch.sigmoid(input)  
+            input = torch.sigmoid(input)
         input = torch.flatten(input)
         target = torch.flatten(target)
         intersection = (input * target).sum()
@@ -29,13 +29,13 @@ class DiceLoss_mask(torch.nn.Module):
     def forward(self, input, target, mask = None, smooth=1):
         r"""Forward function"""
         if self.useSigmoid:
-            input = torch.sigmoid(input)  
+            input = torch.sigmoid(input)
         input = torch.flatten(input)
         target = torch.flatten(target)
         mask = torch.flatten(mask)
 
-        input = input[~mask]  
-        target = target[~mask]  
+        input = input[~mask]
+        target = target[~mask]
         intersection = (input * target).sum()
         dice = (2.*intersection + smooth)/(input.sum() + target.sum() + smooth)
 
@@ -50,15 +50,15 @@ class DiceBCELoss(torch.nn.Module):
 
     def forward(self, input, target, smooth=1):
         r"""Forward function"""
-        input = torch.sigmoid(input)       
-        input = torch.flatten(input) 
+        input = torch.sigmoid(input)
+        input = torch.flatten(input)
         target = torch.flatten(target)
-        
-        intersection = (input * target).sum()                            
-        dice_loss = 1 - (2.*intersection + smooth)/(input.sum() + target.sum() + smooth)  
+
+        intersection = (input * target).sum()
+        dice_loss = 1 - (2.*intersection + smooth)/(input.sum() + target.sum() + smooth)
         BCE = torch.nn.functional.binary_cross_entropy(input, target, reduction='mean')
         Dice_BCE = BCE + dice_loss
-        
+
         return Dice_BCE
 
 class BCELoss(torch.nn.Module):
@@ -70,8 +70,8 @@ class BCELoss(torch.nn.Module):
 
     def forward(self, input, target, smooth=1):
         r"""Forward function"""
-        input = torch.sigmoid(input)       
-        input = torch.flatten(input) 
+        input = torch.sigmoid(input)
+        input = torch.flatten(input)
         target = torch.flatten(target)
 
         BCE = torch.nn.functional.binary_cross_entropy(input, target, reduction='mean')
@@ -129,6 +129,7 @@ class DiceFocalLoss(FocalLoss):
 class DiceCELoss(torch.nn.Module):
     r"""Dice + Cross-Entropy loss for multi-class / multi-label segmentation."""
     def __init__(self, useSigmoid=True, dice_weight=1.0, ce_weight=1.0):
+        r"""Store the loss weights."""
         super(DiceCELoss, self).__init__()
         self.useSigmoid = useSigmoid
         self.dice_weight = dice_weight
@@ -155,6 +156,7 @@ class DiceCELoss(torch.nn.Module):
 class TverskyCELoss(torch.nn.Module):
     r"""Tversky + BCE loss - tuned for small, imbalanced regions (ET / TC)."""
     def __init__(self, alpha=0.3, beta=0.7, ce_weight=0.5, useSigmoid=True):
+        r"""Store the loss weights."""
         super(TverskyCELoss, self).__init__()
         self.alpha = alpha
         self.beta = beta
@@ -162,6 +164,7 @@ class TverskyCELoss(torch.nn.Module):
         self.useSigmoid = useSigmoid
 
     def forward(self, input, target, smooth=1):
+        r"""Compute the loss for one region."""
         prob = torch.sigmoid(input) if self.useSigmoid else input
         bce = torch.nn.functional.binary_cross_entropy(
             prob.clamp(1e-6, 1. - 1e-6), target, reduction='mean')
@@ -177,6 +180,7 @@ class TverskyCELoss(torch.nn.Module):
 class FocalTverskyCELoss(torch.nn.Module):
     r"""Focal Tversky + BCE - focuses learning on the hard, small regions (ET)."""
     def __init__(self, alpha=0.3, beta=0.7, gamma=1.33, ce_weight=0.5, useSigmoid=True):
+        r"""Store the loss weights."""
         super(FocalTverskyCELoss, self).__init__()
         self.alpha = alpha
         self.beta = beta
@@ -185,6 +189,7 @@ class FocalTverskyCELoss(torch.nn.Module):
         self.useSigmoid = useSigmoid
 
     def forward(self, input, target, smooth=1):
+        r"""Compute the loss for one region."""
         prob = torch.sigmoid(input) if self.useSigmoid else input
         bce = torch.nn.functional.binary_cross_entropy(
             prob.clamp(1e-6, 1. - 1e-6), target, reduction='mean')

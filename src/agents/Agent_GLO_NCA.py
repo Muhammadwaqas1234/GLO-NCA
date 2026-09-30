@@ -7,8 +7,9 @@ import math
 import nibabel as nib
 
 class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
-    """GLO-NCA cascade agent: coarse-to-fine inference over the model levels."""
+    r"""GLO-NCA cascade agent: coarse-to-fine inference over the model levels."""
     def initialize(self):
+        r"""Read the cascade settings from the experiment."""
         super().initialize()
         self.stacked_models = self.exp.get_from_config('stacked_models')
         self.scaling_factor = self.exp.get_from_config('scaling_factor')
@@ -19,7 +20,7 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
 
         if len(targets.shape) < 5:
             targets = torch.unsqueeze(targets, 4)
-        
+
         # Scaling factor between levels.
         scale_fac = 2
         if self.exp.get_from_config('scale_factor') is not None:
@@ -27,8 +28,8 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
 
         # Pooling used to downscale.
         max_pool = torch.nn.MaxPool3d(2, 2, 0)
-        
-        targets_loc = targets 
+
+        targets_loc = targets
 
         # Downscale the input to the first level.
         full_res = inputs
@@ -45,7 +46,7 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
             targets_loc = targets_loc.transpose(1,4)
 
         input_channel = self.exp.get_from_config('input_channels')
-        
+
 
         # Evaluation: inference on the full image.
         if full_img == True:
@@ -61,7 +62,7 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                 label_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
                 img_mri_4d = np.empty((sum(self.getInferenceSteps()), inputs.shape[1]*x_size, inputs.shape[2]*x_size,1), dtype=float)
             step = 0
-            
+
             with torch.no_grad():
                 # From the low-resolution level to the high-resolution level.
                 for m in range(self.exp.get_from_config('train_model')+1):
@@ -76,19 +77,19 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                             for i in range(self.getInferenceSteps()[m]):
                                 outputs = self.model[m](outputs, steps=1, fire_rate=self.exp.get_from_config('cell_fire_rate'))
                                 if not slice_all_Channels:
-                                    label_mri_4d[step, ...] = outputs[0, ..., 1].detach().cpu().numpy() 
-                                    img_mri_4d[step, ...] = inputs_loc[0, ..., 0].detach().cpu().numpy() 
+                                    label_mri_4d[step, ...] = outputs[0, ..., 1].detach().cpu().numpy()
+                                    img_mri_4d[step, ...] = inputs_loc[0, ..., 0].detach().cpu().numpy()
                                 else:
                                     for x in range(4):
                                         for y in range(4):
-                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = outputs[0, ..., 11, x+y*4].detach().cpu().numpy() 
-                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = inputs_loc[0, ..., 11, x+y*4].detach().cpu().numpy() 
+                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = outputs[0, ..., 11, x+y*4].detach().cpu().numpy()
+                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = inputs_loc[0, ..., 11, x+y*4].detach().cpu().numpy()
 
-                                step = step +1 
+                                step = step +1
                         else:
                             # Final level: standard inference.
                             outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                    # Downscale m-1 times. 
+                    # Downscale m-1 times.
                     else:
                         up = torch.nn.Upsample(scale_factor=scale_fac, mode='nearest')
 
@@ -98,46 +99,46 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                             for i in range(self.getInferenceSteps()[m]):
                                 outputs = self.model[m](outputs, steps=1, fire_rate=self.exp.get_from_config('cell_fire_rate'))
                                 if not slice_all_Channels:
-                                    label_mri_4d[step, ...] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 1].detach().cpu().numpy() 
-                                    img_mri_4d[step, ...] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 0].detach().cpu().numpy() 
+                                    label_mri_4d[step, ...] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 1].detach().cpu().numpy()
+                                    img_mri_4d[step, ...] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 0].detach().cpu().numpy()
                                 else:
                                     for x in range(4):
                                         for y in range(4):
-                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy() 
-                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy()                                     
-                                step = step +1 
+                                            label_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(outputs, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy()
+                                            img_mri_4d[step, x*320:(x+1)*320, y*320:(y+1)*320, 0] = torch.permute(up(torch.permute(inputs_loc, (0, 4, 1, 2, 3))), (0, 2, 3, 4, 1))[0, ..., 11, x+y*4].detach().cpu().numpy()
+                                step = step +1
                         else:
                             outputs = self.model[m](inputs_loc, steps=self.getInferenceSteps()[m], fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                        
 
-                        # Upscale lowres features to next level
+
+                        # Upscale low-resolution features to the next level.
                         outputs = torch.permute(outputs, (0, 4, 1, 2, 3))
                         outputs = up(outputs)
-                        inputs_loc = inputs     
-                        outputs = torch.permute(outputs, (0, 2, 3, 4, 1))         
-   
-                        # Create higher res image for next level -> Replace with single downscaling step
+                        inputs_loc = inputs
+                        outputs = torch.permute(outputs, (0, 2, 3, 4, 1))
+
+                        # Higher-resolution image for the next level.
                         next_res = full_res
                         for i in range(self.exp.get_from_config('train_model') - (m +1)):
                             next_res = next_res.transpose(1,4)
                             next_res = max_pool(next_res)
                             next_res = next_res.transpose(1,4)
 
-                        # Concat lowres features with higher res image
+                        # Concatenate low-resolution features with the higher-resolution image.
                         inputs_loc = torch.concat((next_res[...,:input_channel], outputs[...,input_channel:]), 4)
                         targets_loc = targets
-            
+
             # Optional visualisation.
             if save4d:
                 if not slice_all_Channels:
                     nib_save = torch.sigmoid(torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0)))).numpy()
                     nib_save[nib_save>0.5] = 1
-                    nib_save[nib_save != 1] = 0 
+                    nib_save[nib_save != 1] = 0
                 else:
-                    nib_save = torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0))).numpy() 
+                    nib_save = torch.from_numpy(np.transpose(label_mri_4d, (1, 2, 3, 0))).numpy()
                     sign = nib_save<0
-                    
-                nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header()) 
+
+                nib_save = nib.Nifti1Image(nib_save , np.array(((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 4, 0), (0, 0, 0, 1))), nib.Nifti1Header())
                 nib.save(nib_save, os.path.join("path", str(id)+"_"+tag+".nii.gz"))
 
                 nib_save = torch.sigmoid(torch.from_numpy(np.transpose(img_mri_4d, (1, 2, 3, 0)))).numpy()
@@ -146,7 +147,7 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
         # Training: inference on patches.
         else:
             # Over the downscaling levels.
-            for m in range(self.exp.get_from_config('train_model')+1): 
+            for m in range(self.exp.get_from_config('train_model')+1):
                 # Last level: standard inference on the final patch.
                 if m == self.exp.get_from_config('train_model'):
                     if type(self.getInferenceSteps()) is list:
@@ -155,13 +156,13 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                         stp = self.getInferenceSteps()
                     outputs = self.model[m](inputs_loc, steps=stp, fire_rate=self.exp.get_from_config('cell_fire_rate'))
                 else:
-                    # Create higher res image for next level -> Replace with single downscaling step
+                    # Higher-resolution image for the next level.
                     next_res = full_res
                     for i in range(self.exp.get_from_config('train_model') - (m +1)):
                         next_res = next_res.transpose(1,4)
                         next_res = max_pool(next_res)
                         next_res = next_res.transpose(1,4)
-                    # Create higher res groundtruth for next level -> Replace with single downscaling step
+                    # Higher-resolution ground truth for the next level.
                     next_res_gt = full_res_gt
                     for i in range(self.exp.get_from_config('train_model') - (m +1)):
                         next_res_gt = next_res_gt.transpose(1,4)
@@ -170,13 +171,13 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
 
                     # Inference on the patch.
                     outputs = self.model[m](inputs_loc, steps=self.getInferenceSteps()[m], fire_rate=self.exp.get_from_config('cell_fire_rate'))
-                    
-                    # Upscale lowres features to next level
+
+                    # Upscale low-resolution features to the next level.
                     up = torch.nn.Upsample(scale_factor=scale_fac, mode='nearest')
                     outputs = torch.permute(outputs, (0, 4, 1, 2, 3))
                     outputs = up(outputs)
-                    outputs = torch.permute(outputs, (0, 2, 3, 4, 1))        
-                    # Concat lowres features with higher res image
+                    outputs = torch.permute(outputs, (0, 2, 3, 4, 1))
+                    # Concatenate low-resolution features with the higher-resolution image.
                     inputs_loc = torch.concat((next_res[...,:input_channel], outputs[...,input_channel:]), 4)
 
                     # Intermediate states.
@@ -196,7 +197,7 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                     factor_pow = math.pow(2, factor)
 
                     # Random patch per batch element.
-                    for b in range(inputs_loc.shape[0]): 
+                    for b in range(inputs_loc.shape[0]):
                         while True:
                             pos_x = random.randint(0, inputs_loc_temp.shape[1] - size[0])
                             pos_y = random.randint(0, inputs_loc_temp.shape[2] - size[1])
@@ -223,10 +224,10 @@ class Agent_GLO_NCA(Agent_GLO_NCA_Multi):
                     full_res = full_res_new
                     full_res_gt = full_res_gt_new
 
-        # Pooling option (not used).
+        # Alternative pooling path.
         if self.exp.get_from_config('Persistence'):
             if np.random.random() < self.exp.get_from_config('pool_chance'):
                 self.epoch_pool.addToPool(outputs.detach().cpu(), id)
 
-        return outputs[..., self.input_channels:self.input_channels+self.output_channels], targets_loc 
+        return outputs[..., self.input_channels:self.input_channels+self.output_channels], targets_loc
 
