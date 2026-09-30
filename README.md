@@ -30,21 +30,26 @@ All values live in `configs/glo_nca_cascade.yaml`.
 
 ```
 train.py                  command-line entry point
-evaluate.py               re-evaluate a run or an ensemble of runs
+evaluate.py               re-evaluate a run or an ensemble of runs (resumable)
 configs/glo_nca_cascade.yaml   the recipe settings
 configs/experiments/      optional improvements (inherit a base config)
 glo_nca/                  training package
   config.py               YAML -> settings
-  data.py                 dataset, data-root discovery, split
-  evaluation.py           Dice / mIoU / HD95 evaluation
-  trainer.py              training loop, best-model selection, final test
+  data.py                 BraTS dataset (crop, resize, cache, patches, augmentation), split
+  evaluation.py           Dice / mIoU / HD95, threshold tuning, full-resolution scoring
+  trainer.py              training loop, best-model selection, early stopping, final test
   checkpoint.py           full checkpoints for resume
   reporting.py            final table, results JSON, curves
-src/                      model, agent, dataset and loss code (unchanged from v7)
+src/                      GLO-NCA library (Med-NCA / M3D-NCA lineage)
+  agents/                 cascade agent: coarse-to-fine inference and joint training
+  models/                 GLO-NCA cell with SE and global-context blocks
+  losses/                 focal Tversky + BCE loss
+  utils/                  experiment state and metrics
 legacy/kaggle/            the original Kaggle scripts (v4-v7)
-tests/                    equivalence test against legacy/kaggle/kaggle_v7.py, option checks
+tests/                    option checks, v7 equivalence test, synthetic data generator
 docker/                   training image
-cloud/                    GCP scripts and systemd unit
+cloud/                    GCP scripts and systemd units
+.github/workflows/        CI: tests on every push, v7 equivalence weekly
 ```
 
 ## First check: 10 epochs
@@ -121,6 +126,7 @@ configs in `configs/experiments/` switch them on through `base:` inheritance.
 | `experiment.split_seed` | fixed split, so runs trained with other seeds can be ensembled |
 | `training.val_every` | validate every N epochs (always on the last and the pause epoch) |
 | `evaluation.val_workers` | parallel data loading for the validation pass |
+| `data.cache` | `memory` (default), `disk` (`data.cache_dir`, low RAM, shared by workers) or `none` |
 
 The tuned result is reported next to the plain one (`test_tuned` in `results.json`).
 Existing runs can be re-scored without retraining, and several runs averaged:
@@ -136,8 +142,9 @@ Ensemble members must share `split.json` and the working resolution; train them 
 ## Verify
 
 ```bash
-python tests/test_equivalence.py /path/to/small/BraTS
-python tests/test_options.py
+python tests/test_options.py                                   # unit checks, no data needed
+python tests/make_synthetic_data.py /tmp/syn --cases 12         # synthetic BraTS-style cases
+python tests/test_equivalence.py /tmp/syn                       # identical to the Kaggle v7 script
 ```
 
 ## Credits

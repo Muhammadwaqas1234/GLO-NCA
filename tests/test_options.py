@@ -83,7 +83,7 @@ class _FakeDS:
     SEG_SUFFIX = "seg"
     use_foreground_crop = True
     _foreground_bbox = staticmethod(Dataset_BraTS_Foreground._foreground_bbox)
-    _labels_to_regions = Dataset_BraTS_Foreground._labels_to_regions
+    _labels_to_regions = staticmethod(Dataset_BraTS_Foreground._labels_to_regions)
 
     def __init__(self, root, vols):
         r"""Store the fake volumes."""

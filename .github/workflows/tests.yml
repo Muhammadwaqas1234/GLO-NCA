@@ -1,0 +1,65 @@
+# Unit tests and a synthetic end-to-end run on every push; the Kaggle v7 equivalence check weekly or on demand.
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  unit-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install (CPU torch)
+        run: |
+          pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r docker/requirements-docker.txt
+      - name: Compile and shell syntax
+        run: |
+          python -m compileall -q glo_nca src tests train.py evaluate.py
+          for f in cloud/scripts/*.sh; do bash -n "$f"; done
+      - name: Unit tests
+        run: python tests/test_options.py
+      - name: Synthetic end-to-end run
+        run: |
+          python tests/make_synthetic_data.py /tmp/syn --cases 10 --naming 2021
+          python train.py --config configs/glo_nca_cascade_brats2021.yaml --data-root /tmp/syn \
+            --output /tmp/runs --experiment-id smoke \
+            --override training.epochs=3 --override training.workers=2 \
+            --override "model.input_size=[[16, 16, 12], [32, 32, 24]]" \
+            --override data.augment=true --override data.cache=disk \
+            --override "loss.region_weights=[1.0, 1.5, 1.5]" \
+            --override training.val_every=2 --override evaluation.val_workers=2 \
+            --override evaluation.ensemble_n=1 --override evaluation.tta=false \
+            --override evaluation.tune_thresholds=true
+          python evaluate.py --run /tmp/runs/smoke --run /tmp/runs/smoke --data-root /tmp/syn \
+            --full-resolution --no-hd95 --ensemble-n 1 --no-tta
+
+  equivalence:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install (CPU torch; the original script also needs its own libraries)
+        run: |
+          pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r docker/requirements-docker.txt torchio==1.2.1 seaborn==0.13.2 tensorboard==2.21.0
+      - name: Equivalence with the original Kaggle v7 script
+        run: |
+          python tests/make_synthetic_data.py /tmp/syn --cases 12 --naming met
+          python tests/test_equivalence.py /tmp/syn --tol 1e-5
