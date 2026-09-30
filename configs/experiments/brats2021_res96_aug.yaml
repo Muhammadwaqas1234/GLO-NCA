@@ -1,0 +1,11 @@
+# 96^3 with training augmentation (flips, in-plane rotations, intensity jitter); v7 learning rate.
+base: brats2021_res96.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-AUG
+
+data:
+  augment: true
+
+evaluation:
+  val_workers: 4                  # parallel loading for the validation pass
