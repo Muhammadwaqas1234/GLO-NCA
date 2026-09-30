@@ -50,3 +50,4 @@ extra/
 cloud/config/gcp.env
 *.tmp
 .cache/
+.coverage
