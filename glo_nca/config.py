@@ -54,6 +54,8 @@ class GLO_NCA_Config:
     VAL_WORKERS: int = 0
     EARLY_STOP_PATIENCE: int = 0
     EARLY_STOP_MIN_DELTA: float = 0.0
+    CACHE: str = "memory"
+    CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -125,5 +127,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         VAL_WORKERS=int(v.get("val_workers", 0)),
         EARLY_STOP_PATIENCE=int(t.get("early_stop_patience", 0)),
         EARLY_STOP_MIN_DELTA=float(t.get("early_stop_min_delta", 0.0)),
+        CACHE=str(d.get("cache", "memory")),
+        CACHE_DIR=d.get("cache_dir"),
         raw=raw,
     )

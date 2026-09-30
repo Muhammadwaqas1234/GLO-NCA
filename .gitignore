@@ -23,7 +23,6 @@ M:/Models/*
 Study/*
 *.pth
 *.pbz2
-tensorboard/
 *.tfevents.*
 *.log
 
@@ -50,3 +49,4 @@ extra/
 /experiments/
 cloud/config/gcp.env
 *.tmp
+.cache/

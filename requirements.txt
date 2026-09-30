@@ -1,11 +1,8 @@
 # Local development dependencies; install torch first from the CUDA index (https://download.pytorch.org/whl/cu121).
 torch>=2.2
-numpy<2.0                # torchio and cv2 builds rely on the NumPy 1.x API
+numpy<2.0                # cv2 builds rely on the NumPy 1.x API
 scipy                    # HD95 distance transform
 nibabel                  # NIfTI volumes
-torchio>=0.20            # intensity transforms
 opencv-python            # volume resizing
 matplotlib               # training curves
-seaborn                  # evaluation plots
-tensorboard              # experiment logging
 pyyaml                   # YAML configs

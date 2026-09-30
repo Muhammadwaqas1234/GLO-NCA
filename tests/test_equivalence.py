@@ -10,8 +10,11 @@ import sys
 import tempfile
 import zipfile
 
+import torch
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
+HAS_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 0
 REFERENCE_COMMIT = "kaggle-v7-reference"   # tag: original script and library
 SMALL = {"EPOCHS": 2, "N_PATIENTS": 8, "ENSEMBLE_N": 2, "NUM_WORKERS": 0}
 OVERRIDES = ["training.epochs=2", "data.n_patients=8", "evaluation.ensemble_n=2",
@@ -25,17 +28,17 @@ def check(name, ok, detail=""):
     print(f"  {'PASS' if ok else 'FAIL'}  {name:52s} {detail}", flush=True)
 
 
-def max_diff(a, b):
-    r"""Largest absolute difference between two nested JSON structures of numbers."""
+def max_diff(a, b, path=""):
+    r"""Largest absolute difference between two nested JSON structures, with its location."""
     if isinstance(a, dict):
-        return max([max_diff(a[k], b[k]) for k in a] or [0.0])
+        return max([max_diff(a[k], b[k], f"{path}.{k}") for k in a] or [(0.0, path)])
     if isinstance(a, list):
-        return max([max_diff(x, y) for x, y in zip(a, b)] or [0.0])
+        return max([max_diff(x, y, f"{path}[{i}]") for i, (x, y) in enumerate(zip(a, b))] or [(0.0, path)])
     if isinstance(a, (int, float)):
         if a != a and b != b:        # both NaN
-            return 0.0
-        return abs(float(a) - float(b))
-    return 0.0 if a == b else float("inf")
+            return 0.0, path
+        return abs(float(a) - float(b)), path
+    return (0.0 if a == b else float("inf")), path
 
 
 def run(cmd, env, cwd=REPO):
@@ -51,9 +54,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("data_dir")
     ap.add_argument("--tol", type=float, default=1e-6)
+    ap.add_argument("--dice-tol", type=float, default=None,
+                    help="tolerance for Dice/IoU/HD95 (default: --tol on CPU, 1e-3 on GPU, where a voxel "
+                         "at the 0.5 threshold can flip between runs)")
     args = ap.parse_args()
+    dice_tol = args.dice_tol if args.dice_tol is not None else (1e-3 if HAS_GPU else args.tol)
     work = tempfile.mkdtemp(prefix="v7eq_")
-    env = dict(os.environ, PYTHONUNBUFFERED="1", MPLBACKEND="Agg")
+    env = dict(os.environ, PYTHONUNBUFFERED="1", MPLBACKEND="Agg", GLO_DETERMINISTIC="1")
     try:
         # A: the original script with the reduced constants.
         ref = os.path.join(work, "reference")
@@ -64,6 +71,13 @@ def main():
         for k, v in SMALL.items():
             src, n = re.subn(rf"^{k}(\s*)=\s*[^#\n]+", rf"{k}\g<1>= {v} ", src, count=1, flags=re.M)
             assert n == 1, k
+        if not HAS_GPU:
+            # CPU-only machine (e.g. CI): the original script hard-codes cuda:0.
+            src = src.replace('"device": "cuda:0"', '"device": "cpu"')
+            src = src.replace('torch.device("cuda:0" if torch.cuda.is_available() else "cpu")', 'torch.device("cpu")')
+        # Deterministic cuDNN kernels in both programs, so GPU runs compare exactly.
+        src = src.replace("\nimport torch\n", "\nimport torch\ntorch.backends.cudnn.deterministic = True\n"
+                          "torch.backends.cudnn.benchmark = False\n", 1)
         legacy = os.path.join(work, "kaggle_v7_small.py")
         open(legacy, "w", encoding="utf-8").write(src)
         out_a = os.path.join(work, "A")
@@ -90,14 +104,20 @@ def main():
         ja = json.load(open(os.path.join(out_a, "v7_results.json")))   # output name used by the original script
         for label in ("B", "C"):
             jb = json.load(open(os.path.join(work, label, "results.json")))
-            d_hist = max_diff(ja["history"], jb["history"])
-            d_test = max_diff(ja["test"], jb["test"])
-            check(f"{label}: per-epoch loss / LR / val Dice match original", d_hist <= args.tol,
-                  f"max diff {d_hist:.2e}")
+            train_keys = ("epoch", "loss", "lr")
+            d_train, p_train = max_diff({k: ja["history"][k] for k in train_keys},
+                                        {k: jb["history"][k] for k in train_keys})
+            d_val, p_val = max_diff({k: v for k, v in ja["history"].items() if k not in train_keys},
+                                    {k: v for k, v in jb["history"].items() if k not in train_keys})
+            d_test, p_test = max_diff(ja["test"], jb["test"])
+            check(f"{label}: per-epoch loss / LR match original", d_train <= args.tol,
+                  f"max diff {d_train:.2e} {p_train}")
+            check(f"{label}: per-epoch validation Dice matches original", d_val <= dice_tol,
+                  f"max diff {d_val:.2e} {p_val}")
             check(f"{label}: best epoch matches original", ja["best_epoch"] == jb["best_epoch"],
                   f"{ja['best_epoch']} vs {jb['best_epoch']}")
-            check(f"{label}: final test (ensemble+TTA) matches original", d_test <= args.tol,
-                  f"max diff {d_test:.2e}")
+            check(f"{label}: final test (ensemble+TTA) matches original", d_test <= dice_tol,
+                  f"max diff {d_test:.2e} {p_test}")
             check(f"{label}: parameter count matches original", ja["params"] == jb["params"],
                   str(jb["params"]))
     finally:

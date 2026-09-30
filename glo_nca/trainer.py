@@ -7,7 +7,6 @@ import math
 import os
 import random
 import time
-import types
 
 import numpy as np
 import torch
@@ -25,8 +24,11 @@ from .reporting import final_report
 
 
 def set_seed(s):
-    r"""Seed Python, NumPy and torch."""
+    r"""Seed Python, NumPy and torch; GLO_DETERMINISTIC=1 also selects deterministic cuDNN kernels."""
     random.seed(s); np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
+    if os.environ.get("GLO_DETERMINISTIC") == "1":
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def _write_status(out_dir, **fields):
@@ -52,9 +54,12 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> tuple:
     r"""Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
     tr, va, te = splits
     DATA_ROOT = data_root
+    # The configured GPU when one is present, otherwise the CPU.
+    dev = torch.device("cuda:0" if torch.cuda.is_available() and torch.cuda.device_count() else "cpu")
+    device = C.DEVICE if dev.type == "cuda" else "cpu"
     config = [{
         "img_path": DATA_ROOT, "label_path": DATA_ROOT, "model_path": os.path.join(out_dir, "m"),
-        "device": C.DEVICE, "unlock_CPU": True,
+        "device": device, "unlock_CPU": True,
         "optimizer": "adamw", "lr": C.LR_START, "lr_gamma": 0.9999,
         "betas": (0.9, 0.99), "weight_decay": 1e-4,
         "save_interval": 10**9, "evaluate_interval": 10**9, "n_epoch": C.EPOCHS,
@@ -66,9 +71,10 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> tuple:
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "patchify": True, "priotize_masks": 0.7, "prioritize_region": C.PRIORITIZE_REGION,
     }]
-    ds = Dataset_BraTS_Foreground(); ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
+    cache_dir = C.CACHE_DIR or os.path.join(os.path.dirname(os.path.abspath(out_dir)), ".cache")
+    ds = Dataset_BraTS_Foreground(cache=C.CACHE, cache_dir=cache_dir)
+    ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
     ds.use_foreground_crop = C.USE_FOREGROUND_CROP; ds.use_nonzero_norm = C.USE_NONZERO_NORM
-    dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=4,
                      use_attention=True, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT),
           GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=3, input_channels=4,
@@ -92,30 +98,6 @@ def last_gain_epoch(hist, min_delta):
         if not math.isnan(v) and v > ref + min_delta:
             ref, last = v, e
     return last
-
-
-def _weighted_batch_step(weights):
-    r"""Agent_GLO_NCA_Multi.batch_step with a per-region loss weight."""
-    def batch_step(self, data, loss_f):
-        r"""One optimisation step with per-region loss weights."""
-        data = self.prepare_data(data)
-        outputs, targets = self.get_outputs(data)
-        for m in range(self.exp.get_from_config('train_model')+1):
-            self.optimizer[m].zero_grad()
-        loss = 0
-        loss_ret = {}
-        for m in range(outputs.shape[-1]):
-            if 1 in targets[..., m]:
-                loss_loc = weights[m] * loss_f(outputs[..., m], targets[..., m])
-                loss = loss + loss_loc
-                loss_ret[m] = loss_loc.item()
-        if loss != 0:
-            loss.backward()
-            for m in range(self.exp.get_from_config('train_model')+1):
-                self.optimizer[m].step()
-                self.scheduler[m].step()
-        return loss_ret
-    return batch_step
 
 
 def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = False,
@@ -155,7 +137,7 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
     loss_f = FocalTverskyCELoss(alpha=1 - C.TVERSKY_BETA, beta=C.TVERSKY_BETA,
                                 gamma=C.FOCAL_GAMMA, ce_weight=0.5)
     if C.REGION_WEIGHTS != [1.0, 1.0, 1.0]:
-        agent.batch_step = types.MethodType(_weighted_batch_step(C.REGION_WEIGHTS), agent)
+        agent.region_weights = C.REGION_WEIGHTS
 
     # Gradient clipping via backward hooks (element-wise clamp; batch_step steps the optimizer).
     if C.GRAD_CLIP and C.GRAD_CLIP > 0:

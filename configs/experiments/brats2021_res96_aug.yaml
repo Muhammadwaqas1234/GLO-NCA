@@ -6,6 +6,7 @@ experiment:
 
 data:
   augment: true
+  cache: disk                     # preprocessed volumes on disk (<output>/.cache): low RAM at 96^3
 
 evaluation:
   val_workers: 4                  # parallel loading for the validation pass

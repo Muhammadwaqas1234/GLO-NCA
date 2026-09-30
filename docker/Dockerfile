@@ -28,7 +28,7 @@ COPY glo_nca/ ./glo_nca/
 COPY configs/ ./configs/
 COPY train.py evaluate.py ./
 
-RUN python -c "import torch, torchio, nibabel, scipy, cv2, yaml, glo_nca.trainer; print('deps OK, torch', torch.__version__)"
+RUN python -c "import torch, nibabel, scipy, cv2, yaml, glo_nca.trainer; print('deps OK, torch', torch.__version__)"
 
 # No default run: a bare `docker run glo-nca-cascade` prints usage.
 ENTRYPOINT ["python", "train.py"]
