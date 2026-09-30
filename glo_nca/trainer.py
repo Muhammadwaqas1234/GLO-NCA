@@ -80,6 +80,15 @@ def build(C: CascadeConfig, data_root: str, out_dir: str, splits) -> tuple:
     return ds, ca, agent, dev
 
 
+def last_gain_epoch(hist, min_delta):
+    """Last validated epoch whose mean Dice beat the running reference by more than min_delta."""
+    ref, last = -math.inf, 0
+    for e, v in zip(hist["epoch"], hist["val_mean"]):
+        if not math.isnan(v) and v > ref + min_delta:
+            ref, last = v, e
+    return last
+
+
 def _weighted_batch_step(weights):
     """Agent_GLO_NCA_Multi.batch_step with a per-region loss weight."""
     def batch_step(self, data, loss_f):
@@ -121,8 +130,10 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
     print(f"GLO-NCA cascade: ch={C.CHANNEL_N} hidden={C.HIDDEN} steps={C.STEPS} fire={C.FIRE_RATE} "
           f"patch={C.INPUT_SIZE[-1]} beta={C.TVERSKY_BETA} aug={C.USE_AUG} ep={C.EPOCHS}", flush=True)
-    if C.AUGMENT or C.REGION_WEIGHTS != [1.0, 1.0, 1.0] or C.improved_eval or C.VAL_EVERY > 1:
+    if C.AUGMENT or C.REGION_WEIGHTS != [1.0, 1.0, 1.0] or C.improved_eval or C.VAL_EVERY > 1 \
+            or C.EARLY_STOP_PATIENCE > 0:
         print(f"Options: augment={C.AUGMENT} region_weights={C.REGION_WEIGHTS} val_every={C.VAL_EVERY} "
+              f"early_stop={C.EARLY_STOP_PATIENCE}/{C.EARLY_STOP_MIN_DELTA} "
               f"tune_thresholds={C.TUNE_THRESHOLDS} min_component={C.MIN_COMPONENT} "
               f"full_resolution={C.FULL_RESOLUTION_EVAL}", flush=True)
     with open(os.path.join(out_dir, "split.json"), "w") as fh:
@@ -183,6 +194,7 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     t0 = time.time()
     _write_status(out_dir, state="training", epoch=start_epoch, epochs=C.EPOCHS, best=best)
 
+    stopped_early = None
     print("Loading + caching volumes (slow first pass)...", flush=True)
     for ep in range(start_epoch, C.EPOCHS):
         losses = []
@@ -229,6 +241,14 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
                          last_path)
         _write_history(out_dir, hist)
         _write_status(out_dir, state="training", epoch=ep + 1, epochs=C.EPOCHS, best=best)
+        # Early stopping: no validation gain above min_delta for `patience` epochs.
+        if validate and C.EARLY_STOP_PATIENCE > 0:
+            since = ep + 1 - last_gain_epoch(hist, C.EARLY_STOP_MIN_DELTA)
+            if since >= C.EARLY_STOP_PATIENCE:
+                stopped_early = ep + 1
+                print(f"EARLY STOP after epoch {ep+1}: no validation gain above "
+                      f"{C.EARLY_STOP_MIN_DELTA} for {since} epochs", flush=True)
+                break
         if stop_after_epoch is not None and ep + 1 >= stop_after_epoch:
             _write_status(out_dir, state="paused", epoch=ep + 1, epochs=C.EPOCHS, best=best,
                           next_epoch=ep + 2, test_evaluated=False)
@@ -243,17 +263,18 @@ def run(C: CascadeConfig, out_dir: str, data_root: str = None, resume: bool = Fa
     for m, sd in zip(ca, ck["m"]):
         m.load_state_dict(sd)
     # Final test: plain, then with pseudo-ensemble + TTA.
-    _write_status(out_dir, state="testing", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best)
+    last_epoch = hist["epoch"][-1] if hist["epoch"] else C.EPOCHS
+    _write_status(out_dir, state="testing", epoch=last_epoch, epochs=C.EPOCHS, best=best)
     test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
     test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
     tuned = None
     if C.improved_eval:
         # Post-processing is tuned on validation only; the test split is scored once.
-        _write_status(out_dir, state="tuning", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best)
+        _write_status(out_dir, state="tuning", epoch=last_epoch, epochs=C.EPOCHS, best=best)
         val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
         test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
         tuned = improved_evaluation(C, ds, val_cases, test_cases)
     final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned)
-    _write_status(out_dir, state="completed", epoch=C.EPOCHS, epochs=C.EPOCHS, best=best,
-                  best_epoch=ck["ep"])
+    _write_status(out_dir, state="completed", epoch=last_epoch, epochs=C.EPOCHS, best=best,
+                  best_epoch=ck["ep"], stopped_early=stopped_early)
     return {"status": "completed", "best_epoch": ck["ep"]}

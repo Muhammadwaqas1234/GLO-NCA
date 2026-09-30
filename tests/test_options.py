@@ -102,8 +102,18 @@ def test_full_resolution():
           full.shape == (40, 40, 30, 3) and not wt[:10].any() and dice > 0.8, f"dice {dice:.3f}")
 
 
+def test_early_stop():
+    from glo_nca.trainer import last_gain_epoch
+    nan = float("nan")
+    h = {"epoch": [1, 2, 3, 4, 5, 6], "val_mean": [0.60, nan, 0.65, 0.655, 0.66, 0.70]}
+    check("early stop: last gain above min_delta 0.01",
+          last_gain_epoch(h, 0.01) == 6, f"{last_gain_epoch(h, 0.01)}")
+    h2 = {"epoch": [1, 2, 3, 4], "val_mean": [0.60, 0.605, 0.608, 0.609]}
+    check("early stop: small gains do not reset patience", last_gain_epoch(h2, 0.01) == 1)
+
+
 if __name__ == "__main__":
-    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution):
+    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)
