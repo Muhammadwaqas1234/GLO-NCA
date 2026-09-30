@@ -1,9 +1,9 @@
-# Long 96^3 run: lower learning rate, validation every 5 epochs, fixed split for ensembles.
-base: brats2021_res96_lr.yaml
+# Long 96^3 run with augmentation: v7 learning rate, validation every 5 epochs, early stopping.
+base: brats2021_res96_aug.yaml
 
 experiment:
   name: GLO-NCA-CASCADE-BRATS2021-RES96-LONG
-  split_seed: 42
+  split_seed: 42                  # fixed split, so runs with other seeds can be ensembled
 
 training:
   epochs: 150                     # the cosine schedule spans exactly this many epochs
