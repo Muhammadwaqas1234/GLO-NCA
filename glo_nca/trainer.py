@@ -19,7 +19,7 @@ from src.utils.Experiment import Experiment
 from . import checkpoint as ckpt
 from .config import REGIONS, GLO_NCA_Config
 from .data import Dataset_BraTS_Foreground, find_data_root, make_split
-from .evaluation import collect_probs, evaluate, improved_evaluation, predict_case
+from .evaluation import collect_probs, evaluate, improved_evaluation, metrics_from_cases, predict_case
 from .reporting import final_report, make_figures
 
 
@@ -283,20 +283,26 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
     _write_status(out_dir, state="testing", epoch=last_epoch, epochs=C.EPOCHS, best=best)
     test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
     per_case = []
-    test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA, per_case=per_case)
     tuned = None
     if C.improved_eval:
+        # One ensemble pass over test serves both the standard metric and the tuned evaluation.
+        test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA,
+                                   dtype=np.float32)
+        test = metrics_from_cases(test_cases, per_case)
         # Post-processing is tuned on validation only; the test split is scored once.
         _write_status(out_dir, state="tuning", epoch=last_epoch, epochs=C.EPOCHS, best=best)
         val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
-        test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
         tuned = improved_evaluation(C, ds, val_cases, test_cases)
+    else:
+        test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA, per_case=per_case)
     final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned,
                  per_case=per_case)
     ens = f"Ensemble x{C.ENSEMBLE_N}" + (" + TTA" if C.USE_TTA else "")
     settings = {"Single pass": test_plain, ens: test}
     if tuned is not None:
-        settings["Tuned post-processing"] = tuned["test"]
+        parts = ["tuned" if C.TUNE_THRESHOLDS else "", "full resolution" if C.FULL_RESOLUTION_EVAL else "",
+                 "BraTS scoring" if C.BRATS_EMPTY else ""]
+        settings["Post-processed (" + ", ".join(p for p in parts if p) + ")"] = tuned["test"]
     make_figures(out_dir, hist, ck["ep"], settings, per_case,
                  _example_cases(agent, ds, per_case, C), title=C.NAME)
     _write_status(out_dir, state="completed", epoch=last_epoch, epochs=C.EPOCHS, best=best,

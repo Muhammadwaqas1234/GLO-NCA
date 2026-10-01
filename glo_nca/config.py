@@ -50,6 +50,7 @@ class GLO_NCA_Config:
     TUNE_THRESHOLDS: bool = False
     MIN_COMPONENT: Dict[str, int] = field(default_factory=lambda: {"WT": 0, "TC": 0, "ET": 0})
     FULL_RESOLUTION_EVAL: bool = False
+    BRATS_EMPTY: bool = False
     VAL_EVERY: int = 1
     VAL_WORKERS: int = 0
     EARLY_STOP_PATIENCE: int = 0
@@ -61,7 +62,8 @@ class GLO_NCA_Config:
     @property
     def improved_eval(self) -> bool:
         r"""True when any evaluation improvement is enabled."""
-        return self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or any(self.MIN_COMPONENT.values())
+        return (self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or self.BRATS_EMPTY
+                or any(self.MIN_COMPONENT.values()))
 
 
 def _merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
@@ -123,6 +125,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         TUNE_THRESHOLDS=bool(v.get("tune_thresholds", False)),
         MIN_COMPONENT=min_comp,
         FULL_RESOLUTION_EVAL=bool(v.get("full_resolution", False)),
+        BRATS_EMPTY=bool(v.get("brats_empty", False)),
         VAL_EVERY=max(1, int(t.get("val_every", 1))),
         VAL_WORKERS=int(v.get("val_workers", 0)),
         EARLY_STOP_PATIENCE=int(t.get("early_stop_patience", 0)),

@@ -24,7 +24,8 @@ def report_tuned(tuned):
     print("Tuned post-processing (chosen on validation, applied once to test):")
     print("thresholds " + " ".join(f"{r}={th[r]:.2f}" for r in REGIONS)
           + " | min component " + " ".join(f"{r}={mc[r]}" for r in REGIONS)
-          + f" | full resolution {tuned['full_resolution']}")
+          + f" | full resolution {tuned['full_resolution']}"
+          + f" | BraTS empty-region scoring {tuned.get('brats_empty', False)}")
     if tuned["val_tuned"]:
         show("val", {r: {"dice": tuned["val_tuned"][r]} for r in REGIONS})
     show("test (tuned)", tuned["test"])
