@@ -14,14 +14,14 @@ from src.utils.metrics import hd95_score, iou_score
 from .config import REGIONS
 
 
-def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0):
-    r"""Evaluate one split; ensemble > 1 averages stochastic passes and tta adds axis flips."""
+def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None):
+    r"""Evaluate one split; ensemble > 1 averages passes, tta adds flips, per_case collects case Dice."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     with torch.no_grad():
         for data in loader:
-            _, prob, gt = predict_case(agent, data, ensemble, tta)
+            case, prob, gt = predict_case(agent, data, ensemble, tta)
             # Keep the batch axis: HD95 is computed on (1, X, Y, Z) arrays as in the reference.
             prob, gt = prob[None], gt[None].astype(np.float32)
             for i, r in enumerate(REGIONS):
@@ -29,6 +29,8 @@ def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0):
                 inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
                 acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
                 acc[r]["iou"].append(iou_score(p, t)); acc[r]["hd95"].append(hd95_score(p, t))
+            if per_case is not None:
+                per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
     agent.exp.set_model_state("train")
     out = {}
     for r in REGIONS:

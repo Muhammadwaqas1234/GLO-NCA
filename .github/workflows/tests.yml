@@ -24,7 +24,7 @@ jobs:
           pip install -r docker/requirements-docker.txt
       - name: Compile and shell syntax
         run: |
-          python -m compileall -q glo_nca src tests train.py evaluate.py
+          python -m compileall -q glo_nca src tests train.py evaluate.py make_figures.py
           for f in cloud/scripts/*.sh; do bash -n "$f"; done
       - name: Unit tests
         run: python tests/test_options.py

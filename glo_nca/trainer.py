@@ -19,8 +19,8 @@ from src.utils.Experiment import Experiment
 from . import checkpoint as ckpt
 from .config import REGIONS, GLO_NCA_Config
 from .data import Dataset_BraTS_Foreground, find_data_root, make_split
-from .evaluation import collect_probs, evaluate, improved_evaluation
-from .reporting import final_report
+from .evaluation import collect_probs, evaluate, improved_evaluation, predict_case
+from .reporting import final_report, make_figures
 
 
 def set_seed(s):
@@ -98,6 +98,32 @@ def last_gain_epoch(hist, min_delta):
         if not math.isnan(v) and v > ref + min_delta:
             ref, last = v, e
     return last
+
+
+def _example_cases(agent, ds, per_case, C):
+    r"""Best, median and worst test case by mean Dice, re-predicted for the example figure."""
+    if not per_case:
+        return None
+    try:
+        ranked = sorted(per_case, key=lambda row: np.mean([row[r] for r in REGIONS]))
+        picks = [("Best", ranked[-1]), ("Median", ranked[len(ranked) // 2]), ("Worst", ranked[0])]
+        names = [m.lower() for m in C.MODALITIES]
+        channel = next((names.index(m) for m in ("t2f", "flair") if m in names), len(names) - 1)
+        agent.exp.set_model_state("test")
+        index = {key[0]: i for i, key in enumerate(ds.images_list)}
+        examples = []
+        with torch.no_grad():
+            for label, row in picks:
+                sample = ds[index[row["case"]]]
+                case, prob, gt = predict_case(agent, torch.utils.data.default_collate([sample]),
+                                              C.ENSEMBLE_N, C.USE_TTA)
+                examples.append((label, case, sample[1][..., channel], gt.astype(np.float32), prob))
+        return examples
+    except Exception as exc:   # the example figure is optional
+        print(f"WARNING: example segmentations were not prepared: {exc}")
+        return None
+    finally:
+        agent.exp.set_model_state("train")
 
 
 def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = False,
@@ -256,7 +282,8 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
     last_epoch = hist["epoch"][-1] if hist["epoch"] else C.EPOCHS
     _write_status(out_dir, state="testing", epoch=last_epoch, epochs=C.EPOCHS, best=best)
     test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
-    test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
+    per_case = []
+    test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA, per_case=per_case)
     tuned = None
     if C.improved_eval:
         # Post-processing is tuned on validation only; the test split is scored once.
@@ -264,7 +291,14 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
         val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
         test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
         tuned = improved_evaluation(C, ds, val_cases, test_cases)
-    final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned)
+    final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned,
+                 per_case=per_case)
+    ens = f"Ensemble x{C.ENSEMBLE_N}" + (" + TTA" if C.USE_TTA else "")
+    settings = {"Single pass": test_plain, ens: test}
+    if tuned is not None:
+        settings["Tuned post-processing"] = tuned["test"]
+    make_figures(out_dir, hist, ck["ep"], settings, per_case,
+                 _example_cases(agent, ds, per_case, C), title=C.NAME)
     _write_status(out_dir, state="completed", epoch=last_epoch, epochs=C.EPOCHS, best=best,
                   best_epoch=ck["ep"], stopped_early=stopped_early)
     return {"status": "completed", "best_epoch": ck["ep"]}

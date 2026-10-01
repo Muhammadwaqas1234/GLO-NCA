@@ -31,6 +31,7 @@ All values live in `configs/glo_nca_cascade.yaml`.
 ```
 train.py                  command-line entry point
 evaluate.py               re-evaluate a run or an ensemble of runs (resumable)
+make_figures.py           redraw a finished run's figures (no GPU needed)
 configs/glo_nca_cascade.yaml   the recipe settings
 configs/experiments/      optional improvements (inherit a base config)
 glo_nca/                  training package
@@ -39,7 +40,8 @@ glo_nca/                  training package
   evaluation.py           Dice / mIoU / HD95, threshold tuning, full-resolution scoring
   trainer.py              training loop, best-model selection, early stopping, final test
   checkpoint.py           full checkpoints for resume
-  reporting.py            final table, results JSON, curves
+  reporting.py            final table, results JSON, per-case CSV
+  plots.py                publication figures (PNG 300 dpi + PDF)
 src/                      GLO-NCA library (Med-NCA / M3D-NCA lineage)
   agents/                 cascade agent: coarse-to-fine inference and joint training
   models/                 GLO-NCA cell with SE and global-context blocks
@@ -70,6 +72,20 @@ Each run writes to `experiments/<run-id>/`: `config.yaml`, `split.json`,
 `train.log`, `history.csv`, `status.json`, `last.pth` (every epoch, for resume),
 `best.pth` (EMA weights of the best epoch), and at the end `results.json` and
 `training_curves.png`.
+
+## Results and figures
+
+At the end of training each run writes `results.json`, `test_per_case.csv` and, under
+`figures/`, four figures as 300 dpi PNG and vector PDF:
+
+| Figure | Content |
+|---|---|
+| `training_curves` | training loss and learning rate; validation Dice per region with the best epoch |
+| `test_summary` | test Dice per region for single pass, ensemble + TTA and tuned post-processing; HD95 |
+| `test_per_case` | per-case Dice distribution (box plot with every case) |
+| `test_examples` | best, median and worst test case with ground-truth and predicted outlines |
+
+`python make_figures.py experiments/<run-id>` redraws the first three from the saved results.
 
 ## Train on GCP
 
