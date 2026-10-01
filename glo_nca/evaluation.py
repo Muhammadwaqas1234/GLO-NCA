@@ -51,6 +51,27 @@ def case_id(img_id):
     return img_id[1:-2]
 
 
+def metrics_from_cases(cases, per_case=None):
+    r"""The evaluate() metrics (fixed 0.5 threshold) from probabilities already collected."""
+    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
+    for case, prob, gt in cases:
+        # Same arrays as evaluate(): float32 with a batch axis.
+        prob, gt = prob.astype(np.float32)[None], gt.astype(np.float32)[None]
+        for i, r in enumerate(REGIONS):
+            p, t = prob[..., i], gt[..., i]
+            inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
+            acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
+            acc[r]["iou"].append(iou_score(p, t)); acc[r]["hd95"].append(hd95_score(p, t))
+        if per_case is not None:
+            per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
+    out = {}
+    for r in REGIONS:
+        hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
+        out[r] = {"dice": float(np.mean(acc[r]["dice"])), "iou": float(np.mean(acc[r]["iou"])),
+                  "hd95": float(np.mean(hd)) if hd else float("nan")}
+    return out
+
+
 def predict_case(agent, data, ensemble=1, tta=False):
     r"""Mean probability map for one collated case: (case, prob float32, gt bool)."""
     data = agent.prepare_data(data, eval=True)
@@ -70,27 +91,27 @@ def predict_case(agent, data, ensemble=1, tta=False):
     return case_id(idx[0]), prob, gt
 
 
-def collect_probs(agent, dataset, state, ensemble=1, tta=False):
-    r"""Mean probability map per case as a list of (case, prob float16, gt uint8)."""
+def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16):
+    r"""Mean probability map per case as a list of (case, prob, gt uint8); float16 saves memory."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
     cases = []
     with torch.no_grad():
         for data in loader:
             case, prob, gt = predict_case(agent, data, ensemble, tta)
-            cases.append((case, prob.astype(np.float16), gt.astype(np.uint8)))
+            cases.append((case, prob.astype(dtype), gt.astype(np.uint8)))
     agent.exp.set_model_state("train")
     return cases
 
 
-def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True):
+def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one=False):
     r"""Per-region Dice, IoU and (optionally) HD95 for one case."""
     out = {}
     for i, r in enumerate(REGIONS):
         p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
         t = gt[..., i] > 0
         pf, tf = p.astype(np.float32), t.astype(np.float32)
-        out[r] = {"dice": float(_dice(p, t)), "iou": float(iou_score(pf, tf)),
+        out[r] = {"dice": float(_dice(p, t, empty_one)), "iou": float(iou_score(pf, tf)),
                   "hd95": float(hd95_score(pf, tf)) if with_hd95 else float("nan")}
     return out
 
@@ -107,7 +128,7 @@ def _mean_metrics(rows):
 
 
 def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
-                    full_resolution=False, with_hd95=True):
+                    full_resolution=False, with_hd95=True, empty_one=False):
     r"""Score one split case by case into a resumable progress file, averaging ``models``."""
     done = {}
     if os.path.exists(progress_path):
@@ -132,7 +153,7 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
             prob = np.mean([p for _, p, _ in preds], axis=0)
             if full_resolution:
                 prob, gt = to_full_resolution(dataset, case, prob)
-            metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95)
+            metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one)
             fh.write(json.dumps({"split": state, "case": case, "metrics": metrics}) + "\n")
             fh.flush(); os.fsync(fh.fileno())
             done[case] = metrics
@@ -180,9 +201,11 @@ def _pairs(cases, dataset=None, full_resolution=False):
             yield prob.astype(np.float32), gt
 
 
-def _dice(p, t):
-    # Same formula as evaluate(), so results stay comparable with the plain metric.
-    r"""Dice coefficient of two boolean masks."""
+def _dice(p, t, empty_one=False):
+    r"""Dice of two boolean masks; empty_one scores an empty prediction of an empty region as 1 (BraTS)."""
+    if empty_one and not p.any() and not t.any():
+        return 1.0
+    # Otherwise the same formula as evaluate(), so results stay comparable with the plain metric.
     return (2 * np.logical_and(p, t).sum()) / (p.sum() + t.sum() + 1e-6)
 
 
@@ -194,7 +217,7 @@ def _components(mask):
 
 
 def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_GRID,
-                    size_grid=MIN_COMPONENT_GRID):
+                    size_grid=MIN_COMPONENT_GRID, empty_one=False):
     r"""Pick per-region threshold and clean-up size that maximise validation Dice."""
     table = {r: {(th, sz): [] for th in grid for sz in size_grid} for r in REGIONS}
     for prob, gt in _pairs(cases, dataset, full_resolution):
@@ -209,7 +232,7 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
                     else:
                         keep = sizes >= sz; keep[0] = False
                         p = keep[lab]
-                    table[r][(th, sz)].append(_dice(p, t))
+                    table[r][(th, sz)].append(_dice(p, t, empty_one))
     best = {r: max(table[r], key=lambda k: (np.mean(table[r][k]), -k[1])) for r in REGIONS}
     thresholds = {r: best[r][0] for r in REGIONS}
     sizes = {r: int(best[r][1]) for r in REGIONS}
@@ -217,7 +240,7 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
     return thresholds, sizes, val
 
 
-def score(cases, thresholds, min_component, dataset=None, full_resolution=False):
+def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False):
     r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up."""
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     for prob, gt in _pairs(cases, dataset, full_resolution):
@@ -225,7 +248,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False)
             p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
             t = gt[..., i] > 0
             pf, tf = p.astype(np.float32), t.astype(np.float32)
-            acc[r]["dice"].append(_dice(p, t))
+            acc[r]["dice"].append(_dice(p, t, empty_one))
             acc[r]["iou"].append(iou_score(pf, tf)); acc[r]["hd95"].append(hd95_score(pf, tf))
     out = {}
     for r in REGIONS:
@@ -240,11 +263,12 @@ def improved_evaluation(C, dataset, val_cases, test_cases):
     thresholds, min_component = {r: 0.5 for r in REGIONS}, dict(C.MIN_COMPONENT)
     val_tuned = None
     if C.TUNE_THRESHOLDS:
-        thresholds, min_component, val_tuned = tune_thresholds(val_cases, dataset,
-                                                               C.FULL_RESOLUTION_EVAL)
+        thresholds, min_component, val_tuned = tune_thresholds(
+            val_cases, dataset, C.FULL_RESOLUTION_EVAL, empty_one=C.BRATS_EMPTY)
     else:
-        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL)
+        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
-    test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL)
+    test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
-            "full_resolution": C.FULL_RESOLUTION_EVAL, "val_tuned": val_tuned, "test": test}
+            "full_resolution": C.FULL_RESOLUTION_EVAL, "brats_empty": C.BRATS_EMPTY,
+            "val_tuned": val_tuned, "test": test}

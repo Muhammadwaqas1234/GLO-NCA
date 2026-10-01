@@ -106,7 +106,7 @@ def plot_test_summary(settings, out_dir):
             a2.text(b.get_x() + b.get_width() / 2, (0 if math.isnan(v) else v) * 1.02 + 0.05,
                     "n/a" if math.isnan(v) else f"{v:.2f}", ha="center", va="bottom", fontsize=8.5)
         a2.set_xticks(range(len(REGIONS)), [NAMES[r] for r in REGIONS])
-        a2.set_ylabel("HD95 (voxels, lower is better)"); a2.set_title(f"Test HD95 ({names[-1]})")
+        a2.set_ylabel("HD95 (voxels, lower is better)"); a2.set_title(f"Test HD95 ({names[-1].split(' (')[0].lower()})")
         _save(fig, out_dir, "test_summary")
 
 

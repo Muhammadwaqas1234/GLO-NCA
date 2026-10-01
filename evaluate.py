@@ -37,6 +37,8 @@ def main() -> int:
     ap.add_argument("--ensemble-n", type=int, default=None,
                     help="stochastic passes per model (default: each run's evaluation.ensemble_n)")
     ap.add_argument("--no-tta", action="store_true", help="disable flip test-time augmentation")
+    ap.add_argument("--brats-empty", action="store_true",
+                    help="score an empty prediction of an absent region as Dice 1 (BraTS convention)")
     ap.add_argument("--no-hd95", action="store_true",
                     help="skip HD95 (the slowest metric at full resolution); Dice and IoU only")
     args = ap.parse_args()
@@ -86,6 +88,7 @@ def main() -> int:
     C0.TUNE_THRESHOLDS = args.tune_thresholds
     C0.MIN_COMPONENT = _parse_min_component(args.min_component)
     C0.FULL_RESOLUTION_EVAL = args.full_resolution
+    C0.BRATS_EMPTY = args.brats_empty
     out = args.output or os.path.join(runs[0], "evaluation.json")
     if args.tune_thresholds:
         # Tuning needs every validation probability map at once.
@@ -100,7 +103,7 @@ def main() -> int:
         thresholds = {r: 0.5 for r in REGIONS}
         progress = out + ".progress.jsonl"
         settings = {"runs": runs, "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
-                    "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
+                    "brats_empty": args.brats_empty, "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
         if os.path.exists(progress):
             with open(progress, encoding="utf-8") as fh:
                 first = json.loads(fh.readline() or "{}")
@@ -111,10 +114,10 @@ def main() -> int:
             with open(progress, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({"settings": settings}) + "\n")
         res = {state: score_streaming(models, ds, state, progress, thresholds, C0.MIN_COMPONENT,
-                                      args.full_resolution, not args.no_hd95)
+                                      args.full_resolution, not args.no_hd95, args.brats_empty)
                for state in ("val", "test")}
         tuned = {"thresholds": thresholds, "min_component_voxels": C0.MIN_COMPONENT,
-                 "full_resolution": args.full_resolution,
+                 "full_resolution": args.full_resolution, "brats_empty": args.brats_empty,
                  "val_tuned": {r: res["val"][r]["dice"] for r in REGIONS}, "test": res["test"]}
     report_tuned(tuned)
     mean = float(np.mean([tuned["test"][r]["dice"] for r in REGIONS]))

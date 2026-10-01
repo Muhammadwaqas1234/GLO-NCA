@@ -123,8 +123,18 @@ def test_early_stop():
     check("early stop: small gains do not reset patience", last_gain_epoch(h2, 0.01) == 1)
 
 
+def test_brats_empty():
+    r"""BraTS scoring gives 1 to an empty prediction of an absent region; the default gives 0."""
+    from glo_nca.evaluation import _dice
+    empty = np.zeros((4, 4, 4), bool)
+    full = np.ones((4, 4, 4), bool)
+    check("empty region: v7 formula 0, BraTS scoring 1",
+          _dice(empty, empty) == 0 and _dice(empty, empty, empty_one=True) == 1.0
+          and _dice(full, empty, empty_one=True) == 0)
+
+
 if __name__ == "__main__":
-    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop):
+    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)
