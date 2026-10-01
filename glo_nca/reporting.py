@@ -1,14 +1,13 @@
-r"""Final report: test table, results JSON and training curves."""
+r"""Final report: test table, results JSON, per-case CSV and figures."""
 from __future__ import annotations
 
+import csv
 import json
 import os
 
-import matplotlib
-matplotlib.use("Agg")   # headless on GCP; the saved figure is identical
-import matplotlib.pyplot as plt
 import numpy as np
 
+from . import plots
 from .config import REGIONS
 
 
@@ -34,8 +33,9 @@ def report_tuned(tuned):
         print(f"{r:<8}{t['dice']:<12.4f}{t['iou']:<12.4f}{t['hd95']:<12.3f}")
 
 
-def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None):
-    r"""Print the test table and write results.json and the training curves."""
+def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None,
+                 per_case=None):
+    r"""Print the test table and write results.json and the per-case CSV."""
     print("\n" + "=" * 60)
     print(f"GLO-NCA cascade - FINAL TEST (best @ epoch {ck_ep})")
     print("=" * 60)
@@ -64,11 +64,41 @@ def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time
                               "split_seed": C.SPLIT_SEED}},
                   fh, indent=2, default=str)
 
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(14, 5))
-    a1.plot(hist["epoch"], hist["loss"], color="crimson"); a1.set_title("Loss"); a1.set_xlabel("epoch")
-    for r, c in zip(REGIONS, ["#1f77b4", "#2ca02c", "#9467bd"]):
-        a2.plot(hist["epoch"], hist[f"val_{r}"], label=f"val {r}", color=c)
-    a2.plot(hist["epoch"], hist["val_mean"], "--k", label="mean")
-    a2.set_title("Validation Dice"); a2.set_ylim(0, 1); a2.legend(); a2.grid(alpha=.3)
-    plt.tight_layout(); plt.savefig(os.path.join(out_dir, "training_curves.png"), dpi=130); plt.close(fig)
+    if per_case:
+        save_per_case(per_case, out_dir)
     print("Saved to", out_dir)
+
+
+def save_per_case(rows, out_dir, name="test_per_case.csv"):
+    r"""Write per-case Dice (one row per case) as CSV."""
+    with open(os.path.join(out_dir, name), "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["case"] + REGIONS + ["mean"])
+        for row in rows:
+            w.writerow([row["case"]] + [f"{row[r]:.6f}" for r in REGIONS]
+                       + [f"{np.mean([row[r] for r in REGIONS]):.6f}"])
+
+
+def load_per_case(out_dir, name="test_per_case.csv"):
+    r"""Read the per-case CSV written by save_per_case, or None when absent."""
+    path = os.path.join(out_dir, name)
+    if not os.path.exists(path):
+        return None
+    with open(path, newline="") as fh:
+        return [{"case": row["case"], **{r: float(row[r]) for r in REGIONS}} for row in csv.DictReader(fh)]
+
+
+def make_figures(out_dir, hist, best_epoch, settings, per_case=None, examples=None, title="GLO-NCA cascade"):
+    r"""Draw every available figure into out_dir/figures; a plotting error is reported, never raised."""
+    jobs = [("training curves", lambda: plots.plot_training(hist, best_epoch, out_dir, title)),
+            ("test summary", lambda: plots.plot_test_summary(settings, out_dir))]
+    if per_case:
+        jobs.append(("per-case Dice", lambda: plots.plot_per_case(per_case, out_dir)))
+    if examples:
+        jobs.append(("example segmentations", lambda: plots.plot_examples(examples, out_dir)))
+    for name, job in jobs:
+        try:
+            job()
+        except Exception as exc:   # figures must never cost the results of a finished run
+            print(f"WARNING: figure '{name}' was not drawn: {exc}")
+    print("Figures saved to", os.path.join(out_dir, "figures"))
