@@ -37,7 +37,7 @@ load_config() {
   GLO_DATA_ROOT="${GLO_DATA_ROOT:-/data/brats}"
   VM_OUT_DIR="${VM_OUT_DIR:-/out}"
   GLO_WORKSPACE="${GLO_WORKSPACE:-/opt/glo-nca-cascade}"
-  GLO_BRANCH="${GLO_BRANCH:-glo-nca-cascade}"
+  GLO_BRANCH="${GLO_BRANCH:-main}"
   SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-300}"
   GCS_EXPERIMENTS="gs://${GCS_BUCKET}/${EXPERIMENT_PREFIX}"
 }
