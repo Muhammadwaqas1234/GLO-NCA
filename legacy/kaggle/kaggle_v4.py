@@ -1,28 +1,4 @@
-r"""
-================================================================================
-GLO-NCA v4 — small-data tuned run (Kaggle, single cell)
-================================================================================
-v3 reached val WT 0.80 / TC 0.70 / ET 0.70 (foreground crop was the big win).
-v4 keeps everything that worked and applies the targeted small-data tweaks that
-should nudge the weak TC / ET a bit higher:
-
-  KEPT from v3 (proven):
-    * foreground crop + nonzero per-channel z-norm   (the TC/ET win)
-    * 2-level cascade, ch24 hidden96, cosine LR
-    * sliding-window OFF (it washed out TC/ET)
-  CHANGED in v4 (the experiments you asked for):
-    * USE_AUG = False        -> remove the noise that slowed v3 convergence
-    * patch 56^3 -> 64^3     -> higher-res patch (crop makes this affordable) = more ET/TC detail
-    * Tversky beta 0.70 -> 0.75  -> penalise missed tumour harder (small-region recall)
-    * cell_fire_rate 0.5 -> 0.6  -> steadier, less stochastic noise
-    * inference_steps 15 -> 20   -> more "thinking" per level, sharper boundaries
-  NOT changed (proven NOT to help): no 3-level, no extra params, no >150 epochs.
-
-USAGE (one Kaggle cell, GPU on, BraTS attached):
-    !rm -rf GLO-NCA && git clone -q https://github.com/Muhammadwaqas1234/GLO-NCA.git
-    %run GLO-NCA/kaggle_v4.py
-================================================================================
-"""
+r"""GLO-NCA v4 (Kaggle): small-data tuned single-cell run with foreground crop and nonzero z-norm."""
 import os, sys, time, json, math, random, subprocess
 
 # ---- core knobs ----

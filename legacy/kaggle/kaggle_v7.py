@@ -1,37 +1,4 @@
-r"""
-================================================================================
-GLO-NCA v7 — v6 + augmentation + FocalTversky + EMA + grad-clip + dropout (anti-overfit for 882 cases)
-================================================================================
-v5 keeps the proven v4 recipe (foreground crop, nonzero-norm, Tversky+BCE,
-cosine LR) and adds the two things the proposal slides claim that v4 lacked:
-  * a SEPARATE spatial global-context block (GCSpatialBlock3D) alongside the SE
-    channel block -> matches "SE modality fusion + GC spatial global-context".
-  * hidden_size 96 -> 128 (matches DENSE-128 in the pipeline diagram).
-Loss stays Tversky+BCE (NOT Dice+CE) - Tversky was better for ET/TC.
-Experiment: keep v4 as the proven best; compare v5 against it.
-
---- original v4 notes ---
-v3 reached val WT 0.80 / TC 0.70 / ET 0.70 (foreground crop was the big win).
-v4 keeps everything that worked and applies the targeted small-data tweaks that
-should nudge the weak TC / ET a bit higher:
-
-  KEPT from v3 (proven):
-    * foreground crop + nonzero per-channel z-norm   (the TC/ET win)
-    * 2-level cascade, ch24 hidden96, cosine LR
-    * sliding-window OFF (it washed out TC/ET)
-  CHANGED in v4 (the experiments you asked for):
-    * USE_AUG = False        -> remove the noise that slowed v3 convergence
-    * patch 56^3 -> 64^3     -> higher-res patch (crop makes this affordable) = more ET/TC detail
-    * Tversky beta 0.70 -> 0.75  -> penalise missed tumour harder (small-region recall)
-    * cell_fire_rate 0.5 -> 0.6  -> steadier, less stochastic noise
-    * inference_steps 15 -> 20   -> more "thinking" per level, sharper boundaries
-  NOT changed (proven NOT to help): no 3-level, no extra params, no >150 epochs.
-
-USAGE (one Kaggle cell, GPU on, BraTS attached):
-    !rm -rf GLO-NCA && git clone -q https://github.com/Muhammadwaqas1234/GLO-NCA.git
-    %run GLO-NCA/kaggle_v7.py
-================================================================================
-"""
+r"""GLO-NCA v7 (Kaggle): v6 plus augmentation flag, focal Tversky loss, EMA, gradient clipping and dropout."""
 import os, sys, time, json, math, random, subprocess
 
 # ---- core knobs ----
@@ -188,11 +155,7 @@ def make_split(seed):
 
 
 def evaluate(agent, dataset, state, ensemble=1, tta=False):
-    """Evaluate with optional test-time boosters (used only for the final test):
-        ensemble>1 : average N stochastic NCA inferences (pseudo-ensemble)
-        tta=True   : also average over 3-axis flips (test-time augmentation)
-    Fast val uses ensemble=1, tta=False (defaults).
-    """
+    r"""Evaluate one split; ensemble > 1 averages stochastic passes and tta adds axis flips."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}

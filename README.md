@@ -1,45 +1,68 @@
 # GLO-NCA Cascade
 
-The **Kaggle v7 recipe** of GLO-NCA (Global Context-Aware Neural Cellular Automata
-for BraTS brain-tumour segmentation), restructured as a resumable training package
-with GCP tooling.
+**GLO-NCA** (Global Context-Aware Neural Cellular Automata) for brain-tumour segmentation
+on BraTS: a two-level NCA cascade with channel and spatial global-context blocks and
+multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
+package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
-The training code is the Kaggle v7 code (`legacy/kaggle/kaggle_v7.py`, commit `c24c172`),
-split into modules with its computation unchanged. `tests/test_equivalence.py`
-runs both and checks they give the same losses, validation Dice and test metrics.
+## Results
 
-## The recipe
+BraTS 2021 (1,251 glioma cases, seeded 70/15/15 split), 96³ working resolution, 150 epochs,
+best validation epoch 137. Test set: **189 patients never seen during training or tuning**.
+
+| Test setting | WT Dice | TC Dice | ET Dice | Mean Dice |
+|---|---|---|---|---|
+| Single pass | 0.893 | 0.863 | 0.754 | 0.837 |
+| Ensemble ×4 + test-time flips | 0.894 | 0.864 | 0.756 | 0.838 |
+| **+ tuned post-processing, full resolution, BraTS scoring** | **0.921** | **0.895** | **0.817** | **0.878** |
+
+| Region | IoU | HD95 mean (mm) | HD95 median (mm) |
+|---|---|---|---|
+| WT | 0.860 | 4.93 | 2.24 |
+| TC | 0.834 | 5.23 | 1.73 |
+| ET | 0.724 | 4.49 (184 / 189 cases) | 2.00 |
+
+- Post-processing (per-region threshold and small-lesion clean-up) is chosen on validation only.
+- Full resolution: predictions are resampled to the original 240×240×155 scans before scoring.
+- BraTS scoring: an empty prediction of an absent region counts as Dice 1.
+- HD95 is the surface-based BraTS/medpy definition in mm; ET is undefined where exactly one mask is empty.
+- Training: 55.8 h on one NVIDIA L4 (GCP Spot, no preemptions); peak memory 10.4 GB.
+
+![Training curves](docs/figures/training_curves.png)
+![Test summary](docs/figures/test_summary.png)
+![Per-case Dice](docs/figures/test_per_case.png)
+![Example segmentations](docs/figures/test_examples.png)
+
+## Model
 
 | | |
 |---|---|
-| Model | 2-level NCA cascade (low-res 32×32×24 → high-res 64×64×48), kernels 7 / 3 |
-| NCA | 24 channels, hidden 128, 20 + 20 steps, fire rate 0.6, dropout 0.1 |
-| Global context | squeeze-and-excitation + spatial global-context block |
-| Data | foreground crop, cubic resize to 64×64×48, nonzero z-norm, ET-biased patches |
-| Loss | Focal-Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5) |
+| Cascade | 2 NCA levels, coarse then fine (48³ → 96³ for the results above; 32×32×24 → 64×64×48 in v7) |
+| NCA cell | 24 channels, hidden 128, 20 + 20 steps, fire rate 0.6, dropout 0.1, kernels 7 / 3 |
+| Global context | squeeze-and-excitation (channel) + spatial global-context block in every cell |
+| Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
+| Data | foreground crop, cubic resize, nonzero z-norm, ET-biased patches, optional augmentation |
+| Loss | focal Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5), optional per-region weights |
 | Optimiser | AdamW, LR 1.6e-3 → 1e-5 per-step cosine, element-wise gradient clip ±1 |
-| Weights | EMA 0.999 (the saved best model) |
-| Selection | best validation mean Dice (fixed 0.5 threshold) |
-| Budget | 300 epochs (v7 used 150; the budget also sets the cosine LR length) |
-| Split | seeded random 70 / 15 / 15 of the case folders |
-| Test | plain, then 10× ensemble + test-time flips |
+| Weights | EMA 0.999; the best validation epoch is kept as `best.pth` |
 
-All values live in `configs/glo_nca_cascade.yaml`.
+The base configs reproduce the original Kaggle v7 script exactly (`legacy/kaggle/kaggle_v7.py`);
+`tests/test_equivalence.py` runs both and compares losses, validation and test metrics.
+The results above use `configs/experiments/brats2021_res96_long.yaml`.
 
 ## Layout
 
 ```
-train.py                  command-line entry point
-evaluate.py               re-evaluate a run or an ensemble of runs (resumable)
+train.py                  command-line entry point (new run, resume, planned pause)
+evaluate.py               re-score a run or an ensemble of runs (resumable)
 make_figures.py           redraw a finished run's figures (no GPU needed)
-configs/glo_nca_cascade.yaml   the recipe settings
-configs/experiments/      optional improvements (inherit a base config)
+configs/                  base recipes; configs/experiments/ inherit and extend them
 glo_nca/                  training package
-  config.py               YAML -> settings
+  config.py               YAML to settings
   data.py                 BraTS dataset (crop, resize, cache, patches, augmentation), split
-  evaluation.py           Dice / mIoU / HD95, threshold tuning, full-resolution scoring
+  evaluation.py           Dice / IoU / HD95, threshold tuning, full-resolution scoring
   trainer.py              training loop, best-model selection, early stopping, final test
-  checkpoint.py           full checkpoints for resume
+  checkpoint.py           full checkpoints for exact resume
   reporting.py            final table, results JSON, per-case CSV
   plots.py                publication figures (PNG 300 dpi + PDF)
 src/                      GLO-NCA library (Med-NCA / M3D-NCA lineage)
@@ -51,41 +74,56 @@ legacy/kaggle/            the original Kaggle scripts (v4-v7)
 tests/                    option checks, v7 equivalence test, synthetic data generator
 docker/                   training image
 cloud/                    GCP scripts and systemd units
+docs/figures/             figures of the reported run
 .github/workflows/        CI: tests on every push, v7 equivalence weekly
 ```
-
-## First check: 10 epochs
-
-Start the full 300-epoch run and pause it after epoch 10 (`--stop-after-epoch 10`).
-This checks the pipeline end to end on the real schedule. If the numbers look right,
-`--resume` continues the same run from epoch 11; nothing is repeated.
 
 ## Train locally
 
 ```bash
-python train.py --config configs/glo_nca_cascade.yaml --data-root /path/to/BraTS
-python train.py --resume experiments/GLO-NCA-CASCADE-<timestamp> --data-root /path/to/BraTS
-python train.py --config configs/glo_nca_cascade.yaml --data-root /path/to/BraTS --stop-after-epoch 30
+pip install -r requirements.txt     # install torch first from the CUDA index
+python train.py --config configs/experiments/brats2021_res96_long.yaml --data-root /path/to/BraTS2021
+python train.py --resume experiments/<run-id> --data-root /path/to/BraTS2021
+python train.py --config configs/glo_nca_cascade.yaml --data-root /path/to/BraTS --stop-after-epoch 10
 ```
 
-Each run writes to `experiments/<run-id>/`: `config.yaml`, `split.json`,
-`train.log`, `history.csv`, `status.json`, `last.pth` (every epoch, for resume),
-`best.pth` (EMA weights of the best epoch), and at the end `results.json` and
-`training_curves.png`.
+Each run writes to `experiments/<run-id>/`: `config.yaml`, `split.json`, `train.log`,
+`history.csv`, `status.json`, `last.pth` (every epoch, for resume) and `best.pth`
+(EMA weights of the best epoch). The final test adds `results.json`, `test_per_case.csv`
+and `figures/` (training curves, test summary, per-case Dice, example segmentations).
 
-## Results and figures
+## Configuration options
 
-At the end of training each run writes `results.json`, `test_per_case.csv` and, under
-`figures/`, four figures as 300 dpi PNG and vector PDF:
+All are off by default, so the base configs reproduce the v7 recipe; experiment configs
+switch them on through `base:` inheritance, and `--override section.key=value` sets any value.
 
-| Figure | Content |
+| Setting | Effect |
 |---|---|
-| `training_curves` | training loss and learning rate; validation Dice per region with the best epoch |
-| `test_summary` | test Dice per region for single pass, ensemble + TTA and tuned post-processing; HD95 |
-| `test_per_case` | per-case Dice distribution (box plot with every case) |
-| `test_examples` | best, median and worst test case with ground-truth and predicted outlines |
+| `model.input_size` | working resolution, e.g. `[[48,48,48],[96,96,96]]` |
+| `data.augment` | training-only flips, in-plane 90-degree rotations and intensity jitter |
+| `data.cache` | `memory`, `disk` (low RAM, shared by workers) or `none` |
+| `loss.tversky_beta`, `loss.region_weights` | recall/precision balance and loss weight per region |
+| `training.val_every` | validate every N epochs (always on the last and the pause epoch) |
+| `training.early_stop_patience`, `early_stop_min_delta` | stop when validation stops improving |
+| `evaluation.tune_thresholds` | per-region threshold and clean-up size, chosen on validation |
+| `evaluation.full_resolution` | score in the original scan space |
+| `evaluation.brats_empty` | BraTS scoring of absent regions |
+| `experiment.split_seed` | fixed split, so runs with other seeds can be ensembled |
 
-`python make_figures.py experiments/<run-id>` redraws the first three from the saved results.
+## Evaluate and ensemble
+
+```bash
+python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS2021 \
+    --tune-thresholds --full-resolution --brats-empty
+python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS2021 --splits test \
+    --full-resolution --brats-empty --hd95-surface --thresholds WT=0.65,TC=0.65,ET=0.6
+python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run experiments/<run-c> \
+    --data-root /path/to/BraTS2021 --tune-thresholds --full-resolution
+```
+
+Without tuning, cases are scored one at a time into a progress file, so an interrupted
+evaluation resumes where it stopped. Ensemble members must share `split.json` and the
+working resolution.
 
 ## Train on GCP
 
@@ -93,67 +131,16 @@ Copy `cloud/config/gcp.env.example` to `cloud/config/gcp.env` and fill it in, th
 
 ```bash
 ./cloud/scripts/start_vm.sh                      # from your machine
-# on the VM:
-./cloud/scripts/setup_gcp.sh                     # checkout + image build
-./cloud/scripts/run_training.sh --stop-after-epoch 10 --auto-stop   # 10-epoch check, VM stops
-./cloud/scripts/resume_training.sh <run-id> --auto-stop           # continue to 300, VM stops
-./cloud/scripts/status.sh                        # progress
-./cloud/scripts/resume_training.sh <run-id>      # after a preemption
-./cloud/scripts/stop_vm.sh                       # from your machine
-```
-
-BraTS 2021 (1,251 glioma cases) uses its own config and data folder:
-
-```bash
-./cloud/scripts/run_training.sh --config configs/glo_nca_cascade_brats2021.yaml --data-root /data/brats2021 --stop-after-epoch 10 --auto-stop
-```
-
-For long runs on Spot, add `--keep-alive`: after any restart the VM resumes the run on its
-own (a boot service), and `watchdog.sh`, run from any machine with gcloud, restarts the VM
-only after a preemption. A stop by the run itself (finished, paused or failed) or by you
-ends the watchdog; a run that makes no progress over three restarts is not retried.
-
-```bash
+./cloud/scripts/setup_gcp.sh                     # on the VM: checkout and image build
 ./cloud/scripts/run_training.sh --config configs/experiments/brats2021_res96_long.yaml \
-    --data-root /data/brats2021 --auto-stop --keep-alive        # on the VM
-./cloud/scripts/watchdog.sh                                     # on your machine
+    --data-root /data/brats2021 --auto-stop --keep-alive
+./cloud/scripts/status.sh                        # progress
+./cloud/scripts/watchdog.sh                      # from your machine: restart after Spot preemptions
 ```
 
-To end a keep-alive run early, stop training and remove the marker on the VM:
-`sudo systemctl stop glo-nca-cascade-training && sudo rm /var/lib/glo-nca-cascade/keepalive.env`.
-
-Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes and at
-the end. A Spot preemption loses at most the current epoch: `last.pth` is written
-after every epoch and `resume_training.sh` continues from it.
-
-## Optional improvements
-
-All are off by default, so the base configs reproduce the v7 recipe exactly. The
-configs in `configs/experiments/` switch them on through `base:` inheritance.
-
-| Setting | Effect |
-|---|---|
-| `data.augment` | training-only flips, in-plane 90-degree rotations and intensity jitter |
-| `model.input_size` | working resolution, e.g. `[[48,48,48],[96,96,96]]` (`brats2021_res96`) |
-| `loss.tversky_beta`, `loss.region_weights` | recall/precision balance and extra loss weight for WT, TC, ET |
-| `evaluation.tune_thresholds` | per-region threshold and small-component clean-up size, chosen on validation |
-| `evaluation.min_component_voxels` | fixed clean-up size, used when not tuning |
-| `evaluation.full_resolution` | score in the original scan space instead of the working resolution |
-| `experiment.split_seed` | fixed split, so runs trained with other seeds can be ensembled |
-| `training.val_every` | validate every N epochs (always on the last and the pause epoch) |
-| `evaluation.val_workers` | parallel data loading for the validation pass |
-| `data.cache` | `memory` (default), `disk` (`data.cache_dir`, low RAM, shared by workers) or `none` |
-
-The tuned result is reported next to the plain one (`test_tuned` in `results.json`).
-Existing runs can be re-scored without retraining, and several runs averaged:
-
-```bash
-python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS --tune-thresholds --full-resolution
-python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run experiments/<run-c>     --data-root /path/to/BraTS --tune-thresholds --full-resolution
-```
-
-Ensemble members must share `split.json` and the working resolution; train them with
-`--override experiment.seed=<n>` on a config that sets `experiment.split_seed`.
+Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes. With
+`--keep-alive` a restarted VM resumes the run from its last epoch; `watchdog.sh` restarts
+the VM only after a preemption, and `--auto-stop` powers it off when the run ends.
 
 ## Verify
 
