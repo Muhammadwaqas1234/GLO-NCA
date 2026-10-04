@@ -1,4 +1,4 @@
-# Only src/, glo_nca/, configs/, train.py, evaluate.py, make_figures.py and docker/*.txt go into the image.
+# Only src/, glo_nca/, configs/, train.py, evaluate.py, make_figures.py, predict.py and docker/*.txt go into the image.
 .git/
 .gitignore
 .vscode/

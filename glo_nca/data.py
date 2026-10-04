@@ -180,16 +180,21 @@ class Dataset_BraTS_Foreground(Dataset):
         if augment:
             img, label = self._augment_spatial(img, label)
         if self.use_nonzero_norm:
-            out = np.empty_like(img, dtype=np.float32)
-            for c in range(img.shape[-1]):
-                ch = img[..., c]
-                mask = ch > 0
-                out[..., c] = np.where(mask, (ch - ch[mask].mean()) / (ch[mask].std() + 1e-8), 0.0) \
-                    if mask.sum() > 0 else ch
-            img = out
+            img = self.nonzero_norm(img)
         if augment:
             img = self._augment_intensity(img)
         return (img_id, img.astype(np.float32), label.astype(np.float32))
+
+    @staticmethod
+    def nonzero_norm(img):
+        r"""Per-channel z-normalisation over brain (non-zero) voxels; background stays zero."""
+        out = np.empty_like(img, dtype=np.float32)
+        for c in range(img.shape[-1]):
+            ch = img[..., c]
+            mask = ch > 0
+            out[..., c] = np.where(mask, (ch - ch[mask].mean()) / (ch[mask].std() + 1e-8), 0.0) \
+                if mask.sum() > 0 else ch
+        return out
 
     def patchify_multimodal(self, img, label):
         r"""Random 3D patch of the working size, biased toward a tumour region."""

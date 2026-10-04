@@ -70,6 +70,7 @@ The results above use `configs/experiments/brats2021_res96_long.yaml`.
 train.py                  command-line entry point (new run, resume, planned pause)
 evaluate.py               re-score a run or an ensemble of runs (resumable)
 make_figures.py           redraw a finished run's figures (no GPU needed)
+predict.py                write BraTS label maps for unlabelled cases (challenge submission)
 configs/                  base recipes; configs/experiments/ inherit and extend them
 glo_nca/                  training package
   config.py               YAML to settings

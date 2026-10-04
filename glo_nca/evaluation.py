@@ -187,14 +187,19 @@ def to_full_resolution(dataset, case, prob):
     seg = dataset.load_item(dataset._find_modality_file(folder, case, dataset.SEG_SUFFIX))
     gt = dataset._labels_to_regions(seg).astype(np.uint8)
     bbox = dataset._foreground_bbox(raw) if dataset.use_foreground_crop else None
+    return paste_to_scan(prob, bbox, seg.shape), gt
+
+
+def paste_to_scan(prob, bbox, shape):
+    r"""Resample a working-resolution prob map into its crop box of a scan of the given shape."""
     if bbox is None:
-        bbox = (0, seg.shape[0], 0, seg.shape[1], 0, seg.shape[2])
+        bbox = (0, shape[0], 0, shape[1], 0, shape[2])
     x0, x1, y0, y1, z0, z1 = bbox
     t = torch.from_numpy(prob.astype(np.float32)).permute(3, 0, 1, 2)[None]
     up = F.interpolate(t, size=(x1 - x0, y1 - y0, z1 - z0), mode="trilinear", align_corners=False)
-    full = np.zeros(seg.shape + (prob.shape[-1],), np.float32)
+    full = np.zeros(tuple(shape) + (prob.shape[-1],), np.float32)
     full[x0:x1, y0:y1, z0:z1] = up[0].permute(1, 2, 3, 0).numpy()
-    return full, gt
+    return full
 
 
 def _pairs(cases, dataset=None, full_resolution=False):
