@@ -35,6 +35,7 @@ Study/*
 .idea/
 *.zip
 *.png
+!docs/figures/*.png
 *.dt
 SUMMARY.txt
 results*.json
