@@ -10,6 +10,17 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 
+def _parse_thresholds(text):
+    r"""Parse 'WT=0.65,TC=0.65,ET=0.6' into per-region thresholds (default 0.5)."""
+    out = {"WT": 0.5, "TC": 0.5, "ET": 0.5}
+    for item in filter(None, (text or "").split(",")):
+        region, _, value = item.partition("=")
+        if region.strip() not in out:
+            raise ValueError(f"unknown region in --thresholds: {region}")
+        out[region.strip()] = float(value)
+    return out
+
+
 def _parse_min_component(text):
     r"""Parse 'WT=0,TC=50,ET=50' into a per-region minimum component size."""
     out = {"WT": 0, "TC": 0, "ET": 0}
@@ -41,6 +52,11 @@ def main() -> int:
                     help="score an empty prediction of an absent region as Dice 1 (BraTS convention)")
     ap.add_argument("--no-hd95", action="store_true",
                     help="skip HD95 (the slowest metric at full resolution); Dice and IoU only")
+    ap.add_argument("--hd95-surface", action="store_true",
+                    help="official surface-based HD95 (BraTS/medpy); in mm with --full-resolution")
+    ap.add_argument("--thresholds", default="", metavar="WT=0.65,TC=0.65,ET=0.6",
+                    help="fixed per-region thresholds, e.g. those a run chose on validation (ignored when tuning)")
+    ap.add_argument("--splits", default="val,test", help="splits to score without tuning (default val,test)")
     args = ap.parse_args()
 
     import numpy as np
@@ -100,10 +116,12 @@ def main() -> int:
         tuned = improved_evaluation(C0, ds, cases["val"], cases["test"])
     else:
         # Fixed post-processing: score case by case with a resumable progress file.
-        thresholds = {r: 0.5 for r in REGIONS}
+        thresholds = _parse_thresholds(args.thresholds)
+        splits = [s.strip() for s in args.splits.split(",") if s.strip()]
         progress = out + ".progress.jsonl"
         settings = {"runs": runs, "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
-                    "brats_empty": args.brats_empty, "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
+                    "brats_empty": args.brats_empty, "hd95_surface": args.hd95_surface,
+                    "thresholds": thresholds, "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
         if os.path.exists(progress):
             with open(progress, encoding="utf-8") as fh:
                 first = json.loads(fh.readline() or "{}")
@@ -114,15 +132,19 @@ def main() -> int:
             with open(progress, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({"settings": settings}) + "\n")
         res = {state: score_streaming(models, ds, state, progress, thresholds, C0.MIN_COMPONENT,
-                                      args.full_resolution, not args.no_hd95, args.brats_empty)
-               for state in ("val", "test")}
+                                      args.full_resolution, not args.no_hd95, args.brats_empty,
+                                      args.hd95_surface)
+               for state in splits}
         tuned = {"thresholds": thresholds, "min_component_voxels": C0.MIN_COMPONENT,
                  "full_resolution": args.full_resolution, "brats_empty": args.brats_empty,
-                 "val_tuned": {r: res["val"][r]["dice"] for r in REGIONS}, "test": res["test"]}
-    report_tuned(tuned)
-    mean = float(np.mean([tuned["test"][r]["dice"] for r in REGIONS]))
-    val_mean = float(np.mean([tuned["val_tuned"][r] for r in REGIONS]))
-    print(f"val mean Dice {val_mean:.4f} | test mean Dice {mean:.4f} | {len(runs)} model(s)")
+                 "hd95_surface": args.hd95_surface,
+                 "val_tuned": {r: res["val"][r]["dice"] for r in REGIONS} if "val" in res else None,
+                 "test": res.get("test")}
+    if tuned["test"] is not None:
+        report_tuned(tuned)
+    mean = float(np.mean([tuned["test"][r]["dice"] for r in REGIONS])) if tuned["test"] else None
+    val_mean = float(np.mean([tuned["val_tuned"][r] for r in REGIONS])) if tuned["val_tuned"] else None
+    print(f"val mean Dice {val_mean} | test mean Dice {mean} | {len(runs)} model(s)")
 
     out = args.output or os.path.join(runs[0], "evaluation.json")
     with open(out, "w", encoding="utf-8") as fh:

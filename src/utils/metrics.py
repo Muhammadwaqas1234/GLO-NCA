@@ -1,8 +1,8 @@
-r"""Segmentation metrics: IoU and 95th-percentile Hausdorff distance."""
+r"""Segmentation metrics: IoU and 95th-percentile Hausdorff distance (voxel-based and surface-based)."""
 import numpy as np
 
 try:
-    from scipy.ndimage import distance_transform_edt
+    from scipy.ndimage import binary_erosion, distance_transform_edt, generate_binary_structure
     _SCIPY_AVAILABLE = True
 except Exception:  # scipy optional; HD95 simply returns NaN if missing
     _SCIPY_AVAILABLE = False
@@ -38,3 +38,23 @@ def hd95_score(pred, target, threshold=0.5):
     all_d = np.concatenate([_surface_distances(pred_bin, target_bin),
                             _surface_distances(target_bin, pred_bin)])
     return float(np.percentile(all_d, 95))
+
+
+def _surface(mask):
+    r"""Boundary voxels of a boolean mask (voxels with a 6-connected background neighbour)."""
+    return mask & ~binary_erosion(mask, structure=generate_binary_structure(3, 1), border_value=0)
+
+
+def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0)):
+    r"""Surface HD95 in physical units (BraTS/medpy): 0 if both masks are empty, NaN if one is."""
+    if not _SCIPY_AVAILABLE:
+        return float("nan")
+    p, t = np.asarray(pred, bool), np.asarray(target, bool)
+    if not p.any() and not t.any():
+        return 0.0
+    if not p.any() or not t.any():
+        return float("nan")
+    sp, st = _surface(p), _surface(t)
+    d_pt = distance_transform_edt(~st, sampling=spacing)[sp]
+    d_tp = distance_transform_edt(~sp, sampling=spacing)[st]
+    return float(np.percentile(np.concatenate([d_pt, d_tp]), 95))

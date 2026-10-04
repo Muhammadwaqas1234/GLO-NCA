@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from src.utils.metrics import hd95_score, iou_score
+from src.utils.metrics import hd95_score, hd95_surface, iou_score
 
 from .config import REGIONS
 
@@ -104,31 +104,35 @@ def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16
     return cases
 
 
-def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one=False):
-    r"""Per-region Dice, IoU and (optionally) HD95 for one case."""
+def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one=False,
+                  surface_hd95=False):
+    r"""Per-region Dice, IoU and (optionally) HD95 for one case; surface_hd95 uses the BraTS definition."""
     out = {}
     for i, r in enumerate(REGIONS):
         p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
         t = gt[..., i] > 0
         pf, tf = p.astype(np.float32), t.astype(np.float32)
         out[r] = {"dice": float(_dice(p, t, empty_one)), "iou": float(iou_score(pf, tf)),
-                  "hd95": float(hd95_score(pf, tf)) if with_hd95 else float("nan")}
+                  "hd95": float("nan") if not with_hd95
+                  else hd95_surface(p, t) if surface_hd95 else float(hd95_score(pf, tf))}
     return out
 
 
 def _mean_metrics(rows):
-    r"""Average per-case metrics per region, ignoring undefined HD95 values."""
+    r"""Average per-case metrics per region; HD95 over cases where it is defined (count kept)."""
     out = {}
     for r in REGIONS:
         hd = [x[r]["hd95"] for x in rows if not math.isnan(x[r]["hd95"])]
         out[r] = {"dice": float(np.mean([x[r]["dice"] for x in rows])),
                   "iou": float(np.mean([x[r]["iou"] for x in rows])),
-                  "hd95": float(np.mean(hd)) if hd else float("nan")}
+                  "hd95": float(np.mean(hd)) if hd else float("nan"),
+                  "hd95_median": float(np.median(hd)) if hd else float("nan"),
+                  "hd95_cases": len(hd), "cases": len(rows)}
     return out
 
 
 def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
-                    full_resolution=False, with_hd95=True, empty_one=False):
+                    full_resolution=False, with_hd95=True, empty_one=False, surface_hd95=False):
     r"""Score one split case by case into a resumable progress file, averaging ``models``."""
     done = {}
     if os.path.exists(progress_path):
@@ -153,7 +157,8 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
             prob = np.mean([p for _, p, _ in preds], axis=0)
             if full_resolution:
                 prob, gt = to_full_resolution(dataset, case, prob)
-            metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one)
+            metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one,
+                                    surface_hd95)
             fh.write(json.dumps({"split": state, "case": case, "metrics": metrics}) + "\n")
             fh.flush(); os.fsync(fh.fileno())
             done[case] = metrics

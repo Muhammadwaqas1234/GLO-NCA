@@ -133,8 +133,21 @@ def test_brats_empty():
           and _dice(full, empty, empty_one=True) == 0)
 
 
+def test_hd95_surface():
+    r"""Surface HD95: identical masks give 0, a cube shifted by 2 voxels gives 2, empty cases follow BraTS."""
+    from src.utils.metrics import hd95_surface
+    a = np.zeros((30, 30, 30), bool); a[5:15, 5:15, 5:15] = True
+    b = np.zeros_like(a); b[7:17, 5:15, 5:15] = True
+    e = np.zeros_like(a)
+    ok = (hd95_surface(a, a) == 0.0 and abs(hd95_surface(a, b) - 2.0) < 1e-6
+          and hd95_surface(e, e) == 0.0 and np.isnan(hd95_surface(a, e))
+          and abs(hd95_surface(a, b, spacing=(2.0, 1.0, 1.0)) - 4.0) < 1e-6)
+    check("surface HD95: known distances, spacing and empty cases", ok,
+          f"shift 2 -> {hd95_surface(a, b):.2f}")
+
+
 if __name__ == "__main__":
-    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty):
+    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)
