@@ -76,7 +76,7 @@ def plot_training(hist, best_epoch, out_dir, title="GLO-NCA cascade"):
         _save(fig, out_dir, "training_curves")
 
 
-def plot_test_summary(settings, out_dir):
+def plot_test_summary(settings, out_dir, hd95_label="HD95 (voxels, lower is better)"):
     r"""Grouped Dice bars per region for each test setting, and HD95 for the final setting."""
     names = list(settings)
     with plt.rc_context(STYLE):
@@ -107,11 +107,11 @@ def plot_test_summary(settings, out_dir):
                     "n/a" if math.isnan(v) else f"{v:.2f}", ha="center", va="bottom", fontsize=8.5)
         a2.set_ylim(0, max([v for v in hd if not math.isnan(v)] or [1]) * 1.18)
         a2.set_xticks(range(len(REGIONS)), [NAMES[r] for r in REGIONS])
-        a2.set_ylabel("HD95 (voxels, lower is better)"); a2.set_title(f"Test HD95 ({names[-1].split(' (')[0].lower()})")
+        a2.set_ylabel(hd95_label); a2.set_title(f"Test HD95 ({names[-1].split(' (')[0].split(',')[0].lower()})")
         _save(fig, out_dir, "test_summary")
 
 
-def plot_per_case(rows, out_dir, setting="test"):
+def plot_per_case(rows, out_dir, setting="test", title=None):
     r"""Box plots of per-case Dice with every case shown, so failures and spread are visible."""
     with plt.rc_context(STYLE):
         fig, ax = plt.subplots(figsize=(7, 4))
@@ -128,7 +128,7 @@ def plot_per_case(rows, out_dir, setting="test"):
         ax.set_xticks(range(1, len(REGIONS) + 1),
                       [f"{NAMES[r]}\nmedian {np.median(d):.3f}" for r, d in zip(REGIONS, data)])
         ax.set_ylim(-0.03, 1.03); ax.set_ylabel("Dice per case")
-        ax.set_title(f"Per-case Dice on the {setting} set (n = {len(rows)}); diamond = mean")
+        ax.set_title(title or f"Per-case Dice on the {setting} set (n = {len(rows)}); diamond = mean")
         _save(fig, out_dir, f"{setting}_per_case")
 
 

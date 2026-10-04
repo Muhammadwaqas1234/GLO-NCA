@@ -7,26 +7,40 @@ package (configs, resumable training, evaluation, figures, CI) and its GCP tooli
 
 ## Results
 
-BraTS 2021 (1,251 glioma cases, seeded 70/15/15 split), 96³ working resolution, 150 epochs,
-best validation epoch 137. Test set: **189 patients never seen during training or tuning**.
+BraTS 2021: 1,251 glioma cases, seeded random split of 875 training, 187 validation and
+189 test patients. Configuration `configs/experiments/brats2021_res96_long.yaml`
+(96³ working resolution, augmentation, 150 epochs); best validation epoch 137 (mean Dice 0.830).
+The test patients were never used for training, model selection or tuning.
 
-| Test setting | WT Dice | TC Dice | ET Dice | Mean Dice |
+| Test setting (189 patients) | WT Dice | TC Dice | ET Dice | Mean Dice |
 |---|---|---|---|---|
-| Single pass | 0.893 | 0.863 | 0.754 | 0.837 |
-| Ensemble ×4 + test-time flips | 0.894 | 0.864 | 0.756 | 0.838 |
-| **+ tuned post-processing, full resolution, BraTS scoring** | **0.921** | **0.895** | **0.817** | **0.878** |
+| Single pass, 96³ | 0.893 | 0.863 | 0.754 | 0.837 |
+| Ensemble ×4 + test-time flips, 96³ | 0.894 | 0.864 | 0.756 | 0.838 |
+| **Ensemble ×4 + flips, post-processed, full resolution** | **0.921** | **0.895** | **0.817** | **0.878** |
 
-| Region | IoU | HD95 mean (mm) | HD95 median (mm) |
-|---|---|---|---|
-| WT | 0.860 | 4.93 | 2.24 |
-| TC | 0.834 | 5.23 | 1.73 |
-| ET | 0.724 | 4.49 (184 / 189 cases) | 2.00 |
+| Region (post-processed, full resolution) | IoU | HD95 mean (mm) | HD95 median (mm) | Median Dice |
+|---|---|---|---|---|
+| WT | 0.860 | 4.93 | 2.24 | 0.944 |
+| TC | 0.834 | 5.23 | 1.73 | 0.949 |
+| ET | 0.723 | 4.49 (184 of 189 cases) | 2.00 | 0.872 |
 
-- Post-processing (per-region threshold and small-lesion clean-up) is chosen on validation only.
-- Full resolution: predictions are resampled to the original 240×240×155 scans before scoring.
-- BraTS scoring: an empty prediction of an absent region counts as Dice 1.
-- HD95 is the surface-based BraTS/medpy definition in mm; ET is undefined where exactly one mask is empty.
-- Training: 55.8 h on one NVIDIA L4 (GCP Spot, no preemptions); peak memory 10.4 GB.
+- The first two rows are scored on the 96³ grid with the v7 Dice formula (an absent region scores 0).
+- The last row and the second table come from one evaluation (`evaluate.py --hd95-surface`):
+  thresholds WT/TC/ET 0.65/0.65/0.60 and small-lesion clean-up 400/25/400 voxels, both chosen
+  on validation; predictions resampled to the original 240×240×155 scans; BraTS scoring, where an
+  empty prediction of an absent region scores Dice 1.
+- HD95 is the surface-based BraTS/medpy definition in mm; for ET it is undefined in the 5 cases
+  where exactly one of the two masks is empty.
+- The ensemble passes are stochastic: the training run's own final test of the same setting gave
+  0.880 mean Dice (0.921 / 0.896 / 0.823).
+- Training: 55.8 h on one NVIDIA L4 (GCP Spot, no preemptions); peak GPU memory 10.4 GB.
+
+| Figure | Content |
+|---|---|
+| Training curves | training loss, learning rate and validation Dice per epoch |
+| Test summary | the three test settings above and the official HD95 |
+| Per-case Dice | every test patient, post-processed at full resolution |
+| Example segmentations | best, median and worst test patient on the 96³ grid (ensemble ×4 + flips) |
 
 ![Training curves](docs/figures/training_curves.png)
 ![Test summary](docs/figures/test_summary.png)
