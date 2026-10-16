@@ -179,6 +179,17 @@ def remove_small_components(mask, min_voxels):
     return keep[lab]
 
 
+def relabel_small_et(masks, max_ratio, max_voxels):
+    r"""Move a small predicted ET (absolute and relative to TC) into the necrotic core."""
+    et = int(masks["ET"].sum())
+    tc = int((masks["TC"] | masks["ET"]).sum())
+    if et and et < max_voxels and et < max_ratio * tc:
+        masks = dict(masks)
+        masks["TC"] = masks["TC"] | masks["ET"]
+        masks["ET"] = np.zeros_like(masks["ET"])
+    return masks
+
+
 def to_full_resolution(dataset, case, prob):
     r"""Resample a working-resolution prob map into the original scan; returns (prob, gt)."""
     folder = os.path.join(dataset.images_path, case)
