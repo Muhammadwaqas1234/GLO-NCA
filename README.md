@@ -63,6 +63,17 @@ setting as the post-processed test row: ensemble ×4 + flips, thresholds 0.65/0.
 | Sensitivity | 0.921 | 0.869 | 0.840 | |
 | Specificity | 0.999 | 0.999 | 0.999 | |
 
+With ET post-processing (`predict.py --et-to-ncr 0.25,5000`: a predicted ET that is below 5,000 voxels
+and below 25% of the tumour core is relabelled as necrotic core; chosen from the validation results),
+submission 9783820:
+
+| Metric | WT | TC | ET | Mean |
+|---|---|---|---|---|
+| Dice | 0.909 | 0.855 | 0.797 | 0.854 |
+| HD95 (mm) | 6.37 | 9.41 | 24.29 | 13.36 |
+| Lesion-wise Dice | 0.879 | 0.831 | 0.794 | 0.834 |
+| Lesion-wise HD95 (mm) | 17.51 | 20.31 | 27.73 | 21.85 |
+
 On the same validation set, the BraTS 2021 and 2022 winners (nnU-Net based ensembles) report Dice
 0.928/0.878/0.845 and 0.927/0.875/0.844 (WT/TC/ET).
 
