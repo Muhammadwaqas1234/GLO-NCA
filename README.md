@@ -47,6 +47,31 @@ The test patients were never used for training, model selection or tuning.
 ![Per-case Dice](docs/figures/test_per_case.png)
 ![Example segmentations](docs/figures/test_examples.png)
 
+## Official BraTS 2023 validation (Synapse leaderboard)
+
+The model above was submitted to the **BraTS 2023 Adult Glioma continuous evaluation** on Synapse
+(219 validation cases, labels withheld, scored by the organisers; submission 9783550), with the same
+setting as the post-processed test row: ensemble ×4 + flips, thresholds 0.65/0.65/0.60, clean-up
+400/25/400 voxels, full resolution (`predict.py`).
+
+| Metric | WT | TC | ET | Mean |
+|---|---|---|---|---|
+| Dice | 0.909 | 0.855 | 0.784 | 0.849 |
+| HD95 (mm) | 6.37 | 9.41 | 22.98 | 12.92 |
+| Lesion-wise Dice | 0.879 | 0.831 | 0.775 | 0.828 |
+| Lesion-wise HD95 (mm) | 17.51 | 20.31 | 30.54 | 22.79 |
+| Sensitivity | 0.921 | 0.869 | 0.840 | |
+| Specificity | 0.999 | 0.999 | 0.999 | |
+
+On the same validation set, the BraTS 2021 and 2022 winners (nnU-Net based ensembles) report Dice
+0.928/0.878/0.845 and 0.927/0.875/0.844 (WT/TC/ET).
+
+Per-case Dice below 0.50 (standard Dice): WT 1, TC 9, ET 22 of 219 cases; Dice 0: TC 2, ET 13.
+Of the 13 ET zeros, 7 are cases without enhancing tumour where ET was predicted, 3 are missed ET,
+and 3 are misplaced ET; an ET-volume relabelling rule alone changes the ET mean by at most +0.005,
+because these false ET regions are as large as true small ones. Per-case scores with predicted
+volumes: `docs/results/brats2023_validation_per_case.csv`.
+
 ## Model
 
 | | |
