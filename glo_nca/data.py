@@ -29,8 +29,10 @@ class Dataset_BraTS_Foreground(Dataset):
 
     MODALITIES = ["t1n", "t1c", "t2w", "t2f"]
     SEG_SUFFIX = "seg"
+    ET_LABELS = (3, 4)   # BraTS 2021 uses 4, BraTS 2023 uses 3; set (3,) for releases where 4 is another tissue
     use_foreground_crop = True
     use_nonzero_norm = True
+    brain_mask = False   # True: one brain mask (any modality non-zero) for cropping, resizing and normalisation
     augment = False
 
     def __init__(self, cache="memory", cache_dir=None):
@@ -104,11 +106,14 @@ class Dataset_BraTS_Foreground(Dataset):
         zs = np.where(fg.any(axis=(0, 1)))[0]
         return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
 
-    @staticmethod
-    def _labels_to_regions(seg):
-        r"""Convert raw BraTS labels into the nested WT/TC/ET regions."""
-        # ET is label 4 (3 in some remapped copies).
-        et = np.logical_or(seg == 4, seg == 3)
+    @classmethod
+    def _labels_to_regions(cls, seg):
+        r"""Convert raw BraTS labels into the nested WT/TC/ET regions; unknown labels are an error."""
+        unknown = set(np.unique(seg).astype(int).tolist()) - {0, 1, 2, *cls.ET_LABELS}
+        if unknown:
+            raise ValueError(f"unexpected segmentation labels {sorted(unknown)}; "
+                             f"set data.et_labels for this release")
+        et = np.isin(seg, cls.ET_LABELS)
         ncr = (seg == 1)
         ed = (seg == 2)
         wt = np.logical_or(np.logical_or(ncr, ed), et)   # whole tumour
@@ -139,13 +144,40 @@ class Dataset_BraTS_Foreground(Dataset):
                 raw = raw[x0:x1, y0:y1, z0:z1, :]
                 seg = seg[x0:x1, y0:y1, z0:z1]
         size = tuple(self.size)
-        img = np.stack([self._resize_to(raw[..., c], size) for c in range(raw.shape[-1])], axis=-1)
+        img = self.resize_image(raw)
         label = self._labels_to_regions(self._resize_to(seg, size, is_label=True))
         return img, label
+
+    def resize_image(self, raw):
+        r"""Resize a (X, Y, Z, C) scan to the working size; with brain_mask, zero cubic overshoot outside the brain."""
+        size = tuple(self.size)
+        img = np.stack([self._resize_to(raw[..., c], size) for c in range(raw.shape[-1])], axis=-1)
+        if self.brain_mask:
+            mask = self._resize_to(np.any(raw != 0, axis=-1).astype(np.float32), size, is_label=True) > 0.5
+            img[~mask] = 0.0
+        return img
+
+    def normalize(self, img):
+        r"""Per-channel z-normalisation inside the brain: positive voxels (default) or the shared brain mask."""
+        if not self.use_nonzero_norm:
+            return img
+        if not self.brain_mask:
+            return self.nonzero_norm(img)
+        mask = np.any(img != 0, axis=-1)
+        out = np.zeros_like(img, dtype=np.float32)
+        if mask.any():
+            for c in range(img.shape[-1]):
+                v = img[..., c][mask]
+                out[..., c][mask] = (v - v.mean()) / (v.std() + 1e-8)
+        return out
 
     def _cache_path(self, folder_name):
         r"""Disk-cache file for one case; the name encodes every setting that changes the arrays."""
         tag = f"{self.size}|{self.use_foreground_crop}|{self.MODALITIES}"
+        if tuple(self.ET_LABELS) != (3, 4):
+            tag += f"|et{list(self.ET_LABELS)}"   # added only when changed, so existing caches stay valid
+        if self.brain_mask:
+            tag += "|brain"
         digest = hashlib.sha1(tag.encode()).hexdigest()[:10]
         return os.path.join(self.cache_dir, f"{folder_name}_{digest}.npz")
 
@@ -179,8 +211,7 @@ class Dataset_BraTS_Foreground(Dataset):
         augment = self.augment and self.state == "train"
         if augment:
             img, label = self._augment_spatial(img, label)
-        if self.use_nonzero_norm:
-            img = self.nonzero_norm(img)
+        img = self.normalize(img)
         if augment:
             img = self._augment_intensity(img)
         return (img_id, img.astype(np.float32), label.astype(np.float32))

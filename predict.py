@@ -50,7 +50,7 @@ def main() -> int:
     import numpy as np
 
     from glo_nca.config import REGIONS
-    from glo_nca.evaluation import paste_to_scan, relabel_small_et, remove_small_components
+    from glo_nca.evaluation import decode_regions, masks_to_label, paste_to_scan
 
     thresholds = _parse_regions(args.thresholds, 0.5, float)
     min_component = _parse_regions(args.min_component, 0, int)
@@ -59,17 +59,9 @@ def main() -> int:
 
     def write_label(prob, bbox, shape, affine, header, out_path):
         r"""Threshold, clean and relabel one probability map, then save it as a BraTS label map."""
-        full = paste_to_scan(prob, bbox, shape)
-        masks = {r: remove_small_components(full[..., i] >= thresholds[r], min_component[r])
-                 for i, r in enumerate(REGIONS)}
-        if et_rule:
-            masks = relabel_small_et(masks, et_rule[0], et_rule[1])
-        # Nested BraTS labels: edema inside WT, necrotic core inside TC, enhancing tumour on top.
-        label = np.zeros(shape, np.uint8)
-        label[masks["WT"]] = 2
-        label[masks["TC"]] = 1
-        label[masks["ET"]] = args.et_label
-        out = nib.Nifti1Image(label, affine, header)
+        # The same decoder as the internal evaluation with nested regions.
+        masks = decode_regions(paste_to_scan(prob, bbox, shape), thresholds, min_component, et_rule)
+        out = nib.Nifti1Image(masks_to_label(masks, args.et_label), affine, header)
         out.set_data_dtype(np.uint8)
         tmp = out_path + ".tmp.nii.gz"
         nib.save(out, tmp)
@@ -132,9 +124,7 @@ def main() -> int:
         bbox = ds._foreground_bbox(raw) if ds.use_foreground_crop else None
         x0, x1, y0, y1, z0, z1 = bbox if bbox is not None else (0, raw.shape[0], 0, raw.shape[1], 0, raw.shape[2])
         crop = raw[x0:x1, y0:y1, z0:z1, :]
-        img = np.stack([ds._resize_to(crop[..., c], ds.size) for c in range(crop.shape[-1])], axis=-1)
-        if ds.use_nonzero_norm:
-            img = ds.nonzero_norm(img)
+        img = ds.normalize(ds.resize_image(crop))
         data = (["_" + case + "_0"], torch.from_numpy(img[None].astype(np.float32)),
                 torch.zeros((1, *ds.size, len(REGIONS))))
         with torch.no_grad():

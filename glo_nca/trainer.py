@@ -50,6 +50,18 @@ def _write_history(out_dir, hist):
                         hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]])
 
 
+def with_weights(models, states, fn):
+    r"""Run fn with the given weights loaded, then restore the live weights."""
+    live = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
+    try:
+        for m, s in zip(models, states):
+            m.load_state_dict(s)
+        return fn()
+    finally:
+        for m, s in zip(models, live):
+            m.load_state_dict(s)
+
+
 def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> tuple:
     r"""Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
     tr, va, te = splits
@@ -70,15 +82,19 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> tuple:
         "input_size": C.INPUT_SIZE, "scale_factor": 2,
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "patchify": True, "priotize_masks": 0.7, "prioritize_region": C.PRIORITIZE_REGION,
+        "crop_et_prob": C.CROP_ET_PROB,
     }]
     cache_dir = C.CACHE_DIR or os.path.join(os.path.dirname(os.path.abspath(out_dir)), ".cache")
     ds = Dataset_BraTS_Foreground(cache=C.CACHE, cache_dir=cache_dir)
-    ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT
+    ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT; ds.ET_LABELS = tuple(C.ET_LABELS)
+    ds.brain_mask = C.BRAIN_MASK
     ds.use_foreground_crop = C.USE_FOREGROUND_CROP; ds.use_nonzero_norm = C.USE_NONZERO_NORM
     ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=4,
-                     use_attention=True, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT),
+                     use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT,
+                     use_global=C.USE_GLOBAL, norm=C.NORM),
           GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=3, input_channels=4,
-                     use_attention=True, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT)]
+                     use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT,
+                     use_global=C.USE_GLOBAL, norm=C.NORM)]
     agent = Agent_GLO_NCA(ca)
     exp = Experiment(config, ds, ca, agent); ds.set_experiment(exp)
     def entry(p):
@@ -141,7 +157,14 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
 
     # Setup; the order of operations fixes the random sequence.
     set_seed(C.SEED)
-    tr, va, te = make_split(DATA_ROOT, C.SPLIT_SEED, C.N_PATIENTS)
+    split_path = os.path.join(out_dir, "split.json")
+    if resume and os.path.exists(split_path):
+        # Resume on the saved split, even if case folders were added or removed since.
+        with open(split_path, encoding="utf-8") as fh:
+            sp = json.load(fh)
+        tr, va, te = sp["train"], sp["validation"], sp["test"]
+    else:
+        tr, va, te = make_split(DATA_ROOT, C.SPLIT_SEED, C.N_PATIENTS)
     print(f"\nSplit -> train {len(tr)} | val {len(va)} | test {len(te)}")
     print(f"GLO-NCA cascade: ch={C.CHANNEL_N} hidden={C.HIDDEN} steps={C.STEPS} fire={C.FIRE_RATE} "
           f"patch={C.INPUT_SIZE[-1]} beta={C.TVERSKY_BETA} aug={C.USE_AUG} ep={C.EPOCHS}", flush=True)
@@ -161,9 +184,10 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
                        for opt in agent.optimizer]
 
     loss_f = FocalTverskyCELoss(alpha=1 - C.TVERSKY_BETA, beta=C.TVERSKY_BETA,
-                                gamma=C.FOCAL_GAMMA, ce_weight=0.5)
+                                gamma=C.FOCAL_GAMMA, ce_weight=0.5, bce_logits=C.BCE_LOGITS)
     if C.REGION_WEIGHTS != [1.0, 1.0, 1.0]:
         agent.region_weights = C.REGION_WEIGHTS
+    agent.all_regions = C.ALL_REGION_LOSS
 
     # Gradient clipping via backward hooks (element-wise clamp; batch_step steps the optimizer).
     if C.GRAD_CLIP and C.GRAD_CLIP > 0:
@@ -226,11 +250,20 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: str = None, resume: bool = F
         cur_lr = agent.optimizer[0].param_groups[0]["lr"]
         hist["epoch"].append(ep+1); hist["loss"].append(float(np.mean(losses)) if losses else 0)
         hist["lr"].append(cur_lr)
+        if C.CROP_ET_PROB > 0 and agent.crop_stats[1]:
+            print(f"  ET-positive crops this epoch: {agent.crop_stats[0]}/{agent.crop_stats[1]}", flush=True)
+        agent.crop_stats = [0, 0]
         # Validate every VAL_EVERY epochs, and always on the last and the pause epoch.
         validate = ((ep + 1) % C.VAL_EVERY == 0 or ep + 1 == C.EPOCHS
                     or (stop_after_epoch is not None and ep + 1 >= stop_after_epoch))
         if validate:
-            val = evaluate(agent, ds, "val", workers=C.VAL_WORKERS)
+            if C.VALIDATE_EMA and ema is not None:
+                # Score the EMA weights, the ones best.pth saves.
+                val = with_weights(ca, ema, lambda: evaluate(agent, ds, "val", workers=C.VAL_WORKERS,
+                                                        surface_hd95=C.SURFACE_HD95))
+            else:
+                val = evaluate(agent, ds, "val", workers=C.VAL_WORKERS,
+                                                        surface_hd95=C.SURFACE_HD95)
             vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
             hist["val_mean"].append(vm)
             for r in REGIONS:

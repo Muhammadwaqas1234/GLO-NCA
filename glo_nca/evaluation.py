@@ -14,7 +14,7 @@ from src.utils.metrics import hd95_score, hd95_surface, iou_score
 from .config import REGIONS
 
 
-def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None):
+def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None, surface_hd95=False):
     r"""Evaluate one split; ensemble > 1 averages passes, tta adds flips, per_case collects case Dice."""
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)
@@ -28,7 +28,9 @@ def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=N
                 p, t = prob[..., i], gt[..., i]
                 inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
                 acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
-                acc[r]["iou"].append(iou_score(p, t)); acc[r]["hd95"].append(hd95_score(p, t))
+                acc[r]["iou"].append(iou_score(p, t))
+                acc[r]["hd95"].append(hd95_surface(p[0] >= 0.5, t[0] >= 0.5) if surface_hd95
+                                      else hd95_score(p, t))
             if per_case is not None:
                 per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
     agent.exp.set_model_state("train")
@@ -104,17 +106,41 @@ def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16
     return cases
 
 
+def decode_regions(prob, thresholds, min_component, et_rule=None, nested=True):
+    r"""Final masks: threshold, clean up, optional ET relabel, then nest ET in TC and TC in WT."""
+    masks = {r: remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
+             for i, r in enumerate(REGIONS)}
+    if et_rule:
+        masks = relabel_small_et(masks, et_rule[0], et_rule[1])
+    if nested:
+        # The BraTS label map stores nested regions: TC includes ET, WT includes TC.
+        masks["TC"] = masks["TC"] | masks["ET"]
+        masks["WT"] = masks["WT"] | masks["TC"]
+    return masks
+
+
+def masks_to_label(masks, et_label=3):
+    r"""BraTS label map from nested masks: 2 edema, 1 necrotic core, et_label enhancing tumour."""
+    label = np.zeros(masks["WT"].shape, np.uint8)
+    label[masks["WT"]] = 2
+    label[masks["TC"]] = 1
+    label[masks["ET"]] = et_label
+    return label
+
+
 def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one=False,
-                  surface_hd95=False):
+                  surface_hd95=False, nested=False, spacing=None):
     r"""Per-region Dice, IoU and (optionally) HD95 for one case; surface_hd95 uses the BraTS definition."""
     out = {}
+    masks = decode_regions(prob, thresholds, min_component, nested=nested)
     for i, r in enumerate(REGIONS):
-        p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
+        p = masks[r]
         t = gt[..., i] > 0
         pf, tf = p.astype(np.float32), t.astype(np.float32)
         out[r] = {"dice": float(_dice(p, t, empty_one)), "iou": float(iou_score(pf, tf)),
                   "hd95": float("nan") if not with_hd95
-                  else hd95_surface(p, t) if surface_hd95 else float(hd95_score(pf, tf))}
+                  else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0)) if surface_hd95
+                  else float(hd95_score(pf, tf))}
     return out
 
 
@@ -132,7 +158,8 @@ def _mean_metrics(rows):
 
 
 def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
-                    full_resolution=False, with_hd95=True, empty_one=False, surface_hd95=False):
+                    full_resolution=False, with_hd95=True, empty_one=False, surface_hd95=False,
+                    nested=False):
     r"""Score one split case by case into a resumable progress file, averaging ``models``."""
     done = {}
     if os.path.exists(progress_path):
@@ -155,10 +182,12 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
             preds = [predict_case(agent, data, ens, tta) for agent, ens, tta in models]
             case, gt = preds[0][0], preds[0][2]
             prob = np.mean([p for _, p, _ in preds], axis=0)
+            spacing = None
             if full_resolution:
                 prob, gt = to_full_resolution(dataset, case, prob)
+                spacing = scan_spacing(dataset, case)
             metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one,
-                                    surface_hd95)
+                                    surface_hd95, nested, spacing)
             fh.write(json.dumps({"split": state, "case": case, "metrics": metrics}) + "\n")
             fh.flush(); os.fsync(fh.fileno())
             done[case] = metrics
@@ -213,13 +242,21 @@ def paste_to_scan(prob, bbox, shape):
     return full
 
 
+def scan_spacing(dataset, case):
+    r"""Voxel spacing in mm of a case's original scan, from its segmentation header."""
+    import nibabel as nib
+    folder = os.path.join(dataset.images_path, case)
+    path = dataset._find_modality_file(folder, case, dataset.SEG_SUFFIX)
+    return tuple(float(z) for z in nib.load(path).header.get_zooms()[:3])
+
+
 def _pairs(cases, dataset=None, full_resolution=False):
-    r"""Yield (prob, gt) per case, resampled to the original scan when requested."""
+    r"""Yield (prob, gt, spacing) per case; at full resolution, in the original scan and its spacing in mm."""
     for case, prob, gt in cases:
         if full_resolution:
-            yield to_full_resolution(dataset, case, prob)
+            yield (*to_full_resolution(dataset, case, prob), scan_spacing(dataset, case))
         else:
-            yield prob.astype(np.float32), gt
+            yield prob.astype(np.float32), gt, None
 
 
 def _dice(p, t, empty_one=False):
@@ -237,13 +274,17 @@ def _components(mask):
     return lab, np.bincount(lab.ravel())
 
 
-def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_GRID,
-                    size_grid=MIN_COMPONENT_GRID, empty_one=False):
-    r"""Pick per-region threshold and clean-up size that maximise validation Dice."""
-    table = {r: {(th, sz): [] for th in grid for sz in size_grid} for r in REGIONS}
-    for prob, gt in _pairs(cases, dataset, full_resolution):
-        for i, r in enumerate(REGIONS):
+def _tune_regions(cases, dataset, full_resolution, grid, size_grid, empty_one, regions, inner):
+    r"""Dice table per candidate for the given regions; inner adds the chosen masks of nested regions."""
+    table = {r: {(th, sz): [] for th in grid for sz in size_grid} for r in regions}
+    for prob, gt, _ in _pairs(cases, dataset, full_resolution):
+        for r in regions:
+            i = REGIONS.index(r)
             t = gt[..., i] > 0
+            # Nested scoring: the region's final mask also contains its chosen inner regions.
+            extra = np.zeros(t.shape, bool)
+            for q, (th_q, sz_q) in inner.get(r, {}).items():
+                extra |= remove_small_components(prob[..., REGIONS.index(q)] >= th_q, sz_q)
             for th in grid:
                 mask = prob[..., i] >= th
                 lab, sizes = _components(mask) if mask.any() else (None, None)
@@ -253,24 +294,47 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
                     else:
                         keep = sizes >= sz; keep[0] = False
                         p = keep[lab]
-                    table[r][(th, sz)].append(_dice(p, t, empty_one))
-    best = {r: max(table[r], key=lambda k: (np.mean(table[r][k]), -k[1])) for r in REGIONS}
+                    table[r][(th, sz)].append(_dice(p | extra, t, empty_one))
+    return table
+
+
+def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_GRID,
+                    size_grid=MIN_COMPONENT_GRID, empty_one=False, nested=False):
+    r"""Pick per-region threshold and clean-up size that maximise validation Dice.
+
+    With nested, regions are tuned inside out (ET, then TC with ET, then WT with TC and ET), so the
+    choice is scored on the same final masks as decode_regions.
+    """
+    pick = lambda tab: max(tab, key=lambda k: (np.mean(tab[k]), -k[1]))
+    if not nested:
+        table = _tune_regions(cases, dataset, full_resolution, grid, size_grid, empty_one, REGIONS, {})
+    else:
+        table, chosen = {}, {}
+        for r, inner in (("ET", []), ("TC", ["ET"]), ("WT", ["TC", "ET"])):
+            table.update(_tune_regions(cases, dataset, full_resolution, grid, size_grid, empty_one,
+                                       [r], {r: {q: chosen[q] for q in inner}}))
+            chosen[r] = pick(table[r])
+    best = {r: pick(table[r]) for r in REGIONS}
     thresholds = {r: best[r][0] for r in REGIONS}
     sizes = {r: int(best[r][1]) for r in REGIONS}
     val = {r: float(np.mean(table[r][best[r]])) for r in REGIONS}
     return thresholds, sizes, val
 
 
-def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False):
+def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False,
+          nested=False, surface_hd95=False):
     r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up."""
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
-    for prob, gt in _pairs(cases, dataset, full_resolution):
+    for prob, gt, spacing in _pairs(cases, dataset, full_resolution):
+        masks = decode_regions(prob, thresholds, min_component, nested=nested)
         for i, r in enumerate(REGIONS):
-            p = remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
+            p = masks[r]
             t = gt[..., i] > 0
             pf, tf = p.astype(np.float32), t.astype(np.float32)
             acc[r]["dice"].append(_dice(p, t, empty_one))
-            acc[r]["iou"].append(iou_score(pf, tf)); acc[r]["hd95"].append(hd95_score(pf, tf))
+            acc[r]["iou"].append(iou_score(pf, tf))
+            acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0)) if surface_hd95
+                                  else hd95_score(pf, tf))
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
@@ -285,11 +349,14 @@ def improved_evaluation(C, dataset, val_cases, test_cases):
     val_tuned = None
     if C.TUNE_THRESHOLDS:
         thresholds, min_component, val_tuned = tune_thresholds(
-            val_cases, dataset, C.FULL_RESOLUTION_EVAL, empty_one=C.BRATS_EMPTY)
+            val_cases, dataset, C.FULL_RESOLUTION_EVAL, empty_one=C.BRATS_EMPTY, nested=C.NESTED_REGIONS)
     else:
-        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY)
+        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
+                    C.NESTED_REGIONS, C.SURFACE_HD95)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
-    test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY)
+    test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
+                 C.NESTED_REGIONS, C.SURFACE_HD95)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
             "full_resolution": C.FULL_RESOLUTION_EVAL, "brats_empty": C.BRATS_EMPTY,
+            "nested_regions": C.NESTED_REGIONS, "surface_hd95": C.SURFACE_HD95,
             "val_tuned": val_tuned, "test": test}

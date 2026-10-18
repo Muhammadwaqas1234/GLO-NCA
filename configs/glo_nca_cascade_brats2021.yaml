@@ -16,7 +16,7 @@ data:
 model:
   channel_n: 24
   hidden: 128
-  use_spatial: true               # spatial global-context block (SE is always on)
+  use_spatial: true               # spatial global-context block (SE: model.use_se, default true)
   steps: [20, 20]                 # NCA steps: low-res level, high-res level
   fire_rate: 0.6
   dropout: 0.1

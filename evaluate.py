@@ -54,6 +54,8 @@ def main() -> int:
                     help="skip HD95 (the slowest metric at full resolution); Dice and IoU only")
     ap.add_argument("--hd95-surface", action="store_true",
                     help="official surface-based HD95 (BraTS/medpy); in mm with --full-resolution")
+    ap.add_argument("--nested-regions", action="store_true",
+                    help="score the final nested masks (TC includes ET, WT includes TC), as in predict.py")
     ap.add_argument("--thresholds", default="", metavar="WT=0.65,TC=0.65,ET=0.6",
                     help="fixed per-region thresholds, e.g. those a run chose on validation (ignored when tuning)")
     ap.add_argument("--splits", default="val,test", help="splits to score without tuning (default val,test)")
@@ -105,6 +107,8 @@ def main() -> int:
     C0.MIN_COMPONENT = _parse_min_component(args.min_component)
     C0.FULL_RESOLUTION_EVAL = args.full_resolution
     C0.BRATS_EMPTY = args.brats_empty
+    C0.NESTED_REGIONS = args.nested_regions
+    C0.SURFACE_HD95 = args.hd95_surface
     out = args.output or os.path.join(runs[0], "evaluation.json")
     if args.tune_thresholds:
         # Tuning needs every validation probability map at once.
@@ -122,6 +126,8 @@ def main() -> int:
         settings = {"runs": runs, "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
                     "brats_empty": args.brats_empty, "hd95_surface": args.hd95_surface,
                     "thresholds": thresholds, "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
+        if args.nested_regions:
+            settings["nested_regions"] = True   # added only when set, so older progress files still resume
         if os.path.exists(progress):
             with open(progress, encoding="utf-8") as fh:
                 first = json.loads(fh.readline() or "{}")
@@ -133,11 +139,11 @@ def main() -> int:
                 fh.write(json.dumps({"settings": settings}) + "\n")
         res = {state: score_streaming(models, ds, state, progress, thresholds, C0.MIN_COMPONENT,
                                       args.full_resolution, not args.no_hd95, args.brats_empty,
-                                      args.hd95_surface)
+                                      args.hd95_surface, args.nested_regions)
                for state in splits}
         tuned = {"thresholds": thresholds, "min_component_voxels": C0.MIN_COMPONENT,
                  "full_resolution": args.full_resolution, "brats_empty": args.brats_empty,
-                 "hd95_surface": args.hd95_surface,
+                 "hd95_surface": args.hd95_surface, "nested_regions": args.nested_regions,
                  "val_tuned": {r: res["val"][r]["dice"] for r in REGIONS} if "val" in res else None,
                  "test": res.get("test")}
     if tuned["test"] is not None:

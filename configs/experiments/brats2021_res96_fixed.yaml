@@ -1,0 +1,25 @@
+# The long 96^3 run with the code-review fixes: loss on every region, EMA validation,
+# ET-biased crops at the crop that is trained on, brain-mask normalisation, BCE on logits,
+# nested final masks (also for threshold tuning) and surface HD95 in mm.
+base: brats2021_res96_long.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED
+
+data:
+  crop_et_prob: 0.5               # half of the training crops are centred on enhancing tumour
+  brain_mask: true                # one brain mask for resizing and normalisation
+
+model:
+  update_prob: 0.4                # a cell updates with probability 0.4 (same as fire_rate 0.6)
+
+training:
+  validate_ema: true              # select the best epoch on the EMA weights that best.pth saves
+
+loss:
+  all_regions: true               # also penalise predictions of regions absent from the crop
+  bce_logits: true                # numerically stable BCE on logits
+
+evaluation:
+  nested_regions: true            # score the final masks: TC includes ET, WT includes TC
+  surface_hd95: true              # BraTS surface HD95 in mm at full resolution

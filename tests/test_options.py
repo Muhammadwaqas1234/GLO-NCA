@@ -146,8 +146,234 @@ def test_hd95_surface():
           f"shift 2 -> {hd95_surface(a, b):.2f}")
 
 
+def test_review_options():
+    r"""Review fixes are off by default, on in the fixed config; update_prob maps to the skip rate."""
+    base = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_long.yaml"))
+    fixed = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"))
+    plain = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed_plain.yaml"))
+    check("review fixes off by default (reported run unchanged)",
+          base.USE_SE and base.USE_SPATIAL and not (base.USE_GLOBAL or base.ALL_REGION_LOSS
+          or base.VALIDATE_EMA or base.CROP_ET_PROB or base.NESTED_REGIONS or base.SURFACE_HD95))
+    check("fixed config: all fixes on, same recipe otherwise",
+          fixed.ALL_REGION_LOSS and fixed.VALIDATE_EMA and fixed.CROP_ET_PROB == 0.5
+          and fixed.NESTED_REGIONS and fixed.SURFACE_HD95 and abs(fixed.FIRE_RATE - 0.6) < 1e-9
+          and fixed.EPOCHS == base.EPOCHS and fixed.INPUT_SIZE == base.INPUT_SIZE
+          and fixed.SPLIT_SEED == base.SPLIT_SEED and fixed.SEED == base.SEED)
+    check("plain control differs only in SE and spatial gate",
+          not plain.USE_SE and not plain.USE_SPATIAL
+          and {k: v for k, v in vars(plain).items() if k not in ("NAME", "USE_SE", "USE_SPATIAL", "raw")}
+          == {k: v for k, v in vars(fixed).items() if k not in ("NAME", "USE_SE", "USE_SPATIAL", "raw")})
+
+
+def test_all_region_loss():
+    r"""With all_regions, positive ET logits on an ET-free crop are penalised and get a gradient."""
+    import torch
+    from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
+    from src.losses.LossFunctions import FocalTverskyCELoss
+
+    class _Exp:
+        def get_from_config(self, key):
+            return 0 if key == "train_model" else None
+
+    class _Opt:
+        def zero_grad(self): pass
+        def step(self): pass
+
+    out = torch.full((1, 8, 8, 8, 3), 3.0, requires_grad=True)
+    tgt = torch.zeros((1, 8, 8, 8, 3)); tgt[..., 0:2] = 1.0       # WT and TC present, ET absent
+    found = {}
+    for all_regions in (False, True):
+        agent = Agent_GLO_NCA.__new__(Agent_GLO_NCA)
+        agent.exp, agent.optimizer, agent.scheduler = _Exp(), [_Opt()], [_Opt()]
+        agent.region_weights, agent.all_regions = None, all_regions
+        agent.prepare_data = lambda d: d
+        agent.get_outputs = lambda d: (out, tgt)
+        out.grad = None
+        losses = agent.batch_step(None, FocalTverskyCELoss(alpha=0.25, beta=0.75))
+        found[all_regions] = (2 in losses, out.grad is not None and bool(out.grad[..., 2].abs().sum() > 0))
+    check("absent ET: no loss before, loss and gradient with all_regions",
+          found[False] == (False, False) and found[True] == (True, True))
+
+
+def test_et_crop():
+    r"""ET-biased crop origins contain enhancing tumour and stay inside the volume."""
+    import torch
+    from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
+    t = torch.zeros((40, 40, 40, 3)); t[35:38, 2:4, 30:33, 2] = 1
+    ok = True
+    for _ in range(50):
+        x, y, z = Agent_GLO_NCA._et_crop(t, (16, 16, 16))
+        ok &= 0 <= x <= 24 and 0 <= y <= 24 and 0 <= z <= 24
+        ok &= bool(t[x:x+16, y:y+16, z:z+16, 2].any())
+    check("ET crop contains ET; none without ET",
+          ok and Agent_GLO_NCA._et_crop(torch.zeros((40, 40, 40, 3)), (16, 16, 16)) is None)
+
+
+def test_global_block():
+    r"""The global block starts as identity and reaches every voxel; the spatial gate stays local."""
+    import torch
+    from src.models.Model_GLO_NCA_Cell import GCSpatialBlock3D, GLO_NCA_Cell, GlobalContextBlock3D
+    torch.manual_seed(0)
+    x = torch.randn(1, 24, 20, 20, 20)
+    far = x.clone(); far[..., 19, 19, 19] += 50.0                # perturb one distant voxel
+    g = GlobalContextBlock3D(24)
+    identity = torch.allclose(g(x), x)
+    torch.nn.init.normal_(g.transform[-1].weight); torch.nn.init.normal_(g.key.weight)
+    s = GCSpatialBlock3D(7)
+    with torch.no_grad():
+        g_far = (g(far) - g(x))[..., 0, 0, 0].abs().max().item()
+        s_far = (s(far) - s(x))[..., 0, 0, 0].abs().max().item()
+    count = lambda **kw: sum(p.numel() for k in (7, 3) for p in GLO_NCA_Cell(
+        24, 0.6, "cpu", 128, kernel_size=k, input_channels=4, **kw).parameters())
+    glo, plain = count(use_attention=True, use_spatial=True), count()
+    check("global block: identity at start, reaches a distant voxel", identity and g_far > 1e-3 and s_far == 0,
+          f"far effect {g_far:.3f} vs gate {s_far:.0f}")
+    check("parameters: GLO-NCA 30,138, plain 28,128", glo == 30138 and plain == 28128,
+          f"global +{count(use_attention=True, use_spatial=True, use_global=True) - glo}")
+
+
+def test_decoder():
+    r"""Exported label maps reload to exactly the nested masks the evaluation scores."""
+    from glo_nca.evaluation import decode_regions, masks_to_label
+    rng = np.random.default_rng(0)
+    prob = rng.random((20, 20, 20, 3)).astype(np.float32)
+    th, mc = {"WT": 0.5, "TC": 0.6, "ET": 0.7}, {"WT": 0, "TC": 0, "ET": 0}
+    masks = decode_regions(prob, th, mc)
+    back = Dataset_BraTS_Foreground._labels_to_regions(masks_to_label(masks, 3)) > 0
+    raw = decode_regions(prob, th, mc, nested=False)
+    legacy = np.zeros((20, 20, 20), np.uint8)       # the earlier predict.py label map
+    legacy[raw["WT"]] = 2; legacy[raw["TC"]] = 1; legacy[raw["ET"]] = 3
+    check("decoder: label map round trip equals scored masks",
+          all(np.array_equal(back[..., i], masks[r]) for i, r in enumerate(["WT", "TC", "ET"])))
+    check("decoder: exported label maps unchanged", np.array_equal(legacy, masks_to_label(masks, 3)),
+          f"nesting adds {int((masks['WT'] & ~raw['WT']).sum())} WT voxels")
+
+
+def test_with_weights():
+    r"""EMA validation scores the given weights and restores the live ones afterwards."""
+    import torch
+    from glo_nca.trainer import with_weights
+    m = torch.nn.Linear(2, 1)
+    live = {k: v.clone() for k, v in m.state_dict().items()}
+    ema = {k: torch.full_like(v, 7.0) for k, v in m.state_dict().items()}
+    seen = with_weights([m], [ema], lambda: m.weight.detach().clone())
+    check("EMA validation uses EMA weights, restores live weights",
+          bool((seen == 7.0).all()) and all(torch.equal(m.state_dict()[k], live[k]) for k in live))
+
+
+def test_local_norm():
+    r"""Per-voxel LayerNorm keeps a plain cell strictly local; BatchNorm uses volume statistics."""
+    import torch
+    from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
+    torch.manual_seed(0)
+    x = torch.randn(1, 16, 16, 16, 24)
+    far = x.clone(); far[0, 15, 15, 15, 4:] += 5.0
+    effect = {}
+    for norm in ("batch", "layer"):
+        cell = GLO_NCA_Cell(24, 0.0, "cpu", 32, kernel_size=3, input_channels=4, norm=norm)
+        torch.nn.init.normal_(cell.fc1.weight, std=0.1)
+        with torch.no_grad():
+            torch.manual_seed(1); a = cell.update(x, 0.0)
+            torch.manual_seed(1); b = cell.update(far, 0.0)
+        effect[norm] = (a - b)[0, 0, 0, 0].abs().max().item()
+    check("layer norm: one step is strictly local, batch norm is not",
+          effect["layer"] == 0.0 and effect["batch"] > 0, f"batch {effect['batch']:.2e}")
+
+
+def test_bce_logits():
+    r"""BCE on logits matches the clamped version for moderate logits and stays finite for large ones."""
+    import torch
+    from src.losses.LossFunctions import FocalTverskyCELoss
+    z = torch.linspace(-4, 4, 100); t = (z > 0.3).float()
+    old = FocalTverskyCELoss(alpha=0.25, beta=0.75)(z, t)
+    new = FocalTverskyCELoss(alpha=0.25, beta=0.75, bce_logits=True)(z, t)
+    big = torch.tensor([60.0, -60.0], requires_grad=True)
+    loss = FocalTverskyCELoss(bce_logits=True)(big, torch.tensor([0.0, 1.0]))
+    loss.backward()
+    check("BCE on logits: same value, finite gradient at extreme logits",
+          abs(old.item() - new.item()) < 1e-4 and bool(torch.isfinite(big.grad).all()) and big.grad.abs().sum() > 0)
+
+
+def test_brain_mask():
+    r"""Brain-mask normalisation: zero outside the brain, zero mean and unit variance inside."""
+    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds.size, ds.brain_mask, ds.use_nonzero_norm = (20, 20, 20), True, True
+    raw = np.zeros((30, 30, 30, 2), np.float32)
+    raw[5:25, 5:25, 5:25] = np.random.default_rng(0).random((20, 20, 20, 2)) * 100 + 1
+    img = ds.normalize(ds.resize_image(raw))
+    inside = np.any(img != 0, axis=-1)
+    ok = (abs(img[inside].mean()) < 1e-4 and abs(img[..., 0][inside].std() - 1) < 1e-3
+          and not img[0, 0, 0].any() and inside.sum() > 0)
+    check("brain mask: background zero, brain normalised", bool(ok))
+
+
+def test_nested_tuning_and_spacing():
+    r"""Nested tuning scores the final masks; surface HD95 scales with the voxel spacing."""
+    from glo_nca.evaluation import _case_metrics
+    gt = np.zeros((20, 20, 20, 3), np.uint8)
+    gt[4:16, 4:16, 4:16, 0] = 1; gt[6:14, 6:14, 6:14, 1] = 1; gt[8:12, 8:12, 8:12, 2] = 1
+    prob = gt.astype(np.float32) * 0.9
+    prob[..., 1] *= 0.5            # TC probability low; nesting with ET still yields part of TC
+    cases = [("c", prob, gt)]
+    _, _, val_plain = tune_thresholds(cases)
+    _, _, val_nested = tune_thresholds(cases, nested=True)
+    th, mc = {"WT": 0.5, "TC": 0.5, "ET": 0.5}, {"WT": 0, "TC": 0, "ET": 0}
+    shift = np.zeros_like(prob); shift[2:, ..., :] = prob[:-2]
+    hd1 = _case_metrics(shift, gt, th, mc, surface_hd95=True)["WT"]["hd95"]
+    hd2 = _case_metrics(shift, gt, th, mc, surface_hd95=True, spacing=(2.0, 1.0, 1.0))["WT"]["hd95"]
+    check("nested tuning returns scores on final masks", val_nested["TC"] >= val_plain["TC"] - 1e-9)
+    check("HD95 in mm uses the scan spacing", abs(hd1 - 2.0) < 1e-6 and abs(hd2 - 4.0) < 1e-6,
+          f"{hd1:.1f} -> {hd2:.1f}")
+
+
+def test_compare_runs():
+    r"""Paired comparison: identical runs give zero difference, patients are clustered by scan."""
+    sys.path.insert(0, _ROOT)
+    from compare_runs import compare, patient_of
+    rng = np.random.default_rng(0)
+    a = {f"BraTS-GLI-{i:05d}-{j:03d}": {r: float(rng.random()) for r in ["WT", "TC", "ET"]}
+         for i in range(30) for j in range(2)}
+    b = {c: {r: v + 0.05 for r, v in s.items()} for c, s in a.items()}
+    _, patients, same = compare(a, a, boot=200)
+    _, _, up = compare(a, b, boot=200)
+    check("compare_runs: zero for identical runs, +0.05 detected, 30 patients",
+          same["mean"]["mean_diff"] == 0 and abs(up["mean"]["mean_diff"] - 0.05) < 1e-9
+          and up["mean"]["ci95"][0] > 0.04 and len(patients) == 30
+          and patient_of("BraTS2021_00001") == "BraTS2021_00001")
+
+
+def test_labels():
+    r"""Known BraTS labels map to nested regions; an unknown label stops loading."""
+    reg = Dataset_BraTS_Foreground._labels_to_regions(np.array([0, 1, 2, 3, 4]))
+    ok = reg[:, 2].tolist() == [0, 0, 0, 1, 1] and reg[:, 1].tolist() == [0, 1, 0, 1, 1]
+    try:
+        Dataset_BraTS_Foreground._labels_to_regions(np.array([0, 5])); raised = False
+    except ValueError:
+        raised = True
+
+    class _Post(Dataset_BraTS_Foreground):
+        ET_LABELS = (3,)
+    try:
+        _Post._labels_to_regions(np.array([0, 4])); post = False
+    except ValueError:
+        post = True   # label 4 is not silently merged into ET when only 3 is ET
+    check("labels: 3/4 are ET by default, unknown labels rejected", ok and raised and post)
+
+
+def test_saved_split():
+    r"""A resumed run reads split.json instead of rebuilding the split from the folders."""
+    import inspect
+    from glo_nca import trainer
+    src = inspect.getsource(trainer.run)
+    check("resume reuses the saved split.json",
+          "if resume and os.path.exists(split_path)" in src and 'sp["validation"]' in src)
+
+
 if __name__ == "__main__":
-    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface):
+    for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
+              test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
+              test_with_weights, test_labels, test_saved_split, test_local_norm, test_bce_logits,
+              test_brain_mask, test_nested_tuning_and_spacing, test_compare_runs):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

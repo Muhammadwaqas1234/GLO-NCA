@@ -1,0 +1,9 @@
+# Ablation control for brats2021_res96_fixed.yaml: plain multiscale NCA without SE and spatial gate.
+base: brats2021_res96_fixed.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-PLAIN
+
+model:
+  use_se: false                   # no squeeze-and-excitation block
+  use_spatial: false              # no spatial gate

@@ -1,7 +1,7 @@
 # GLO-NCA Cascade
 
 **GLO-NCA** (Global Context-Aware Neural Cellular Automata) for brain-tumour segmentation
-on BraTS: a two-level NCA cascade with channel and spatial global-context blocks and
+on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks and
 multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
 package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
@@ -34,6 +34,9 @@ The test patients were never used for training, model selection or tuning.
 - The ensemble passes are stochastic: the training run's own final test of the same setting gave
   0.880 mean Dice (0.921 / 0.896 / 0.823).
 - Training: 55.8 h on one NVIDIA L4 (GCP Spot, no preemptions); peak GPU memory 10.4 GB.
+- Run history: the run was paused and resumed with changed settings (`train.log`). It validated
+  every 5 epochs until epoch 38 and every epoch from epoch 39, which is how epoch 137 was selected;
+  early stopping was 20, then 40, then off from epoch 42.
 
 | Figure | Content |
 |---|---|
@@ -88,8 +91,8 @@ volumes: `docs/results/brats2023_validation_per_case.csv`.
 | | |
 |---|---|
 | Cascade | 2 NCA levels, coarse then fine (48³ → 96³ for the results above; 32×32×24 → 64×64×48 in v7) |
-| NCA cell | 24 channels, hidden 128, 20 + 20 steps, fire rate 0.6, dropout 0.1, kernels 7 / 3 |
-| Global context | squeeze-and-excitation (channel) + spatial global-context block in every cell |
+| NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (`fire_rate` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
+| Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global block (`model.use_global`) |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
 | Data | foreground crop, cubic resize, nonzero z-norm, ET-biased patches, optional augmentation |
 | Loss | focal Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5), optional per-region weights |
@@ -107,6 +110,8 @@ train.py                  command-line entry point (new run, resume, planned pau
 evaluate.py               re-score a run or an ensemble of runs (resumable)
 make_figures.py           redraw a finished run's figures (no GPU needed)
 predict.py                write BraTS label maps for unlabelled cases (challenge submission)
+compare_runs.py           paired comparison of two runs: patient-cluster bootstrap CI, Wilcoxon, Holm
+benchmark.py              parameters, checkpoint size, inference latency and peak memory of a run
 configs/                  base recipes; configs/experiments/ inherit and extend them
 glo_nca/                  training package
   config.py               YAML to settings
@@ -118,7 +123,7 @@ glo_nca/                  training package
   plots.py                publication figures (PNG 300 dpi + PDF)
 src/                      GLO-NCA library (Med-NCA / M3D-NCA lineage)
   agents/                 cascade agent: coarse-to-fine inference and joint training
-  models/                 GLO-NCA cell with SE and global-context blocks
+  models/                 GLO-NCA cell with SE, spatial gate and optional global-context block
   losses/                 focal Tversky + BCE loss
   utils/                  experiment state and metrics
 legacy/kaggle/            the original Kaggle scripts (v4-v7)
@@ -160,6 +165,25 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `evaluation.full_resolution` | score in the original scan space |
 | `evaluation.brats_empty` | BraTS scoring of absent regions |
 | `experiment.split_seed` | fixed split, so runs with other seeds can be ensembled |
+| `model.use_se`, `model.use_spatial` | channel SE block and local spatial gate, each on or off (ablations) |
+| `model.use_global` | attention-pooled global-context block (GCNet style) added to every cell |
+| `model.update_prob` | probability that a cell updates per step; `fire_rate` is the skip probability (0.6 = 40% update) |
+| `loss.all_regions` | score every region, also when its target is empty, so false positives are penalised |
+| `training.validate_ema` | select the best epoch on the EMA weights that `best.pth` saves |
+| `data.crop_et_prob` | share of training crops centred on enhancing tumour, at the crop that is trained on |
+| `evaluation.nested_regions` | score the final nested masks (TC includes ET, WT includes TC), as written by `predict.py` |
+| `evaluation.surface_hd95` | surface HD95 (BraTS definition) in mm, using each scan's voxel spacing |
+| `model.norm` | `batch` (BatchNorm over the volume) or `layer` (per-voxel, strictly local update) |
+| `loss.bce_logits` | BCE computed on logits instead of clamped probabilities |
+| `data.brain_mask` | one brain mask (any modality non-zero) for resizing and normalisation |
+| `data.et_labels` | labels counted as enhancing tumour (default 3 and 4); unknown labels stop loading |
+
+`configs/experiments/brats2021_res96_fixed.yaml` switches all of the corrections above on;
+`brats2021_res96_fixed_plain.yaml` is its ablation control without SE and spatial gate, and
+`brats2021_res96_fixed_global.yaml` adds the global-context block. The results above were produced
+before these corrections, with all of them off: the loss skipped regions absent from a crop,
+validation scored the live weights while `best.pth` holds the EMA weights, the training crop was
+uniformly random, and the spatial block is a local 7×7×7 gate rather than a global operator.
 
 ## Evaluate and ensemble
 
@@ -171,6 +195,11 @@ python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS2021 --s
 python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run experiments/<run-c> \
     --data-root /path/to/BraTS2021 --tune-thresholds --full-resolution
 ```
+
+Two runs on the same test cases are compared with
+`python compare_runs.py experiments/<run-a> experiments/<run-b>` (difference B minus A, 95%
+bootstrap interval over patients, Wilcoxon test, Holm correction for WT/TC/ET), and inference cost
+is measured with `python benchmark.py --run experiments/<run-id> [--device cpu]`.
 
 Without tuning, cases are scored one at a time into a progress file, so an interrupted
 evaluation resumes where it stopped. Ensemble members must share `split.json` and the

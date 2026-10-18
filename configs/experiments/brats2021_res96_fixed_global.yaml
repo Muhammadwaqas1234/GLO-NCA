@@ -1,0 +1,8 @@
+# Optional variant of brats2021_res96_fixed.yaml with the attention-pooled global-context block.
+base: brats2021_res96_fixed.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-GLOBAL
+
+model:
+  use_global: true                # attention pooling over the volume, added back to every voxel

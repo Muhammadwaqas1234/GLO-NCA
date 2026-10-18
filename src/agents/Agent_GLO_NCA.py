@@ -14,6 +14,8 @@ class Agent_GLO_NCA(BaseAgent):
         self.input_channels = self.exp.get_from_config('input_channels')
         self.output_channels = self.exp.get_from_config('output_channels')
         self.region_weights = None
+        self.all_regions = False      # True: every region is scored, also when its target is empty
+        self.crop_stats = [0, 0]      # ET-positive crops, all crops (ET-biased cropping only)
 
     def inference_steps(self):
         r"""NCA steps per level from the config."""
@@ -53,12 +55,18 @@ class Agent_GLO_NCA(BaseAgent):
         loss = 0
         loss_ret = {}
         for m in range(outputs.shape[-1]):
-            if 1 in targets[..., m]:
+            if self.all_regions:
+                # Per-patient loss, then the batch mean, so the batch size does not change its meaning.
+                loss_loc = torch.stack([loss_f(outputs[b, ..., m], targets[b, ..., m])
+                                        for b in range(outputs.shape[0])]).mean()
+            elif 1 in targets[..., m]:
                 loss_loc = loss_f(outputs[..., m], targets[..., m])
-                if self.region_weights is not None:
-                    loss_loc = self.region_weights[m] * loss_loc
-                loss = loss + loss_loc
-                loss_ret[m] = loss_loc.item()
+            else:
+                continue
+            if self.region_weights is not None:
+                loss_loc = self.region_weights[m] * loss_loc
+            loss = loss + loss_loc
+            loss_ret[m] = loss_loc.item()
 
         if loss != 0:
             loss.backward()
@@ -134,6 +142,15 @@ class Agent_GLO_NCA(BaseAgent):
 
         return outputs[..., self.input_channels:self.input_channels+self.output_channels], targets_loc
 
+    @staticmethod
+    def _et_crop(target, size):
+        r"""Crop origin centred on a random ET voxel (shifted inside the volume), or None without ET."""
+        et = torch.nonzero(target[..., -1] > 0)
+        if len(et) == 0:
+            return None
+        c = et[random.randrange(len(et))].tolist()
+        return tuple(min(max(c[d] - size[d] // 2, 0), target.shape[d] - size[d]) for d in range(3))
+
     def _random_patch(self, inputs_full, targets_full, full_res, full_res_gt, m, scale_fac):
         r"""Crop one random patch per batch element for the next level, at every resolution."""
         size = self.exp.get_from_config('input_size')[0]
@@ -145,10 +162,19 @@ class Agent_GLO_NCA(BaseAgent):
         full_res_gt_new = torch.zeros((full_res.shape[0], *size_full, full_res_gt.shape[4])).to(device)
 
         factor_pow = math.pow(2, self.exp.get_from_config('train_model') - m - 1)
+        et_prob = self.exp.get_from_config('crop_et_prob') or 0.0
         for b in range(inputs_loc.shape[0]):
-            pos_x = random.randint(0, inputs_full.shape[1] - size[0])
-            pos_y = random.randint(0, inputs_full.shape[2] - size[1])
-            pos_z = random.randint(0, inputs_full.shape[3] - size[2])
+            pos = self._et_crop(targets_full[b], size) if et_prob > 0 and random.random() < et_prob else None
+            if pos is None:
+                pos_x = random.randint(0, inputs_full.shape[1] - size[0])
+                pos_y = random.randint(0, inputs_full.shape[2] - size[1])
+                pos_z = random.randint(0, inputs_full.shape[3] - size[2])
+            else:
+                pos_x, pos_y, pos_z = pos
+            if et_prob > 0:
+                self.crop_stats[0] += int(targets_full[b, pos_x:pos_x+size[0], pos_y:pos_y+size[1],
+                                                       pos_z:pos_z+size[2], -1].any())
+                self.crop_stats[1] += 1
             fx, fy, fz = int(pos_x * factor_pow), int(pos_y * factor_pow), int(pos_z * factor_pow)
 
             inputs_loc[b] = inputs_full[b, pos_x:pos_x+size[0], pos_y:pos_y+size[1], pos_z:pos_z+size[2], :]

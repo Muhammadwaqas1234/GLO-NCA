@@ -25,6 +25,7 @@ class GLO_NCA_Config:
     CHANNEL_N: int
     HIDDEN: int
     USE_SPATIAL: bool
+    USE_SE: bool
     STEPS: List[int]
     FIRE_RATE: float
     DROPOUT: float
@@ -56,6 +57,17 @@ class GLO_NCA_Config:
     EARLY_STOP_PATIENCE: int = 0
     EARLY_STOP_MIN_DELTA: float = 0.0
     CACHE: str = "memory"
+    # Review fixes; off by default so earlier runs stay reproducible.
+    USE_GLOBAL: bool = False
+    ALL_REGION_LOSS: bool = False
+    VALIDATE_EMA: bool = False
+    CROP_ET_PROB: float = 0.0
+    NESTED_REGIONS: bool = False
+    SURFACE_HD95: bool = False
+    ET_LABELS: List[int] = field(default_factory=lambda: [3, 4])
+    NORM: str = "batch"
+    BCE_LOGITS: bool = False
+    BRAIN_MASK: bool = False
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -108,8 +120,9 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         USE_FOREGROUND_CROP=bool(d["foreground_crop"]),
         USE_NONZERO_NORM=bool(d["nonzero_norm"]), USE_AUG=bool(d["augmentation"]),
         CHANNEL_N=int(m["channel_n"]), HIDDEN=int(m["hidden"]),
-        USE_SPATIAL=bool(m["use_spatial"]), STEPS=list(m["steps"]),
-        FIRE_RATE=float(m["fire_rate"]), DROPOUT=float(m["dropout"]),
+        USE_SPATIAL=bool(m["use_spatial"]), USE_SE=bool(m.get("use_se", True)), STEPS=list(m["steps"]),
+        FIRE_RATE=(1.0 - float(m["update_prob"])) if m.get("update_prob") is not None
+        else float(m["fire_rate"]), DROPOUT=float(m["dropout"]),
         INPUT_SIZE=[list(s) for s in m["input_size"]],
         PRIORITIZE_REGION=int(m["prioritize_region"]),
         EPOCHS=int(t["epochs"]), BATCH_SIZE=int(t["batch_size"]),
@@ -132,5 +145,15 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         EARLY_STOP_MIN_DELTA=float(t.get("early_stop_min_delta", 0.0)),
         CACHE=str(d.get("cache", "memory")),
         CACHE_DIR=d.get("cache_dir"),
+        USE_GLOBAL=bool(m.get("use_global", False)),
+        ALL_REGION_LOSS=bool(l.get("all_regions", False)),
+        VALIDATE_EMA=bool(t.get("validate_ema", False)),
+        CROP_ET_PROB=float(d.get("crop_et_prob", 0.0)),
+        NESTED_REGIONS=bool(v.get("nested_regions", False)),
+        SURFACE_HD95=bool(v.get("surface_hd95", False)),
+        ET_LABELS=[int(x) for x in d.get("et_labels", [3, 4])],
+        NORM=str(m.get("norm", "batch")),
+        BCE_LOGITS=bool(l.get("bce_logits", False)),
+        BRAIN_MASK=bool(d.get("brain_mask", False)),
         raw=raw,
     )
