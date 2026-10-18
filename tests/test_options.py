@@ -135,7 +135,7 @@ def test_brats_empty():
 
 def test_hd95_surface():
     r"""Surface HD95: identical masks give 0, a cube shifted by 2 voxels gives 2, empty cases follow BraTS."""
-    from src.utils.metrics import hd95_surface
+    from glo_nca.metrics import hd95_surface
     a = np.zeros((30, 30, 30), bool); a[5:15, 5:15, 5:15] = True
     b = np.zeros_like(a); b[7:17, 5:15, 5:15] = True
     e = np.zeros_like(a)
@@ -168,8 +168,8 @@ def test_review_options():
 def test_all_region_loss():
     r"""With all_regions, positive ET logits on an ET-free crop are penalised and get a gradient."""
     import torch
-    from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
-    from src.losses.LossFunctions import FocalTverskyCELoss
+    from glo_nca.agent import Agent_GLO_NCA
+    from glo_nca.losses import FocalTverskyCELoss
 
     class _Exp:
         def get_from_config(self, key):
@@ -198,7 +198,7 @@ def test_all_region_loss():
 def test_et_crop():
     r"""ET-biased crop origins contain enhancing tumour and stay inside the volume."""
     import torch
-    from src.agents.Agent_GLO_NCA import Agent_GLO_NCA
+    from glo_nca.agent import Agent_GLO_NCA
     t = torch.zeros((40, 40, 40, 3)); t[35:38, 2:4, 30:33, 2] = 1
     ok = True
     for _ in range(50):
@@ -212,7 +212,7 @@ def test_et_crop():
 def test_global_block():
     r"""The global block starts as identity and reaches every voxel; the spatial gate stays local."""
     import torch
-    from src.models.Model_GLO_NCA_Cell import GCSpatialBlock3D, GLO_NCA_Cell, GlobalContextBlock3D
+    from glo_nca.model import GCSpatialBlock3D, GLO_NCA_Cell, GlobalContextBlock3D
     torch.manual_seed(0)
     x = torch.randn(1, 24, 20, 20, 20)
     far = x.clone(); far[..., 19, 19, 19] += 50.0                # perturb one distant voxel
@@ -264,7 +264,7 @@ def test_with_weights():
 def test_local_norm():
     r"""Per-voxel LayerNorm keeps a plain cell strictly local; BatchNorm uses volume statistics."""
     import torch
-    from src.models.Model_GLO_NCA_Cell import GLO_NCA_Cell
+    from glo_nca.model import GLO_NCA_Cell
     torch.manual_seed(0)
     x = torch.randn(1, 16, 16, 16, 24)
     far = x.clone(); far[0, 15, 15, 15, 4:] += 5.0
@@ -283,7 +283,7 @@ def test_local_norm():
 def test_bce_logits():
     r"""BCE on logits matches the clamped version for moderate logits and stays finite for large ones."""
     import torch
-    from src.losses.LossFunctions import FocalTverskyCELoss
+    from glo_nca.losses import FocalTverskyCELoss
     z = torch.linspace(-4, 4, 100); t = (z > 0.3).float()
     old = FocalTverskyCELoss(alpha=0.25, beta=0.75)(z, t)
     new = FocalTverskyCELoss(alpha=0.25, beta=0.75, bce_logits=True)(z, t)
@@ -328,8 +328,7 @@ def test_nested_tuning_and_spacing():
 
 def test_compare_runs():
     r"""Paired comparison: identical runs give zero difference, patients are clustered by scan."""
-    sys.path.insert(0, _ROOT)
-    from compare_runs import compare, patient_of
+    from glo_nca.cli.compare_runs import compare, patient_of
     rng = np.random.default_rng(0)
     a = {f"BraTS-GLI-{i:05d}-{j:03d}": {r: float(rng.random()) for r in ["WT", "TC", "ET"]}
          for i in range(30) for j in range(2)}
@@ -362,11 +361,21 @@ def test_labels():
 
 def test_saved_split():
     r"""A resumed run reads split.json instead of rebuilding the split from the folders."""
-    import inspect
-    from glo_nca import trainer
-    src = inspect.getsource(trainer.run)
+    import json
+    from glo_nca.trainer import _load_split
+    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
+    with tempfile.TemporaryDirectory() as root:
+        data, out = os.path.join(root, "data"), os.path.join(root, "run")
+        for i in range(10):
+            os.makedirs(os.path.join(data, f"case{i}"))
+            open(os.path.join(data, f"case{i}", "x.nii.gz"), "w").close()
+        os.makedirs(out)
+        fresh = _load_split(C, data, out, resume=False)
+        saved = {"train": ["a"], "validation": ["b"], "test": ["c"], "seed": 0}
+        json.dump(saved, open(os.path.join(out, "split.json"), "w"))
+        resumed = _load_split(C, data, out, resume=True)
     check("resume reuses the saved split.json",
-          "if resume and os.path.exists(split_path)" in src and 'sp["validation"]' in src)
+          resumed == (["a"], ["b"], ["c"]) and sum(len(x) for x in fresh) == 10)
 
 
 if __name__ == "__main__":

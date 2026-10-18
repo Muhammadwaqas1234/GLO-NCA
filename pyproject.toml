@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glo-nca"
+version = "1.1.0"
+description = "GLO-NCA: a two-level neural cellular automata cascade for brain-tumour segmentation on BraTS"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Muhammad Waqas" }]
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.24,<2.0",
+    "scipy>=1.10",
+    "nibabel>=5.0",
+    "opencv-python-headless>=4.8",
+    "matplotlib>=3.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+benchmark = ["psutil>=5.9"]
+
+[project.scripts]
+glo-train = "glo_nca.cli.train:main"
+glo-evaluate = "glo_nca.cli.evaluate:main"
+glo-predict = "glo_nca.cli.predict:main"
+glo-figures = "glo_nca.cli.make_figures:main"
+glo-compare = "glo_nca.cli.compare_runs:main"
+glo-benchmark = "glo_nca.cli.benchmark:main"
+
+[tool.setuptools]
+packages = ["glo_nca", "glo_nca.cli"]

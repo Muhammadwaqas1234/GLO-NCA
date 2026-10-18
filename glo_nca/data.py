@@ -230,7 +230,7 @@ class Dataset_BraTS_Foreground(Dataset):
     def patchify_multimodal(self, img, label):
         r"""Random 3D patch of the working size, biased toward a tumour region."""
         size = self.size
-        prioritize = self.exp.get_from_config('priotize_masks')
+        prioritize = self.exp.get_from_config('prioritize_masks')
         contains_mask = prioritize is not None and (random.uniform(0, 1) < prioritize)
         # Region to bias the patch toward: 0=WT (default), 1=TC, 2=ET.
         region = self.exp.get_from_config('prioritize_region')

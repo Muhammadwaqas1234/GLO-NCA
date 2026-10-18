@@ -1,8 +1,9 @@
+r"""Experiment state: configuration, data split and train/val/test mode (after M3D-NCA, Kalkhof et al.)."""
 import torch
 
 DEFAULTS = {
     'batch_duplication': 1, 'channel_n': 16, 'cell_fire_rate': 0.5, 'output_channels': 1,
-    'input_channels': 1, 'patchify': False, 'priotize_masks': None, 'use_attention': False,
+    'input_channels': 1, 'patchify': False, 'prioritize_masks': None, 'use_attention': False,
 }
 
 

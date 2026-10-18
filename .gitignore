@@ -52,3 +52,6 @@ cloud/config/gcp.env
 *.tmp
 .cache/
 .coverage
+
+# Editable-install metadata
+*.egg-info/

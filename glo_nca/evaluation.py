@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from src.utils.metrics import hd95_score, hd95_surface, iou_score
+from .metrics import hd95_score, hd95_surface, iou_score
 
 from .config import REGIONS
 

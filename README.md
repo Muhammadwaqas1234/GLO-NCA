@@ -106,38 +106,55 @@ The results above use `configs/experiments/brats2021_res96_long.yaml`.
 ## Layout
 
 ```
-train.py                  command-line entry point (new run, resume, planned pause)
-evaluate.py               re-score a run or an ensemble of runs (resumable)
-make_figures.py           redraw a finished run's figures (no GPU needed)
-predict.py                write BraTS label maps for unlabelled cases (challenge submission)
-compare_runs.py           paired comparison of two runs: patient-cluster bootstrap CI, Wilcoxon, Holm
-benchmark.py              parameters, checkpoint size, inference latency and peak memory of a run
-configs/                  base recipes; configs/experiments/ inherit and extend them
-glo_nca/                  training package
+glo_nca/                  the package (pip install -e .)
+  model.py                GLO-NCA cell: perception, SE, spatial gate, optional global block
+  agent.py                cascade agent: coarse-to-fine inference, loss, optimiser step
+  losses.py               focal Tversky + BCE loss
+  metrics.py              IoU and HD95 (voxel and surface)
   config.py               YAML to settings
-  data.py                 BraTS dataset (crop, resize, cache, patches, augmentation), split
-  evaluation.py           Dice / IoU / HD95, threshold tuning, full-resolution scoring
-  trainer.py              training loop, best-model selection, early stopping, final test
+  data.py                 BraTS dataset (crop, resize, normalise, cache, patches, augmentation), split
+  experiment.py           experiment state: config, split and train/val/test mode
+  trainer.py              training loop, EMA, best-model selection, early stopping, final test
+  evaluation.py           Dice / IoU / HD95, final decoder, threshold tuning, full-resolution scoring
   checkpoint.py           full checkpoints for exact resume
-  reporting.py            final table, results JSON, per-case CSV
-  plots.py                publication figures (PNG 300 dpi + PDF)
-src/                      GLO-NCA library (Med-NCA / M3D-NCA lineage)
-  agents/                 cascade agent: coarse-to-fine inference and joint training
-  models/                 GLO-NCA cell with SE, spatial gate and optional global-context block
-  losses/                 focal Tversky + BCE loss
-  utils/                  experiment state and metrics
-legacy/kaggle/            the original Kaggle scripts (v4-v7)
-tests/                    option checks, v7 equivalence test, synthetic data generator
-docker/                   training image
-cloud/                    GCP scripts and systemd units
-docs/figures/             figures of the reported run
-.github/workflows/        CI: tests on every push, v7 equivalence weekly
+  reporting.py, plots.py  results JSON, per-case CSV, publication figures
+  cli/                    command-line tools (also installed as glo-* commands)
+train.py, evaluate.py     thin wrappers so the tools also run from a checkout without installing:
+predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark
+configs/                  base recipes; configs/experiments/ inherit and extend them
+reproduce.sh              reproduce the reported test table from the released weights
+MODEL_CARD.md             data, results, intended use and limitations of the released model
+legacy/kaggle/            the original Kaggle scripts (v4-v7); they run against tag kaggle-v7-reference
+tests/                    unit checks, pipeline test, v7 equivalence test, synthetic data generator
+docker/, cloud/           training image; GCP scripts and systemd units
+docs/                     figures and per-case results of the reported run
+.github/workflows/        CI: unit and pipeline tests on every push, v7 equivalence weekly
 ```
+
+## Install
+
+```bash
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121   # or the CPU index
+pip install -e .                    # the package and the glo-train, glo-evaluate, glo-predict,
+                                    # glo-figures, glo-compare and glo-benchmark commands
+pip install -r requirements.lock    # optional: the exact versions behind the reported results
+```
+
+## Reproduce the reported results
+
+```bash
+./reproduce.sh /path/to/BraTS2021
+```
+
+downloads `best.pth`, `config.yaml` and `split.json` from the release (or uses them if present in
+`release/glo-nca-brats2021-res96/`), scores the 189 test patients with the reported setting and
+compares with the table above (Dice within ±0.005; the ensemble passes are stochastic).
+See `MODEL_CARD.md` for the model's data, intended use and limitations.
 
 ## Train locally
 
 ```bash
-pip install -r requirements.txt     # install torch first from the CUDA index
+pip install -e .                    # install torch first from the CUDA index
 python train.py --config configs/experiments/brats2021_res96_long.yaml --data-root /path/to/BraTS2021
 python train.py --resume experiments/<run-id> --data-root /path/to/BraTS2021
 python train.py --config configs/glo_nca_cascade.yaml --data-root /path/to/BraTS --stop-after-epoch 10
@@ -226,6 +243,7 @@ the VM only after a preemption, and `--auto-stop` powers it off when the run end
 
 ```bash
 python tests/test_options.py                                   # unit checks, no data needed
+python tests/test_pipeline.py                                  # train, predict, evaluate, compare, benchmark
 python tests/make_synthetic_data.py /tmp/syn --cases 12         # synthetic BraTS-style cases
 python tests/test_equivalence.py /tmp/syn                       # identical to the Kaggle v7 script
 ```

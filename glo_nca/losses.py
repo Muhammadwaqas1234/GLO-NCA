@@ -1,3 +1,4 @@
+r"""Training loss: focal Tversky plus binary cross-entropy per region."""
 import torch
 
 

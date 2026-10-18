@@ -22,10 +22,12 @@ jobs:
         run: |
           pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
           pip install -r docker/requirements-docker.txt
+          pip install --no-deps -e .
       - name: Compile and shell syntax
         run: |
-          python -m compileall -q glo_nca src tests train.py evaluate.py make_figures.py predict.py
-          for f in cloud/scripts/*.sh; do bash -n "$f"; done
+          python -m compileall -q glo_nca tests *.py
+          for f in cloud/scripts/*.sh reproduce.sh; do bash -n "$f"; done
+          glo-train --help > /dev/null
       - name: Unit tests
         run: python tests/test_options.py
       - name: Synthetic end-to-end run
@@ -42,6 +44,8 @@ jobs:
             --override evaluation.tune_thresholds=true
           python evaluate.py --run /tmp/runs/smoke --run /tmp/runs/smoke --data-root /tmp/syn \
             --full-resolution --no-hd95 --ensemble-n 1 --no-tta
+      - name: Pipeline test (fixed and plain configs, predict, evaluate, compare, benchmark)
+        run: python tests/test_pipeline.py
 
   equivalence:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

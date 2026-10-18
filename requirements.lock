@@ -1,0 +1,10 @@
+# Exact versions of the environment that produced the reported results (Python 3.10, CUDA 12.1).
+# Install torch first: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+# The complete transitive lock is docker/constraints-docker.txt.
+torch==2.5.1
+numpy==1.26.4
+scipy==1.15.3
+nibabel==5.4.2
+opencv-python-headless==4.11.0.86
+matplotlib==3.10.9
+pyyaml==6.0.3
