@@ -43,6 +43,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ensemble-n", type=int, default=None,
                     help="stochastic passes per model (default: each run's evaluation.ensemble_n)")
     ap.add_argument("--no-tta", action="store_true", help="disable flip test-time augmentation")
+    ap.add_argument("--case-seed", type=int, default=None,
+                    help="seed the stochastic passes per case (base + hash of the case name), for exact repeats")
     ap.add_argument("--brats-empty", action="store_true",
                     help="score an empty prediction of an absent region as Dice 1 (BraTS convention)")
     ap.add_argument("--no-hd95", action="store_true",
@@ -96,6 +98,8 @@ def main(argv=None) -> int:
         tta = C.USE_TTA and not args.no_tta
         print(f"{os.path.basename(r)}: best epoch {ck['ep']} (val {ck['val_mean']:.3f}), "
               f"ensemble {n}, tta {tta}", flush=True)
+        if args.case_seed is not None:
+            agent.case_seed = args.case_seed
         models.append((agent, n, tta))
 
     C0.TUNE_THRESHOLDS = args.tune_thresholds
@@ -123,6 +127,8 @@ def main(argv=None) -> int:
                     "thresholds": thresholds, "min_component": C0.MIN_COMPONENT, "models": [(n, t) for _, n, t in models]}
         if args.nested_regions:
             settings["nested_regions"] = True   # added only when set, so older progress files still resume
+        if args.case_seed is not None:
+            settings["case_seed"] = args.case_seed
         if os.path.exists(progress):
             with open(progress, encoding="utf-8") as fh:
                 first = json.loads(fh.readline() or "{}")

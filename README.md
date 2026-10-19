@@ -120,7 +120,7 @@ glo_nca/                  the package (pip install -e .)
   reporting.py, plots.py  results JSON, per-case CSV, publication figures
   cli/                    command-line tools (also installed as glo-* commands)
 train.py, evaluate.py     thin wrappers so the tools also run from a checkout without installing:
-predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark
+predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark, analyze
 configs/                  base recipes; configs/experiments/ inherit and extend them
 reproduce.sh              reproduce the reported test table from the released weights
 MODEL_CARD.md             data, results, intended use and limitations of the released model
@@ -136,7 +136,7 @@ docs/                     figures and per-case results of the reported run
 ```bash
 pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121   # or the CPU index
 pip install -e .                    # the package and the glo-train, glo-evaluate, glo-predict,
-                                    # glo-figures, glo-compare and glo-benchmark commands
+                                    # glo-figures, glo-compare, glo-benchmark and glo-analyze commands
 pip install -r requirements.lock    # optional: the exact versions behind the reported results
 ```
 
@@ -194,6 +194,9 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `loss.bce_logits` | BCE computed on logits instead of clamped probabilities |
 | `data.brain_mask` | one brain mask (any modality non-zero) for resizing and normalisation |
 | `data.et_labels` | labels counted as enhancing tumour (default 3 and 4); unknown labels stop loading |
+| `training.amp` | `bf16`: autocast the training forward pass to bfloat16 (loss in float32) |
+| `training.grad_checkpoint` | recompute each NCA step in the backward pass: less memory, identical gradients |
+| `evaluation.case_seed` | seed the stochastic inference passes per case, so predictions repeat exactly |
 
 `configs/experiments/brats2021_res96_fixed.yaml` switches all of the corrections above on;
 `brats2021_res96_fixed_plain.yaml` is its ablation control without SE and spatial gate, and
@@ -217,6 +220,13 @@ Two runs on the same test cases are compared with
 `python compare_runs.py experiments/<run-a> experiments/<run-b>` (difference B minus A, 95%
 bootstrap interval over patients, Wilcoxon test, Holm correction for WT/TC/ET), and inference cost
 is measured with `python benchmark.py --run experiments/<run-id> [--device cpu]`.
+
+`analyze.py` adds the analyses of a trained run: `decompose` scores the same seeded passes after each
+inference stage (single pass, ensemble, flips, thresholds, clean-up, ET rule) at full resolution;
+`steps` measures accuracy and latency for other NCA step counts; `erf` measures the effective
+receptive field from input gradients; `overlap` checks an official ID mapping table for evaluation
+cases that were in training. Every start or resume of a run records its commit, Docker image,
+software versions and GPU in `run_info.json`.
 
 Without tuning, cases are scored one at a time into a progress file, so an interrupted
 evaluation resumes where it stopped. Ensemble members must share `split.json` and the

@@ -5,17 +5,6 @@ import os
 import sys
 
 
-def _parse_regions(text, default, cast):
-    r"""Parse 'WT=a,TC=b,ET=c' into a per-region dictionary."""
-    out = {"WT": default, "TC": default, "ET": default}
-    for item in filter(None, (text or "").split(",")):
-        region, _, value = item.partition("=")
-        if region.strip() not in out:
-            raise ValueError(f"unknown region: {region}")
-        out[region.strip()] = cast(value)
-    return out
-
-
 def main(argv=None) -> int:
     r"""Run the model (or reuse saved probabilities) and save <case>.nii.gz label maps."""
     ap = argparse.ArgumentParser(description="Write BraTS label maps for unlabelled cases.")
@@ -33,6 +22,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ensemble-n", type=int, default=None,
                     help="stochastic passes per case (default: the run's evaluation.ensemble_n)")
     ap.add_argument("--no-tta", action="store_true", help="disable flip test-time augmentation")
+    ap.add_argument("--case-seed", type=int, default=None,
+                    help="seed the stochastic passes per case (base + hash of the case name), for exact repeats")
     ap.add_argument("--et-label", type=int, default=3, help="label for enhancing tumour (3: 2023+, 4: 2021)")
     ap.add_argument("--save-probs", default=None, metavar="DIR",
                     help="also save each case's probabilities, so post-processing can be redone without the model")
@@ -45,7 +36,7 @@ def main(argv=None) -> int:
     import numpy as np
 
     from glo_nca.config import REGIONS
-    from glo_nca.evaluation import decode_regions, masks_to_label, paste_to_scan
+    from glo_nca.evaluation import _parse_regions, decode_regions, masks_to_label, paste_to_scan
 
     thresholds = _parse_regions(args.thresholds, 0.5, float)
     min_component = _parse_regions(args.min_component, 0, int)
@@ -96,6 +87,8 @@ def main(argv=None) -> int:
     ck = torch.load(os.path.join(args.run, "best.pth"), map_location=dev, weights_only=False)
     for m, sd in zip(ca, ck["m"]):
         m.load_state_dict(sd)
+    if args.case_seed is not None:
+        agent.case_seed = args.case_seed
     agent.exp.set_model_state("test")
     if args.save_probs:
         os.makedirs(args.save_probs, exist_ok=True)

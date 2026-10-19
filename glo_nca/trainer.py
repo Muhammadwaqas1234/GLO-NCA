@@ -50,6 +50,41 @@ def _write_history(out_dir, hist):
                         hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]])
 
 
+def _git_commit() -> Optional[str]:
+    r"""Commit of the code: GLO_GIT_COMMIT (set by the cloud entrypoint) or the local checkout."""
+    if os.environ.get("GLO_GIT_COMMIT"):
+        return os.environ["GLO_GIT_COMMIT"]
+    try:
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        return subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              timeout=10).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def write_run_info(out_dir: str, C: GLO_NCA_Config, resume: bool) -> None:
+    r"""Record code, container, software and hardware of each start or resume in run_info.json."""
+    import platform
+    import sys
+    path = os.path.join(out_dir, "run_info.json")
+    info = {"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "resume": resume, "command": sys.argv,
+            "git_commit": _git_commit(), "docker_image": os.environ.get("GLO_IMAGE_DIGEST"),
+            "python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "host": platform.node(), "seed": C.SEED, "split_seed": C.SPLIT_SEED,
+            "deterministic": os.environ.get("GLO_DETERMINISTIC") == "1",
+            "amp": C.AMP, "grad_checkpoint": C.GRAD_CHECKPOINT, "case_seed": C.CASE_SEED}
+    runs = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            runs = json.load(fh)
+    runs.append(info)   # one entry per start or resume
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(runs, fh, indent=2)
+
+
 def with_weights(models, states, fn):
     r"""Run fn with the given weights loaded, then restore the live weights."""
     live = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
@@ -97,6 +132,9 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> Tuple:
                      use_global=C.USE_GLOBAL, norm=C.NORM)]
     agent = Agent_GLO_NCA(ca)
     exp = Experiment(config, ds, ca, agent); ds.set_experiment(exp)
+    agent.amp, agent.case_seed = C.AMP, C.CASE_SEED
+    for m in ca:
+        m.grad_checkpoint = C.GRAD_CHECKPOINT
     def entry(p):
         r"""Split entry for one case: (image, label, slice)."""
         return (p, p, 0)
@@ -289,6 +327,7 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: Optional[str] = None, resume
 
     # Setup; the order of operations fixes the random sequence.
     set_seed(C.SEED)
+    write_run_info(out_dir, C, resume)
     splits = _load_split(C, DATA_ROOT, out_dir, resume)
     _print_settings(C, splits)
     ds, ca, agent, dev = build(C, DATA_ROOT, out_dir, splits)

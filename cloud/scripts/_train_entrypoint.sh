@@ -21,8 +21,11 @@ SYNC_PID=$!
 trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 
 # Training in Docker; --shm-size=8g because DataLoader workers pass volumes through /dev/shm.
+IMAGE_ID="$(docker image inspect --format '{{.Id}}' glo-nca-cascade:latest 2>/dev/null || true)"
+GIT_COMMIT="$(git -C "${GLO_WORKSPACE:-/opt/glo-nca-cascade}" rev-parse HEAD 2>/dev/null || true)"
 COMMON=(--rm --gpus all --shm-size=8g -v "${GLO_DATA}:${GLO_DATA}:ro" -v "${OUT}:/out"
-        -e MPLBACKEND=Agg glo-nca-cascade:latest)
+        -e MPLBACKEND=Agg -e GLO_IMAGE_DIGEST="${IMAGE_ID}" -e GLO_GIT_COMMIT="${GIT_COMMIT}"
+        glo-nca-cascade:latest)
 set +e
 if [[ "${GLO_MODE}" == "resume" ]]; then
   docker run "${COMMON[@]}" --resume "/out/${RUN_ID}" --data-root "${GLO_DATA}" \

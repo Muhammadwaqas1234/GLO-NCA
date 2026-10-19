@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import zlib
 
 import numpy as np
 import torch
@@ -74,23 +75,58 @@ def metrics_from_cases(cases, per_case=None):
     return out
 
 
+def _parse_regions(text, default, cast):
+    r"""Parse 'WT=a,TC=b,ET=c' into a per-region dictionary."""
+    out = {"WT": default, "TC": default, "ET": default}
+    for item in filter(None, (text or "").split(",")):
+        region, _, value = item.partition("=")
+        if region.strip() not in out:
+            raise ValueError(f"unknown region: {region}")
+        out[region.strip()] = cast(value)
+    return out
+
+
+def case_seed(base, case):
+    r"""Seed of one case's stochastic passes: the base seed plus a stable hash of the case name."""
+    return (int(base) + zlib.crc32(case.encode())) % 2**31
+
+
 def predict_case(agent, data, ensemble=1, tta=False):
-    r"""Mean probability map for one collated case: (case, prob float32, gt bool)."""
+    r"""Mean probability map for one collated case: (case, prob float32, gt bool).
+
+    With agent.case_seed set, pass k of a case is seeded with case_seed(base, case) + k, so stochastic
+    predictions are reproducible case by case; the seed is kept in agent.last_seed.
+    """
+    case, probs, gt = predict_passes(agent, data, ensemble, tta)
+    return case, np.mean(probs, axis=0), gt
+
+
+def predict_passes(agent, data, ensemble=1, tta=False):
+    r"""Every stochastic pass of one case, flips outermost: (case, [prob per pass], gt bool).
+
+    With tta, the first ``ensemble`` passes are the un-flipped ones, so their mean is the ensemble
+    without flips and the first pass alone is a single pass.
+    """
     data = agent.prepare_data(data, eval=True)
     idx, inp0, tgt = data
     flips = [None, (1,), (2,), (3,)] if tta else [None]
+    seed = case_seed(agent.case_seed, case_id(idx[0])) if getattr(agent, "case_seed", None) is not None else None
+    agent.last_seed = seed
     probs = []
+    k = 0
     for fl in flips:
         inp = torch.flip(inp0, dims=fl) if fl is not None else inp0
         for _ in range(ensemble):
+            if seed is not None:
+                torch.manual_seed(seed + k)
+            k += 1
             out, targets = agent.get_outputs((idx, inp, tgt), full_img=True)
             p = torch.sigmoid(out)
             if fl is not None:
                 p = torch.flip(p, dims=fl)
-            probs.append(p.detach().cpu().numpy())
-    prob = np.mean(probs, axis=0)[0]
+            probs.append(p.detach().cpu().numpy()[0])
     gt = targets.detach().cpu().numpy()[0] >= 0.5
-    return case_id(idx[0]), prob, gt
+    return case_id(idx[0]), probs, gt
 
 
 def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16):
@@ -188,7 +224,10 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
                 spacing = scan_spacing(dataset, case)
             metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one,
                                     surface_hd95, nested, spacing)
-            fh.write(json.dumps({"split": state, "case": case, "metrics": metrics}) + "\n")
+            row = {"split": state, "case": case, "metrics": metrics}
+            if getattr(models[0][0], "last_seed", None) is not None:
+                row["seed"] = models[0][0].last_seed
+            fh.write(json.dumps(row) + "\n")
             fh.flush(); os.fsync(fh.fileno())
             done[case] = metrics
             if n % 20 == 0 or n == len(todo):

@@ -378,11 +378,84 @@ def test_saved_split():
           resumed == (["a"], ["b"], ["c"]) and sum(len(x) for x in fresh) == 10)
 
 
+def test_cache_fingerprint():
+    r"""The disk-cache key changes when a source scan changes."""
+    import time
+    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds.size, ds.use_foreground_crop, ds.MODALITIES = (8, 8, 8), True, ["t1"]
+    ds.ET_LABELS, ds.brain_mask, ds.cache_dir = (3, 4), False, "c"
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "case1"))
+        for m in ("t1", "seg"):
+            open(os.path.join(root, "case1", f"case1_{m}.nii.gz"), "wb").write(b"x")
+        ds.images_path = root
+        before = ds._cache_path("case1")
+        time.sleep(1.1)
+        open(os.path.join(root, "case1", "case1_t1.nii.gz"), "wb").write(b"xy")
+        after = ds._cache_path("case1")
+    check("cache key follows the source files", before != after)
+
+
+def test_grad_checkpoint():
+    r"""Activation checkpointing gives the same loss and gradients as the plain forward pass."""
+    import torch
+    from glo_nca.model import GLO_NCA_Cell
+    grads = []
+    for ckpt in (False, True):
+        torch.manual_seed(0)
+        cell = GLO_NCA_Cell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4, use_attention=True,
+                            use_spatial=True)
+        torch.nn.init.normal_(cell.fc1.weight, std=0.05)
+        cell.grad_checkpoint = ckpt
+        torch.manual_seed(1)
+        out = cell(torch.randn(1, 8, 8, 8, 24), steps=4, fire_rate=0.6)
+        out[..., 4:7].sum().backward()
+        grads.append(torch.cat([q.grad.flatten() for q in cell.parameters() if q.grad is not None]))
+    check("activation checkpointing: identical gradients", torch.allclose(grads[0], grads[1], atol=1e-6),
+          f"max diff {(grads[0] - grads[1]).abs().max().item():.1e}")
+
+
+def test_bf16_and_case_seed():
+    r"""bf16 autocast trains with a finite float32 loss; seeded inference passes repeat exactly."""
+    import torch
+    from glo_nca.evaluation import case_seed
+    from glo_nca.model import GLO_NCA_Cell
+    cell = GLO_NCA_Cell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4)
+    x = torch.randn(1, 8, 8, 8, 24)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        out = cell(x, steps=2, fire_rate=0.6)
+    loss = out.float()[..., 4:7].mean()
+    loss.backward()
+    ok_amp = loss.dtype == torch.float32 and bool(torch.isfinite(loss))
+    runs = []
+    for _ in range(2):
+        torch.manual_seed(case_seed(7, "BraTS2021_00001"))
+        with torch.no_grad():
+            runs.append(cell(x, steps=3, fire_rate=0.6))
+    ok_seed = torch.equal(runs[0], runs[1]) and case_seed(7, "a") != case_seed(7, "b")
+    check("bf16 training step; seeded passes repeat exactly", ok_amp and ok_seed)
+
+
+def test_run_info():
+    r"""run_info.json records code, software and settings, one entry per start or resume."""
+    import json
+    from glo_nca.trainer import write_run_info
+    C = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"))
+    with tempfile.TemporaryDirectory() as out:
+        write_run_info(out, C, False)
+        write_run_info(out, C, True)
+        info = json.load(open(os.path.join(out, "run_info.json")))
+    check("run_info: commit, torch and seed per start/resume",
+          len(info) == 2 and info[1]["resume"] and "torch" in info[0] and info[0]["seed"] == C.SEED,
+          f"commit {str(info[0]['git_commit'])[:8]}")
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
               test_with_weights, test_labels, test_saved_split, test_local_norm, test_bce_logits,
-              test_brain_mask, test_nested_tuning_and_spacing, test_compare_runs):
+              test_brain_mask, test_nested_tuning_and_spacing, test_compare_runs,
+              test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

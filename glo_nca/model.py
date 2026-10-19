@@ -2,6 +2,7 @@ r"""GLO-NCA cell: learned depthwise perception, SE, spatial gate, optional globa
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class SEBlock3D(nn.Module):
@@ -103,6 +104,7 @@ class GLO_NCA_Cell(nn.Module):
             torch.nn.init.xavier_uniform_(self.fc1.weight)
 
         self.fire_rate = fire_rate
+        self.grad_checkpoint = False   # recompute each step in backward: less memory, same result
         self.to(self.device)
 
     def perceive(self, x):
@@ -150,6 +152,10 @@ class GLO_NCA_Cell(nn.Module):
     def forward(self, x, steps=10, fire_rate=0.5):
         r"""Run the update for the given number of steps, keeping the input channels fixed."""
         for step in range(steps):
-            x2 = self.update(x, fire_rate).clone()
+            if self.grad_checkpoint and torch.is_grad_enabled():
+                # preserve_rng_state (default) replays the same stochastic update mask on recompute.
+                x2 = checkpoint(self.update, x, fire_rate, use_reentrant=False).clone()
+            else:
+                x2 = self.update(x, fire_rate).clone()
             x = torch.concat((x[...,0:self.input_channels], x2[...,self.input_channels:]), 4)
         return x

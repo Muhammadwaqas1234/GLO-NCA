@@ -30,6 +30,7 @@ glo-predict = "glo_nca.cli.predict:main"
 glo-figures = "glo_nca.cli.make_figures:main"
 glo-compare = "glo_nca.cli.compare_runs:main"
 glo-benchmark = "glo_nca.cli.benchmark:main"
+glo-analyze = "glo_nca.cli.analyze:main"
 
 [tool.setuptools]
 packages = ["glo_nca", "glo_nca.cli"]

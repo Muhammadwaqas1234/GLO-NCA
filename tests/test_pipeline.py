@@ -11,7 +11,7 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from glo_nca.cli import benchmark, compare_runs, evaluate, predict, train  # noqa: E402
+from glo_nca.cli import analyze, benchmark, compare_runs, evaluate, predict, train  # noqa: E402
 
 SMALL = ["--override", "training.epochs=2", "--override", "data.n_patients=8",
          "--override", "evaluation.ensemble_n=1", "--override", "training.workers=0",
@@ -63,6 +63,23 @@ def main() -> int:
         res = json.load(open(os.path.join(work, "eval.json")))
         check("evaluate: nested regions, surface HD95 at full resolution",
               rc == 0 and res.get("nested_regions") is True, f"keys {sorted(res)[:4]}")
+
+        rc = analyze.main(["decompose", "--run", fixed, "--data-root", data, "--limit", "2",
+                           "--output", os.path.join(work, "dec.json")])
+        dec = json.load(open(os.path.join(work, "dec.json")))
+        check("analyze decompose: six stages, per-case CSV",
+              rc == 0 and len(dec["summary"]) == 6
+              and os.path.exists(os.path.join(work, "dec_per_case.csv")), f"{dec['cases']} cases")
+        rc = analyze.main(["steps", "--run", fixed, "--data-root", data, "--limit", "2", "--steps", "2,4",
+                           "--ensemble-n", "1", "--no-tta", "--output", os.path.join(work, "steps.json")])
+        st = json.load(open(os.path.join(work, "steps.json")))
+        check("analyze steps: one row per step count", rc == 0 and set(st["results"]) == {"2", "4"})
+        case = sorted(d for d in os.listdir(data) if os.path.isdir(os.path.join(data, d)))[0]
+        rc = analyze.main(["erf", "--run", fixed, "--case", os.path.join(data, case), "--steps", "2,8",
+                           "--passes", "1", "--output", os.path.join(work, "erf.json")])
+        er = json.load(open(os.path.join(work, "erf.json")))["results"]
+        check("analyze erf: influence radius grows with steps", rc == 0
+              and er["8"]["r90_mm"] >= er["2"]["r90_mm"], f"r90 {er['2']['r90_mm']:.0f} -> {er['8']['r90_mm']:.0f} mm")
 
         rc = compare_runs.main([os.path.join(runs, "fixed_plain"), fixed, "--boot", "200",
                                 "--output", os.path.join(work, "cmp.json")])

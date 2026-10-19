@@ -24,6 +24,10 @@ class _ConfigView:
         return self.config.get(tag)
 
 
+# Bump when preprocessing changes, so disk caches written by older code are not reused.
+PREPROCESS_VERSION = 2
+
+
 class Dataset_BraTS_Foreground(Dataset):
     r"""BraTS loader: foreground crop, cubic resize, nonzero z-norm, patches and augmentation."""
 
@@ -171,9 +175,19 @@ class Dataset_BraTS_Foreground(Dataset):
                 out[..., c][mask] = (v - v.mean()) / (v.std() + 1e-8)
         return out
 
+    def _source_fingerprint(self, folder_name):
+        r"""Size and modification time of every input file of a case, so an edited scan invalidates its cache."""
+        folder = os.path.join(self.images_path, folder_name)
+        parts = []
+        for m in [*self.MODALITIES, self.SEG_SUFFIX]:
+            st = os.stat(self._find_modality_file(folder, folder_name, m))
+            parts.append(f"{m}:{st.st_size}:{int(st.st_mtime)}")
+        return ";".join(parts)
+
     def _cache_path(self, folder_name):
-        r"""Disk-cache file for one case; the name encodes every setting that changes the arrays."""
-        tag = f"{self.size}|{self.use_foreground_crop}|{self.MODALITIES}"
+        r"""Disk-cache file for one case; the name encodes the preprocessing version, settings and source files."""
+        tag = (f"v{PREPROCESS_VERSION}|{self.size}|{self.use_foreground_crop}|{self.MODALITIES}"
+               f"|{self._source_fingerprint(folder_name)}")
         if tuple(self.ET_LABELS) != (3, 4):
             tag += f"|et{list(self.ET_LABELS)}"   # added only when changed, so existing caches stay valid
         if self.brain_mask:

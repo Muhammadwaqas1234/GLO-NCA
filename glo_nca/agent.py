@@ -13,6 +13,9 @@ import torch.optim as optim
 class Agent_GLO_NCA:
     r"""GLO-NCA cascade agent: holds the NCA levels, their optimisers, and runs training and inference."""
 
+    amp = "off"                       # "bf16": autocast the training forward pass to bfloat16
+    case_seed: Optional[int] = None   # base seed for reproducible stochastic inference passes
+
     def __init__(self, model: List[torch.nn.Module]):
         r"""Keep the levels (coarse to fine); the experiment is attached later with set_exp."""
         self.model = model
@@ -108,7 +111,12 @@ class Agent_GLO_NCA:
     def batch_step(self, data, loss_f) -> Dict[int, float]:
         r"""One optimisation step over all levels; returns the loss per region."""
         data = self.prepare_data(data)
-        outputs, targets = self.get_outputs(data)
+        if self.amp == "bf16":
+            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                outputs, targets = self.get_outputs(data)
+            outputs = outputs.float()     # the loss is computed in float32
+        else:
+            outputs, targets = self.get_outputs(data)
         for opt in self.optimizer:
             opt.zero_grad()
         loss, per_region = self.compute_loss(outputs, targets, loss_f)
@@ -146,7 +154,9 @@ class Agent_GLO_NCA:
         inputs_loc = self._downscale(inputs, last * int(math.log2(scale_fac)), max_pool)
         targets_loc = self._downscale(targets, last * int(math.log2(scale_fac)), max_pool)
 
-        with torch.no_grad() if full_img else contextlib.nullcontext():
+        # Whole-volume inference runs without gradients unless keep_grad is set (receptive-field analysis).
+        no_grad = full_img and not kwargs.get("keep_grad", False)
+        with torch.no_grad() if no_grad else contextlib.nullcontext():
             for m in range(last + 1):
                 stp = steps[m] if isinstance(steps, list) else steps
                 outputs = self.model[m](inputs_loc, steps=stp, fire_rate=fire_rate)

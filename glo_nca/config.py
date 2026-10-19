@@ -68,6 +68,9 @@ class GLO_NCA_Config:
     NORM: str = "batch"
     BCE_LOGITS: bool = False
     BRAIN_MASK: bool = False
+    AMP: str = "off"
+    GRAD_CHECKPOINT: bool = False
+    CASE_SEED: Optional[int] = None
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -155,5 +158,8 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         NORM=str(m.get("norm", "batch")),
         BCE_LOGITS=bool(l.get("bce_logits", False)),
         BRAIN_MASK=bool(d.get("brain_mask", False)),
+        AMP=str(t.get("amp", "off")),
+        GRAD_CHECKPOINT=bool(t.get("grad_checkpoint", False)),
+        CASE_SEED=v.get("case_seed"),
         raw=raw,
     )

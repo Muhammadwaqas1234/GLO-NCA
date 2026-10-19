@@ -25,7 +25,7 @@ RUN python -m pip install -r requirements-docker.txt -c constraints-docker.txt
 
 COPY glo_nca/ ./glo_nca/
 COPY configs/ ./configs/
-COPY train.py evaluate.py make_figures.py predict.py compare_runs.py benchmark.py ./
+COPY train.py evaluate.py make_figures.py predict.py compare_runs.py benchmark.py analyze.py ./
 
 RUN python -c "import torch, nibabel, scipy, cv2, yaml, glo_nca.trainer; print('deps OK, torch', torch.__version__)"
 
