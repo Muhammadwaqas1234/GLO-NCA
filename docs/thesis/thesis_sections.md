@@ -139,7 +139,88 @@ not be used for diagnosis or treatment decisions.
   reported numbers are from the original run.
 - **Run history.** The run was resumed several times with changed validation frequency (every 5
   epochs until epoch 38, then every epoch) and early-stopping settings, recorded in `train.log`.
+- **Internal HD95 definition.** The internal HD95 values reported so far pooled the distances of both
+  directions before taking the 95th percentile; the standard definition (the larger of the two directed
+  percentiles) is usually slightly higher, and the internal values are recomputed with it. The Synapse
+  values are computed by the organisers and are not affected.
 - **Resolution.** Resizing each brain to 96³ discards detail; most remaining errors are missed or
   misplaced small enhancing tumour.
 - **Scope.** Pre-operative adult glioma only; post-treatment scans, other tumour types and other
   acquisition protocols were not evaluated, and the internal and external sets both come from BraTS.
+
+## 7. Related work, organised by how information travels
+
+Segmentation models differ mainly in how a voxel's decision is informed by distant voxels. The thesis
+positions GLO-NCA along that axis rather than by publication date.
+
+- **Local recurrence.** Neural cellular automata update every cell from its neighbourhood with one
+  shared rule, applied repeatedly (Mordvintsev et al., 2020). Information spreads by at most the kernel
+  radius per step, so reach grows with the number of steps. Med-NCA and M3D-NCA (Kalkhof et al., 2023)
+  brought this to medical segmentation with very few parameters.
+- **Coarse-to-fine propagation.** Running a first NCA on a downsampled volume lets each step cover
+  more physical distance; M3D-NCA and GLO-NCA pass the coarse state to a full-resolution level.
+  U-Net-style encoders (Ronneberger et al., 2015; nnU-Net, Isensee et al., 2021) achieve the same through
+  pooling.
+- **Channel conditioning.** Squeeze-and-excitation (Hu et al., 2018) pools each channel over the whole
+  volume and rescales channels with the result. Every voxel is conditioned on a global summary, but
+  only through 24 channel weights; no location-specific information is exchanged.
+- **Local spatial gating.** The spatial branch of CBAM (Woo et al., 2018) computes a per-voxel gate from
+  channel mean and maximum maps with a convolution. Its reach is the kernel size (7³ here); it
+  re-weights locations but does not move information across the volume.
+- **Global aggregation.** Non-local blocks (Wang et al., 2018) and the global-context block of GCNet
+  (Cao et al., 2019) pool features over all locations with attention weights and add the pooled
+  context back to every location, giving each voxel a summary of the whole volume in one step.
+- **Token and state-space communication.** Transformers (UNETR, Swin UNETR; Hatamizadeh et al., 2022)
+  and state-space models (SegMamba, Xing et al., 2024; U-Mamba, Ma et al., 2024) exchange information
+  between all positions, at a much larger parameter and compute cost.
+
+**Closest prior work.** MedSegDiffNCA (Mittal et al., 2025) already combines channel and spatial
+attention with multi-level NCA processing, so adding attention to a cascaded NCA is not new by itself.
+GCSER-UNet (Mukherjee et al., 2026) combines global context and squeeze-and-excitation in a U-Net for
+brain tumours. The contribution of this thesis is therefore not the combination of blocks, but a
+controlled measurement of which form of communication helps a compact NCA on volumetric glioma
+segmentation, at a fixed parameter budget, with its cost.
+
+## 8. Contribution and the global-context question
+
+The proposal described an attention-pooled global context operator. The reported model instead uses
+SE (global over channels) and a local spatial gate; the attention-pooled block (Section 7, GCNet form)
+is implemented as an optional variant. The thesis states this directly and turns it into the
+experimental question:
+
+> At a fixed budget of about 30,000 parameters, does channel recalibration and spatial gating, or an
+> explicit attention-pooled global context, improve patient-level glioma segmentation over an
+> otherwise identical multiscale NCA?
+
+The model name GLO-NCA is kept for the family of models; the reported model is described as a
+multiscale NCA with channel recalibration (SE) and local spatial gating.
+
+**Measured reach of the reported model.** Input-gradient analysis (effective receptive field) on one
+scan shows that about 70% of the influence on a tumour voxel comes from more than 30 mm away, and that
+this reach is the same for 5 and for 40 steps per level (90% of influence within about 115 mm). The
+model therefore already integrates information from most of the brain; the coarse level and the
+volume-wide operations (SE pooling and batch-normalisation statistics) provide this reach, not slow
+step-by-step propagation. Whether this global dependence helps is answered by the ablation.
+
+## 9. Ablation design
+
+All variants are retrained with the corrected configuration (`brats2021_res96_fixed.yaml`: loss on
+every region, ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored
+with the same final decoder at full resolution. Each variant differs from the full model in one
+respect.
+
+| Variant | Config | Difference | Parameters | Question |
+|---|---|---|---|---|
+| Full model | `fixed` | — | 30,138 | reference |
+| Without context blocks | `fixed_plain` | no SE, no spatial gate | 28,128 | do the context blocks help? |
+| Without context, widened | `fixed_plain_wide` | no SE, no spatial gate, hidden 141 | 30,078 | is a gain due to the blocks or to the extra parameters? |
+| Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | does fusing the four modalities help? |
+| With global context | `fixed_global` | plus attention-pooled global block | 30,848 | does explicit global aggregation help further? |
+
+\*The same cell; the input has one channel instead of four.
+
+The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
+patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);
+WT, TC and ET differences are secondary, Holm-corrected. Leave-one-modality-out at inference
+(`glo-analyze modalities`) complements the fusion ablation without retraining. Each variant is trained
+once; differences smaller than about 0.01 Dice are reported as inconclusive.

@@ -20,9 +20,12 @@ trained on it is subject to the BraTS data terms.
 | Evaluation | WT | TC | ET | Mean Dice |
 |---|---|---|---|---|
 | Internal test, 189 patients (Dice) | 0.921 | 0.895 | 0.817 | 0.878 |
-| Internal test, surface HD95 (mm) | 4.93 | 5.23 | 4.49 | |
+| Internal test, surface HD95 (mm), pooled percentile* | 4.93 | 5.23 | 4.49 | |
 | BraTS 2023 validation, 219 cases, Synapse (Dice) | 0.909 | 0.855 | 0.784 | 0.849 |
 | Same, with ET relabelling rule (Dice) | 0.909 | 0.855 | 0.797 | 0.854 |
+
+*Pooled over both directions; the standard (max of directed percentiles) values are being recomputed.
+The Synapse values are computed by the organisers and are not affected.
 
 Internal test: ensemble ×4 with flips, thresholds 0.65/0.65/0.60 and clean-up 400/25/400 voxels chosen
 on validation, full resolution, BraTS scoring (`./reproduce.sh`). The ET relabelling rule was chosen

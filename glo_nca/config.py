@@ -71,6 +71,9 @@ class GLO_NCA_Config:
     AMP: str = "off"
     GRAD_CHECKPOINT: bool = False
     CASE_SEED: Optional[int] = None
+    LEGACY_PATCHIFY: bool = True
+    LOG_LIVE_AND_EMA: bool = False
+    PERSISTENT_WORKERS: bool = False
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -161,5 +164,8 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         AMP=str(t.get("amp", "off")),
         GRAD_CHECKPOINT=bool(t.get("grad_checkpoint", False)),
         CASE_SEED=v.get("case_seed"),
+        LEGACY_PATCHIFY=bool(d.get("legacy_patchify", True)),
+        LOG_LIVE_AND_EMA=bool(t.get("log_live_and_ema", False)),
+        PERSISTENT_WORKERS=bool(t.get("persistent_workers", False)),
         raw=raw,
     )

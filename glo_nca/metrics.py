@@ -45,8 +45,13 @@ def _surface(mask):
     return mask & ~binary_erosion(mask, structure=generate_binary_structure(3, 1), border_value=0)
 
 
-def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0)):
-    r"""Surface HD95 in physical units (BraTS/medpy): 0 if both masks are empty, NaN if one is."""
+def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0), pooled=False):
+    r"""Surface HD95 in physical units: 0 if both masks are empty, NaN if one is.
+
+    Standard definition (medpy, BraTS): the larger of the two directed 95th-percentile surface
+    distances. pooled=True takes one percentile over both directions together, the definition used
+    for the internal HD95 reported before this correction; it is usually slightly lower.
+    """
     if not _SCIPY_AVAILABLE:
         return float("nan")
     p, t = np.asarray(pred, bool), np.asarray(target, bool)
@@ -57,4 +62,6 @@ def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0)):
     sp, st = _surface(p), _surface(t)
     d_pt = distance_transform_edt(~st, sampling=spacing)[sp]
     d_tp = distance_transform_edt(~sp, sampling=spacing)[st]
-    return float(np.percentile(np.concatenate([d_pt, d_tp]), 95))
+    if pooled:
+        return float(np.percentile(np.concatenate([d_pt, d_tp]), 95))
+    return float(max(np.percentile(d_pt, 95), np.percentile(d_tp, 95)))

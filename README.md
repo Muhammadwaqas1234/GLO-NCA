@@ -29,7 +29,10 @@ The test patients were never used for training, model selection or tuning.
   thresholds WT/TC/ET 0.65/0.65/0.60 and small-lesion clean-up 400/25/400 voxels, both chosen
   on validation; predictions resampled to the original 240×240×155 scans; BraTS scoring, where an
   empty prediction of an absent region scores Dice 1.
-- HD95 is the surface-based BraTS/medpy definition in mm; for ET it is undefined in the 5 cases
+- HD95 is surface-based, in mm, computed as one 95th percentile over the distances of both
+  directions pooled (`hd95_surface(..., pooled=True)`); the standard BraTS/medpy definition takes the
+  larger of the two directed percentiles and is usually slightly higher, so these values are being
+  recomputed with it; for ET it is undefined in the 5 cases
   where exactly one of the two masks is empty.
 - The ensemble passes are stochastic: the training run's own final test of the same setting gave
   0.880 mean Dice (0.921 / 0.896 / 0.823).
@@ -197,10 +200,16 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `training.amp` | `bf16`: autocast the training forward pass to bfloat16 (loss in float32) |
 | `training.grad_checkpoint` | recompute each NCA step in the backward pass: less memory, identical gradients |
 | `evaluation.case_seed` | seed the stochastic inference passes per case, so predictions repeat exactly |
+| `data.legacy_patchify` | the old dataset-stage patch (working size, so it never moves); kept on only to reproduce earlier runs |
+| `training.log_live_and_ema` | validate both the live and the EMA weights and record both |
+| `training.persistent_workers` | keep data-loader workers alive across epochs |
+| `data.modalities` | the input modalities; one modality gives the fusion ablation (`brats2021_res96_fixed_single.yaml`) |
 
 `configs/experiments/brats2021_res96_fixed.yaml` switches all of the corrections above on;
 `brats2021_res96_fixed_plain.yaml` is its ablation control without SE and spatial gate, and
-`brats2021_res96_fixed_global.yaml` adds the global-context block. The results above were produced
+`brats2021_res96_fixed_global.yaml` adds the global-context block, `brats2021_res96_fixed_plain_wide.yaml`
+widens the control to the same number of parameters, and `brats2021_res96_fixed_single.yaml` uses one
+modality (contrast-enhanced T1). The results above were produced
 before these corrections, with all of them off: the loss skipped regions absent from a crop,
 validation scored the live weights while `best.pth` holds the EMA weights, the training crop was
 uniformly random, and the spatial block is a local 7×7×7 gate rather than a global operator.
@@ -224,8 +233,10 @@ is measured with `python benchmark.py --run experiments/<run-id> [--device cpu]`
 `analyze.py` adds the analyses of a trained run: `decompose` scores the same seeded passes after each
 inference stage (single pass, ensemble, flips, thresholds, clean-up, ET rule) at full resolution;
 `steps` measures accuracy and latency for other NCA step counts; `erf` measures the effective
-receptive field from input gradients; `overlap` checks an official ID mapping table for evaluation
-cases that were in training. Every start or resume of a run records its commit, Docker image,
+receptive field from input gradients; `perturb` measures the effect of noise placed at a distance;
+`modalities` removes each modality in turn; `manifest` lists every case with its split, ET presence and
+region volumes; `overlap` checks an official ID mapping table for evaluation cases that were in
+training. `decompose` also reports how well the spread of the stochastic passes flags poor cases. Every start or resume of a run records its commit, Docker image,
 software versions and GPU in `run_info.json`.
 
 Without tuning, cases are scored one at a time into a progress file, so an interrupted

@@ -37,6 +37,7 @@ class Dataset_BraTS_Foreground(Dataset):
     use_foreground_crop = True
     use_nonzero_norm = True
     brain_mask = False   # True: one brain mask (any modality non-zero) for cropping, resizing and normalisation
+    legacy_patchify = True   # dataset-stage patch of the working size (no effect except on random numbers)
     augment = False
 
     def __init__(self, cache="memory", cache_dir=None):
@@ -220,7 +221,10 @@ class Dataset_BraTS_Foreground(Dataset):
         key = self.images_list[idx]
         img, label = self._load_case(key)
         img_id = "_" + str(key[1]) + "_0"
-        if self.exp.get_from_config('patchify') is True and self.state == "train":
+        if self.exp.get_from_config('patchify') is True and self.state == "train" and self.legacy_patchify:
+            # Legacy: the patch equals the working volume, so this crop never moves; it is kept only
+            # because it draws random numbers, which earlier runs depend on. The effective training
+            # crop is taken in the agent (crop_et_prob).
             img, label = self.patchify_multimodal(img, label)
         augment = self.augment and self.state == "train"
         if augment:

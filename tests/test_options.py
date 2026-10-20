@@ -450,12 +450,60 @@ def test_run_info():
           f"commit {str(info[0]['git_commit'])[:8]}")
 
 
+def test_hd95_reference():
+    r"""Surface HD95 equals an independent brute-force computation (medpy definition) on random shapes."""
+    from scipy.ndimage import binary_erosion, generate_binary_structure
+    from scipy.spatial import cKDTree
+    from glo_nca.metrics import hd95_surface
+
+    def reference(a, b, spacing):
+        # medpy: border = mask minus its erosion (connectivity 1); HD95 = max of both directed 95th percentiles.
+        st = generate_binary_structure(3, 1)
+        sa = np.argwhere(a & ~binary_erosion(a, st, border_value=0)) * spacing
+        sb = np.argwhere(b & ~binary_erosion(b, st, border_value=0)) * spacing
+        d_ab = cKDTree(sb).query(sa)[0]
+        d_ba = cKDTree(sa).query(sb)[0]
+        return max(np.percentile(d_ab, 95), np.percentile(d_ba, 95))
+
+    rng = np.random.default_rng(3)
+    worst = 0.0
+    for _ in range(6):
+        a = np.zeros((40, 40, 30), bool); b = np.zeros_like(a)
+        for m in (a, b):
+            for _ in range(3):
+                c = rng.integers(8, 30, 3); r = rng.integers(3, 7, 3)
+                m[c[0]-r[0]:c[0]+r[0], c[1]-r[1]:c[1]+r[1], max(c[2]-r[2], 0):c[2]+r[2]] = True
+        spacing = np.array([1.0, 1.0, 1.5])
+        worst = max(worst, abs(hd95_surface(a, b, spacing=tuple(spacing)) - reference(a, b, spacing)))
+    check("surface HD95 matches an independent reference", worst < 1e-6, f"max diff {worst:.1e}")
+
+
+def test_ablation_configs():
+    r"""Ablation configs: matched recipe, intended differences and parameter counts."""
+    import torch
+    from glo_nca.model import GLO_NCA_Cell
+    load = lambda n: load_config(os.path.join(_ROOT, "configs", "experiments", f"brats2021_res96_{n}.yaml"))
+    full, plain, wide, single = load("fixed"), load("fixed_plain"), load("fixed_plain_wide"), load("fixed_single")
+    count = lambda C: sum(p.numel() for k in (7, 3) for p in GLO_NCA_Cell(
+        C.CHANNEL_N, C.FIRE_RATE, "cpu", C.HIDDEN, kernel_size=k, input_channels=len(C.MODALITIES),
+        use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, use_global=C.USE_GLOBAL).parameters())
+    n = {k: count(C) for k, C in (("full", full), ("plain", plain), ("wide", wide), ("single", single))}
+    same = lambda a, b, skip: ({k: v for k, v in vars(a).items() if k not in skip | {"NAME", "raw"}}
+                               == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
+    ok = (same(full, single, {"MODALITIES"}) and same(plain, wide, {"HIDDEN"})
+          and n["full"] == 30138 and n["plain"] == 28128 and abs(n["wide"] - n["full"]) < 100
+          and single.MODALITIES == ["t1ce"] and not full.LEGACY_PATCHIFY)
+    check("ablation configs: one difference each, matched capacity", ok,
+          f"full {n['full']}, plain {n['plain']}, wide {n['wide']}, single {n['single']}")
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
               test_with_weights, test_labels, test_saved_split, test_local_norm, test_bce_logits,
               test_brain_mask, test_nested_tuning_and_spacing, test_compare_runs,
-              test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info):
+              test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info,
+              test_hd95_reference, test_ablation_configs):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

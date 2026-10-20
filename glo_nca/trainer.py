@@ -41,13 +41,21 @@ def _write_status(out_dir, **fields):
 
 
 def _write_history(out_dir, hist):
-    r"""Write the per-epoch history to history.csv."""
+    r"""Write the per-epoch history to history.csv (plus the other weights' Dice when logged)."""
+    other = hist.get("val_other_mean")
     with open(os.path.join(out_dir, "history.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["epoch", "loss", "lr", "val_mean", "val_WT", "val_TC", "val_ET"])
+        w.writerow(["epoch", "loss", "lr", "val_mean", "val_WT", "val_TC", "val_ET"]
+                   + (["val_other_mean"] if other else []))
+        k = 0
         for i in range(len(hist["epoch"])):
-            w.writerow([hist["epoch"][i], hist["loss"][i], hist["lr"][i], hist["val_mean"][i],
-                        hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]])
+            row = [hist["epoch"][i], hist["loss"][i], hist["lr"][i], hist["val_mean"][i],
+                   hist["val_WT"][i], hist["val_TC"][i], hist["val_ET"][i]]
+            if other:
+                validated = not math.isnan(hist["val_mean"][i])
+                row.append(other[k] if validated and k < len(other) else "")
+                k += int(validated)
+            w.writerow(row)
 
 
 def _git_commit() -> Optional[str]:
@@ -112,7 +120,7 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> Tuple:
         "save_interval": 10**9, "evaluate_interval": 10**9, "n_epoch": C.EPOCHS,
         "batch_size": C.BATCH_SIZE, "batch_duplication": 1,
         "channel_n": C.CHANNEL_N, "inference_steps": C.STEPS, "cell_fire_rate": C.FIRE_RATE,
-        "input_channels": 4, "output_channels": 3, "hidden_size": C.HIDDEN,
+        "input_channels": len(C.MODALITIES), "output_channels": 3, "hidden_size": C.HIDDEN,
         "train_model": 1, "use_attention": True,
         "input_size": C.INPUT_SIZE, "scale_factor": 2,
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
@@ -123,11 +131,12 @@ def build(C: GLO_NCA_Config, data_root: str, out_dir: str, splits) -> Tuple:
     ds = Dataset_BraTS_Foreground(cache=C.CACHE, cache_dir=cache_dir)
     ds.MODALITIES = C.MODALITIES; ds.augment = C.AUGMENT; ds.ET_LABELS = tuple(C.ET_LABELS)
     ds.brain_mask = C.BRAIN_MASK
+    ds.legacy_patchify = C.LEGACY_PATCHIFY
     ds.use_foreground_crop = C.USE_FOREGROUND_CROP; ds.use_nonzero_norm = C.USE_NONZERO_NORM
-    ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=4,
+    ca = [GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=7, input_channels=len(C.MODALITIES),
                      use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT,
                      use_global=C.USE_GLOBAL, norm=C.NORM),
-          GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=3, input_channels=4,
+          GLO_NCA_Cell(C.CHANNEL_N, C.FIRE_RATE, dev, C.HIDDEN, kernel_size=3, input_channels=len(C.MODALITIES),
                      use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, dropout=C.DROPOUT,
                      use_global=C.USE_GLOBAL, norm=C.NORM)]
     agent = Agent_GLO_NCA(ca)
@@ -248,11 +257,25 @@ def _setup_training(C: GLO_NCA_Config, ca, agent, n_train: int) -> FocalTverskyC
     return loss_f
 
 
+_LOADER = {}
+
+
+def _train_loader(C, ds):
+    r"""Training loader; with training.persistent_workers one loader and its workers live across epochs."""
+    if not C.PERSISTENT_WORKERS or C.NUM_WORKERS == 0:
+        return torch.utils.data.DataLoader(ds, shuffle=True, batch_size=C.BATCH_SIZE,
+                                           num_workers=C.NUM_WORKERS, pin_memory=True)
+    if id(ds) not in _LOADER:
+        _LOADER[id(ds)] = torch.utils.data.DataLoader(ds, shuffle=True, batch_size=C.BATCH_SIZE,
+                                                      num_workers=C.NUM_WORKERS, pin_memory=True,
+                                                      persistent_workers=True)
+    return _LOADER[id(ds)]
+
+
 def _train_epoch(C, ds, agent, loss_f, ema, ep, first_epoch, steps_per_epoch, t0) -> float:
     r"""One pass over the training split; returns the mean training loss."""
     losses = []
-    loader = torch.utils.data.DataLoader(ds, shuffle=True, batch_size=C.BATCH_SIZE,
-                                         num_workers=C.NUM_WORKERS, pin_memory=True)
+    loader = _train_loader(C, ds)
     for i, data in enumerate(loader):
         r = agent.batch_step(data, loss_f)
         if ema is not None:
@@ -267,12 +290,21 @@ def _train_epoch(C, ds, agent, loss_f, ema, ep, first_epoch, steps_per_epoch, t0
     return float(np.mean(losses)) if losses else 0
 
 
-def _validate(C, ds, ca, agent, ema) -> Dict[str, dict]:
-    r"""Validation metrics of the live weights, or of the EMA weights with training.validate_ema."""
+def _validate(C, ds, ca, agent, ema) -> Tuple[Dict[str, dict], Optional[float]]:
+    r"""Validation metrics used for selection, and the other weights' mean Dice when both are logged.
+
+    Selection uses the EMA weights with training.validate_ema (the weights best.pth saves), otherwise
+    the live weights; training.log_live_and_ema also scores the other set for the record.
+    """
     score = lambda: evaluate(agent, ds, "val", workers=C.VAL_WORKERS, surface_hd95=C.SURFACE_HD95)
+    mean = lambda v: float(np.mean([v[r]["dice"] for r in REGIONS]))
     if C.VALIDATE_EMA and ema is not None:
-        return with_weights(ca, ema.states, score)   # the weights best.pth saves
-    return score()
+        val = with_weights(ca, ema.states, score)
+        other = mean(score()) if C.LOG_LIVE_AND_EMA else None              # live weights
+    else:
+        val = score()
+        other = mean(with_weights(ca, ema.states, score)) if C.LOG_LIVE_AND_EMA and ema is not None else None
+    return val, other
 
 
 def _final_test(C, out_dir, ds, ca, agent, dev, best_path, hist, n_params, train_time, peak,
@@ -369,9 +401,12 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: Optional[str] = None, resume
         validate = ((ep + 1) % C.VAL_EVERY == 0 or ep + 1 == C.EPOCHS
                     or (stop_after_epoch is not None and ep + 1 >= stop_after_epoch))
         if validate:
-            val = _validate(C, ds, ca, agent, ema)
+            val, other = _validate(C, ds, ca, agent, ema)
             vm = float(np.mean([val[r]["dice"] for r in REGIONS]))
             hist["val_mean"].append(vm)
+            if other is not None:
+                hist.setdefault("val_other_mean", []).append(other)
+                print(f"   {'live' if C.VALIDATE_EMA else 'EMA'} weights: val mean {other:.3f}", flush=True)
             for r in REGIONS:
                 hist[f"val_{r}"].append(val[r]["dice"])
             print(f"ep {ep+1}/{C.EPOCHS} | lr {cur_lr:.2e} | loss {loss:.3f} | "

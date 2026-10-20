@@ -7,7 +7,7 @@ import nibabel as nib
 import numpy as np
 
 NAMING = {
-    "met": (["t1n", "t1c", "t2w", "t2f"], 3),     # BraTS 2023+ names; ET is label 3
+    "2023": (["t1n", "t1c", "t2w", "t2f"], 3),    # BraTS 2023 glioma names; ET is label 3
     "2021": (["t1", "t1ce", "t2", "flair"], 4),   # BraTS 2021 names; ET is label 4
 }
 
@@ -45,7 +45,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("out", help="output folder (one sub-folder per case)")
     ap.add_argument("--cases", type=int, default=12)
-    ap.add_argument("--naming", choices=sorted(NAMING), default="met")
+    ap.add_argument("--naming", choices=sorted(NAMING), default="2023")
     ap.add_argument("--shape", type=int, nargs=3, default=(56, 56, 44))
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()

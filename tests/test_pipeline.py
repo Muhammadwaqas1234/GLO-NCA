@@ -33,9 +33,10 @@ def main() -> int:
         data, runs = os.path.join(work, "syn"), os.path.join(work, "runs")
         subprocess.run([sys.executable, os.path.join(REPO, "tests", "make_synthetic_data.py"), data,
                         "--cases", "12"], check=True, capture_output=True)
-        for name in ("fixed", "fixed_plain"):
+        for name in ("fixed", "fixed_plain", "fixed_single"):
             rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", f"brats2021_res96_{name}.yaml"),
-                             "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL])
+                             "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL,
+                             *(["--override", "data.modalities=[t1c]"] if name == "fixed_single" else [])])
             status = json.load(open(os.path.join(runs, name, "status.json")))
             check(f"train {name}: completes and tests", rc == 0 and status["state"] == "completed",
                   status["state"])
@@ -80,6 +81,21 @@ def main() -> int:
         er = json.load(open(os.path.join(work, "erf.json")))["results"]
         check("analyze erf: influence radius grows with steps", rc == 0
               and er["8"]["r90_mm"] >= er["2"]["r90_mm"], f"r90 {er['2']['r90_mm']:.0f} -> {er['8']['r90_mm']:.0f} mm")
+
+        rc = analyze.main(["modalities", "--run", fixed, "--data-root", data, "--limit", "2", "--ensemble-n", "1",
+                           "--no-tta", "--output", os.path.join(work, "lomo.json")])
+        lomo = json.load(open(os.path.join(work, "lomo.json")))["results"]
+        check("analyze modalities: all and one row per missing modality", rc == 0 and len(lomo) == 5)
+        rc = analyze.main(["manifest", "--data-root", data, "--run", fixed, "--output", os.path.join(work, "man.csv")])
+        with open(os.path.join(work, "man.csv"), newline="") as fh:
+            man = list(csv.DictReader(fh))
+        check("analyze manifest: one row per case with splits", rc == 0 and len(man) == 12
+              and {r["split"] for r in man} >= {"train", "test"}, f"{len(man)} cases")
+        rc = analyze.main(["perturb", "--run", fixed, "--case", os.path.join(data, case), "--distances", "8,16",
+                           "--positions", "1", "--passes", "1", "--output", os.path.join(work, "pert.json")])
+        check("analyze perturb: effect per distance", rc in (0, 2))
+        hist = open(os.path.join(fixed, "history.csv")).readline()
+        check("history: live and EMA validation both recorded", "val_other_mean" in hist)
 
         rc = compare_runs.main([os.path.join(runs, "fixed_plain"), fixed, "--boot", "200",
                                 "--output", os.path.join(work, "cmp.json")])

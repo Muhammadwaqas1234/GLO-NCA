@@ -65,5 +65,5 @@ jobs:
           pip install -r docker/requirements-docker.txt torchio==1.2.1 seaborn==0.13.2 tensorboard==2.21.0
       - name: Equivalence with the original Kaggle v7 script
         run: |
-          python tests/make_synthetic_data.py /tmp/syn --cases 12 --naming met
+          python tests/make_synthetic_data.py /tmp/syn --cases 12 --naming 2023
           python tests/test_equivalence.py /tmp/syn --tol 1e-5

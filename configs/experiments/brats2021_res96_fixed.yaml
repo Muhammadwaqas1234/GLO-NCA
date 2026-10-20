@@ -9,12 +9,14 @@ experiment:
 data:
   crop_et_prob: 0.5               # half of the training crops are centred on enhancing tumour
   brain_mask: true                # one brain mask for resizing and normalisation
+  legacy_patchify: false          # skip the dataset-stage patch that never moves
 
 model:
   update_prob: 0.4                # a cell updates with probability 0.4 (same as fire_rate 0.6)
 
 training:
   validate_ema: true              # select the best epoch on the EMA weights that best.pth saves
+  log_live_and_ema: true          # also record the live weights' validation Dice
 
 loss:
   all_regions: true               # also penalise predictions of regions absent from the crop

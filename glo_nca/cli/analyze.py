@@ -81,7 +81,7 @@ def decompose(args) -> int:
     half, none = {r: 0.5 for r in REGIONS}, {r: 0 for r in REGIONS}
     et_rule = tuple(float(x) for x in args.et_to_ncr.split(",")) if args.et_to_ncr else None
     keys = list(ds.images_list)[:args.limit]
-    rows = []
+    rows, qc = [], []
     with torch.no_grad():
         for n, key in enumerate(keys, 1):
             data = torch.utils.data.default_collate([ds[list(ds.images_list).index(key)]])
@@ -102,13 +102,26 @@ def decompose(args) -> int:
             for stage, p, t, m, rule in settings:
                 rows.append({"case": case, "stage": stage, "seed": agent.last_seed,
                              **_metrics(decode_regions(p, t, m, rule), gt, spacing)})
+            # Uncertainty on the working grid: spread of the passes and low confidence inside the tumour.
+            mean_p = np.mean(passes, axis=0)
+            tumour = mean_p[..., 0] >= 0.5
+            final = rows[-1]
+            qc.append({"case": case, "mean_dice": float(np.mean([final[r]["dice"] for r in REGIONS])),
+                       "pass_std": float(np.std(passes, axis=0)[tumour].mean()) if tumour.any() else 0.0,
+                       "low_confidence": float(1 - np.maximum(mean_p, 1 - mean_p)[tumour].mean())
+                       if tumour.any() else 0.0})
             if n % 10 == 0 or n == len(keys):
                 print(f"  {n}/{len(keys)} cases", flush=True)
     summary = _summary(rows)
     _print_table(summary, "Inference decomposition")
+    quality = _quality_control(qc, args.failure_dice)
+    print(f"Uncertainty QC (failure: mean Dice < {args.failure_dice}, {quality['failures']} of {len(qc)}): "
+          f"pass spread AUROC {quality['pass_std']['auroc_failure']:.3f}, "
+          f"low confidence AUROC {quality['low_confidence']['auroc_failure']:.3f}")
     _save(args.output, {"run": run, "split": args.split, "cases": len(keys), "ensemble_n": args.ensemble_n,
                         "thresholds": th, "min_component": mc, "et_rule": et_rule,
-                        "case_seed": args.case_seed, "summary": summary}, rows)
+                        "case_seed": args.case_seed, "summary": summary, "quality_control": quality,
+                        "per_case_uncertainty": qc}, rows)
     return 0
 
 
@@ -247,6 +260,194 @@ def overlap(args) -> int:
     return 1 if hits["train"] or hits["validation"] else 0
 
 
+def _auroc(score, positive):
+    r"""Area under the ROC curve of a score for detecting positives (Mann-Whitney, ties counted half)."""
+    score, positive = np.asarray(score, float), np.asarray(positive, bool)
+    pos, neg = score[positive], score[~positive]
+    if len(pos) == 0 or len(neg) == 0:
+        return float("nan")
+    greater = (pos[:, None] > neg[None, :]).sum() + 0.5 * (pos[:, None] == neg[None, :]).sum()
+    return float(greater / (len(pos) * len(neg)))
+
+
+def _quality_control(qc, failure_dice):
+    r"""How well per-case uncertainty flags poor cases: AUROC, Spearman rho and a risk-coverage table."""
+    from scipy.stats import spearmanr
+    dice = np.array([q["mean_dice"] for q in qc])
+    fail = dice < failure_dice
+    out = {"failure_dice": failure_dice, "failures": int(fail.sum()), "cases": len(qc)}
+    for k in ("pass_std", "low_confidence"):
+        u = np.array([q[k] for q in qc])
+        rho = spearmanr(u, dice).correlation if len(qc) > 2 else float("nan")
+        # Risk-coverage: keep the most certain cases first; risk is 1 - mean Dice of the kept cases.
+        order = np.argsort(u)
+        cover = {f"{c}%": float(1 - dice[order[:max(1, int(round(len(qc) * c / 100)))]].mean())
+                 for c in (50, 80, 100)}
+        out[k] = {"auroc_failure": _auroc(u, fail), "spearman_vs_dice": float(rho), "risk_at_coverage": cover}
+    return out
+
+
+def manifest(args) -> int:
+    r"""One row per case: split, labels present, region volumes, ET presence, spacing and shape."""
+    import nibabel as nib
+
+    from glo_nca.data import Dataset_BraTS_Foreground, find_data_root
+    data_root, _ = find_data_root(args.data_root)
+    split = {}
+    if args.run:
+        for name, ids in zip(("train", "validation", "test"), _test_split(os.path.abspath(args.run))):
+            split.update({c: name for c in ids})
+    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds.ET_LABELS = tuple(int(x) for x in args.et_labels.split(","))
+    cases = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d)))
+    rows = []
+    for n, case in enumerate(cases, 1):
+        folder = os.path.join(data_root, case)
+        try:
+            img = nib.load(ds._find_modality_file(folder, case, "seg"))
+        except FileNotFoundError:
+            rows.append({"case": case, "split": split.get(case, ""), "excluded": "no segmentation"})
+            continue
+        seg = np.asanyarray(img.dataobj).astype(np.int16)
+        zooms = tuple(float(z) for z in img.header.get_zooms()[:3])
+        ml = float(np.prod(zooms)) / 1000.0
+        regions = ds._labels_to_regions(seg) > 0
+        rows.append({"case": case, "split": split.get(case, ""), "excluded": "",
+                     "labels": " ".join(str(v) for v in np.unique(seg)), "shape": "x".join(map(str, seg.shape)),
+                     "spacing_mm": "x".join(f"{z:g}" for z in zooms),
+                     "wt_ml": round(regions[..., 0].sum() * ml, 2), "tc_ml": round(regions[..., 1].sum() * ml, 2),
+                     "et_ml": round(regions[..., 2].sum() * ml, 2), "et_present": bool(regions[..., 2].any())})
+        if n % 100 == 0 or n == len(cases):
+            print(f"  {n}/{len(cases)} cases", flush=True)
+    summary = {}
+    for name in sorted({r["split"] for r in rows}):
+        rs = [r for r in rows if r["split"] == name and not r["excluded"]]
+        if rs:
+            summary[name or "unsplit"] = {
+                "cases": len(rs), "et_absent": sum(not r["et_present"] for r in rs),
+                "median_wt_ml": float(np.median([r["wt_ml"] for r in rs])),
+                "median_et_ml": float(np.median([r["et_ml"] for r in rs])),
+                "small_et_below_1ml": sum(0 < r["et_ml"] < 1 for r in rs)}
+    summary["excluded"] = sum(bool(r["excluded"]) for r in rows)
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+    if args.output:
+        keys = ["case", "split", "excluded", "labels", "shape", "spacing_mm", "wt_ml", "tc_ml", "et_ml", "et_present"]
+        with open(args.output, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=keys)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in keys})
+        with open(os.path.splitext(args.output)[0] + "_summary.json", "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2, default=_json_default)
+        print("Saved to", args.output)
+    return 0
+
+
+def modalities(args) -> int:
+    r"""Leave-one-modality-out at inference: each modality in turn is set to zero (missing)."""
+    import torch
+
+    from glo_nca.config import REGIONS
+    from glo_nca.data import find_data_root
+    from glo_nca.evaluation import _parse_regions, decode_regions, predict_case, scan_spacing, to_full_resolution
+    run = os.path.abspath(args.run)
+    data_root, _ = find_data_root(args.data_root)
+    C, ds, _, agent, _ = _load(run, data_root, _test_split(run))
+    agent.case_seed = args.case_seed
+    agent.exp.set_model_state(args.split)
+    th = _parse_regions(args.thresholds, 0.5, float)
+    mc = _parse_regions(args.min_component, 0, int)
+    keys = list(ds.images_list)[:args.limit]
+    variants = ["all"] + [f"without {m}" for m in C.MODALITIES]
+    dice = {v: {r: [] for r in REGIONS} for v in variants}
+    with torch.no_grad():
+        for n, key in enumerate(keys, 1):
+            sample = ds[list(ds.images_list).index(key)]
+            for j, v in enumerate(variants):
+                img = sample[1].copy()
+                if j:
+                    img[..., j - 1] = 0.0          # this modality missing
+                data = torch.utils.data.default_collate([(sample[0], img, sample[2])])
+                case, prob, _ = predict_case(agent, data, args.ensemble_n, not args.no_tta)
+                full, gt = to_full_resolution(ds, case, prob)
+                m = _metrics(decode_regions(full, th, mc), gt, scan_spacing(ds, case))
+                for r in REGIONS:
+                    dice[v][r].append(m[r]["dice"])
+            if n % 10 == 0 or n == len(keys):
+                print(f"  {n}/{len(keys)} cases", flush=True)
+    results = {}
+    for v in variants:
+        results[v] = {r: float(np.mean(dice[v][r])) for r in REGIONS}
+        results[v]["mean_dice"] = float(np.mean([results[v][r] for r in REGIONS]))
+        drop = results["all"]["mean_dice"] - results[v]["mean_dice"]
+        print(f"{v:20s} | mean Dice {results[v]['mean_dice']:.4f} (WT {results[v]['WT']:.3f} TC {results[v]['TC']:.3f} "
+              f"ET {results[v]['ET']:.3f}) | drop {drop:+.4f}", flush=True)
+    _save(args.output, {"run": run, "split": args.split, "cases": len(keys), "ensemble_n": args.ensemble_n,
+                        "tta": not args.no_tta, "results": results}, None)
+    return 0
+
+
+def perturb(args) -> int:
+    r"""Remote perturbation: change of the tumour prediction when a noise cube is placed at a distance."""
+    import torch
+
+    run = os.path.abspath(args.run)
+    folder = os.path.abspath(args.case)
+    case = os.path.basename(folder)
+    C, ds, _, agent, dev = _load(run, os.path.dirname(folder))
+    if args.modalities:
+        ds.MODALITIES = [m.strip() for m in args.modalities.split(",")]
+    agent.exp.set_model_state("test")
+    raw = np.stack([ds.load_item(ds._find_modality_file(folder, case, m)) for m in ds.MODALITIES], axis=-1)
+    x0, x1, y0, y1, z0, z1 = ds._foreground_bbox(raw)
+    img = ds.normalize(ds.resize_image(raw[x0:x1, y0:y1, z0:z1]))
+    vox_mm = np.array([(x1 - x0), (y1 - y0), (z1 - z0)]) / np.array(ds.size)
+    brain = np.any(img != 0, axis=-1)
+
+    def run_once(volume, seed):
+        torch.manual_seed(seed)
+        x = torch.from_numpy(volume[None].astype(np.float32)).to(dev)
+        with torch.no_grad():
+            out, _ = agent.get_outputs((["_" + case + "_0"], agent.make_seed(x),
+                                        torch.zeros((1, *ds.size, 3), device=dev)), full_img=True)
+        return torch.sigmoid(out[0, ..., 0]).cpu().numpy()      # whole-tumour probability
+
+    base = [run_once(img, k) for k in range(args.passes)]
+    tumour = np.mean(base, axis=0) >= 0.5
+    if not tumour.any():
+        print("FAILED: no tumour predicted in this case.")
+        return 2
+    centre = np.argwhere(tumour).mean(0)
+    idx = np.argwhere(brain & ~tumour)
+    dist = np.sqrt((((idx - centre) * vox_mm) ** 2).sum(1))
+    rng = np.random.default_rng(0)
+    half = args.cube // 2
+    results = {}
+    for d in [float(x) for x in args.distances.split(",")]:
+        cand = idx[np.abs(dist - d) < 3.0]
+        if len(cand) == 0:
+            continue
+        effects = []
+        for c in cand[rng.choice(len(cand), size=min(args.positions, len(cand)), replace=False)]:
+            vol = img.copy()
+            sl = tuple(slice(max(int(c[a]) - half, 0), int(c[a]) + half) for a in range(3))
+            vol[sl] += rng.normal(0, args.noise, size=vol[sl].shape).astype(np.float32)
+            pert = [run_once(vol, k) for k in range(args.passes)]
+            effects.append(float(np.mean([np.abs(p - b)[tumour].mean() for p, b in zip(pert, base)])))
+        results[d] = {"mean_abs_change": float(np.mean(effects)), "positions": len(effects)}
+        print(f"noise cube at {d:5.0f} mm from the tumour centre | mean |change| of tumour probability "
+              f"{results[d]['mean_abs_change']:.2e} ({len(effects)} positions)", flush=True)
+    _save(args.output, {"run": run, "case": case, "cube_voxels": args.cube, "noise_sd": args.noise,
+                        "passes": args.passes, "working_voxel_mm": vox_mm.tolist(), "results": results}, None)
+    return 0
+
+
+def _json_default(o):
+    r"""JSON for NumPy scalars and arrays."""
+    return o.item() if hasattr(o, "item") else o.tolist() if hasattr(o, "tolist") else str(o)
+
+
 def _print_table(summary, title):
     r"""Print a stage table: Dice and HD95 per region and mean Dice."""
     print(f"\n{title}")
@@ -261,7 +462,7 @@ def _save(path, result, rows):
     if not path:
         return
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(result, fh, indent=2)
+        json.dump(result, fh, indent=2, default=_json_default)
     if rows:
         with open(os.path.splitext(path)[0] + "_per_case.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
@@ -291,6 +492,7 @@ def main(argv=None) -> int:
     d = sub.add_parser("decompose", parents=[common, scoring],
                        help="score single pass, +ensemble, +flips, +thresholds, +clean-up, +ET rule")
     d.add_argument("--et-to-ncr", default="0.25,5000", help="ET rule RATIO,VOXELS; empty to skip")
+    d.add_argument("--failure-dice", type=float, default=0.8, help="a case with mean Dice below this is a failure")
     s = sub.add_parser("steps", parents=[common, scoring], help="accuracy and latency per NCA step count")
     s.add_argument("--steps", default="5,10,20,40")
     s.add_argument("--no-tta", action="store_true")
@@ -301,13 +503,29 @@ def main(argv=None) -> int:
     e.add_argument("--steps", default="20")
     e.add_argument("--passes", type=int, default=3, help="stochastic passes averaged")
     e.add_argument("--far-mm", type=float, default=30.0)
+    md = sub.add_parser("modalities", parents=[common, scoring], help="leave-one-modality-out at inference")
+    md.add_argument("--no-tta", action="store_true")
+    mf = sub.add_parser("manifest", help="per-case table: split, labels, region volumes, ET presence")
+    mf.add_argument("--data-root", required=True)
+    mf.add_argument("--run", default="", help="run folder whose split.json assigns the splits")
+    mf.add_argument("--et-labels", default="3,4")
+    mf.add_argument("--output", help="CSV path; a _summary.json is written next to it")
+    pt = sub.add_parser("perturb", parents=[common], help="remote perturbation: effect of distant noise")
+    pt.add_argument("--case", required=True, help="one case folder with the four modalities")
+    pt.add_argument("--modalities", default="")
+    pt.add_argument("--distances", default="20,40,60,80", help="mm from the predicted tumour centre")
+    pt.add_argument("--cube", type=int, default=8, help="noise cube edge in working voxels")
+    pt.add_argument("--noise", type=float, default=1.0, help="noise standard deviation (z-score units)")
+    pt.add_argument("--positions", type=int, default=4, help="cube positions per distance")
+    pt.add_argument("--passes", type=int, default=2)
     o = sub.add_parser("overlap", help="evaluation cases that appear in the run's training or validation split")
     o.add_argument("--run", required=True, help="run folder with split.json")
     o.add_argument("--mapping", required=True, help="BraTS ID mapping table (.csv or .xlsx) linking releases")
     o.add_argument("--cases", default="", help="optional CSV whose first column lists the evaluated case IDs")
     o.add_argument("--output", help="write the result as JSON")
     args = ap.parse_args(argv)
-    return {"decompose": decompose, "steps": steps, "erf": erf, "overlap": overlap}[args.cmd](args)
+    return {"decompose": decompose, "steps": steps, "erf": erf, "overlap": overlap, "modalities": modalities,
+            "manifest": manifest, "perturb": perturb}[args.cmd](args)
 
 
 if __name__ == "__main__":
