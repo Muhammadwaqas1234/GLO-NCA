@@ -12,7 +12,7 @@ REGIONS = ["WT", "TC", "ET"]
 
 
 @dataclass
-class GLO_NCA_Config:
+class GLONCAConfig:
     r"""Training settings loaded from YAML; optional fields default to the baseline recipe."""
     NAME: str
     SEED: int
@@ -27,7 +27,7 @@ class GLO_NCA_Config:
     USE_SPATIAL: bool
     USE_SE: bool
     STEPS: List[int]
-    FIRE_RATE: float
+    SKIP_PROB: float
     DROPOUT: float
     INPUT_SIZE: List[List[int]]
     PRIORITIZE_REGION: int
@@ -80,7 +80,7 @@ class GLO_NCA_Config:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
-    def improved_eval(self) -> bool:
+    def uses_final_scoring(self) -> bool:
         r"""True when any evaluation improvement is enabled."""
         return (self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or self.BRATS_EMPTY
                 or any(self.MIN_COMPONENT.values()) or self.NESTED_REGIONS or self.SURFACE_HD95)
@@ -117,7 +117,7 @@ def _set(raw: Dict[str, Any], dotted: str, value: str) -> None:
     raw[section][key] = yaml.safe_load(value)
 
 
-def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Config:
+def load_config(path: str, overrides: Optional[List[str]] = None) -> GLONCAConfig:
     r"""Load a YAML config, resolve its base file and apply overrides."""
     raw = _read(path)
     for item in overrides or []:
@@ -126,7 +126,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
     e, d, m, t, l, v = (raw["experiment"], raw["data"], raw["model"],
                         raw["training"], raw["loss"], raw["evaluation"])
     min_comp = {r: int((v.get("min_component_voxels") or {}).get(r, 0)) for r in REGIONS}
-    return GLO_NCA_Config(
+    return GLONCAConfig(
         NAME=str(e["name"]), SEED=int(e["seed"]),
         DATA_BASE=str(d["base"]), N_PATIENTS=d["n_patients"],
         MODALITIES=list(d["modalities"]),
@@ -134,7 +134,8 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         USE_NONZERO_NORM=bool(d["nonzero_norm"]), USE_AUG=bool(d["augmentation"]),
         CHANNEL_N=int(m["channel_n"]), HIDDEN=int(m["hidden"]),
         USE_SPATIAL=bool(m["use_spatial"]), USE_SE=bool(m.get("use_se", True)), STEPS=list(m["steps"]),
-        FIRE_RATE=(1.0 - float(m["update_prob"])) if m.get("update_prob") is not None
+        SKIP_PROB=(1.0 - float(m["update_prob"])) if m.get("update_prob") is not None
+        else float(m["skip_prob"]) if m.get("skip_prob") is not None
         else float(m["fire_rate"]), DROPOUT=float(m["dropout"]),
         INPUT_SIZE=[list(s) for s in m["input_size"]],
         PRIORITIZE_REGION=int(m["prioritize_region"]),

@@ -19,13 +19,13 @@ def _load(run, data_root, splits=None):
 
     from glo_nca.config import load_config
     from glo_nca.trainer import build, set_seed
-    C = load_config(os.path.join(run, "config.yaml"))
-    set_seed(C.SEED)
-    ds, ca, agent, dev = build(C, data_root, run, splits or ([], [], []))
+    cfg = load_config(os.path.join(run, "config.yaml"))
+    set_seed(cfg.SEED)
+    ds, cells, agent, dev = build(cfg, data_root, run, splits or ([], [], []))
     ck = torch.load(os.path.join(run, "best.pth"), map_location=dev, weights_only=False)
-    for m, sd in zip(ca, ck["m"]):
+    for m, sd in zip(cells, ck["m"]):
         m.load_state_dict(sd)
-    return C, ds, ca, agent, dev
+    return cfg, ds, cells, agent, dev
 
 
 def _test_split(run):
@@ -75,7 +75,7 @@ def decompose(args) -> int:
                                     to_full_resolution)
     run = os.path.abspath(args.run)
     data_root, _ = find_data_root(args.data_root)
-    C, ds, _, agent, _ = _load(run, data_root, _test_split(run))
+    cfg, ds, _, agent, _ = _load(run, data_root, _test_split(run))
     agent.case_seed = args.case_seed
     agent.exp.set_model_state(args.split)
     th = _parse_regions(args.thresholds, 0.5, float)
@@ -131,7 +131,7 @@ def steps(args) -> int:
     from glo_nca.evaluation import _parse_regions, decode_regions, predict_case, scan_spacing, to_full_resolution
     run = os.path.abspath(args.run)
     data_root, _ = find_data_root(args.data_root)
-    C, ds, _, agent, dev = _load(run, data_root, _test_split(run))
+    cfg, ds, _, agent, dev = _load(run, data_root, _test_split(run))
     agent.case_seed = args.case_seed
     agent.exp.set_model_state(args.split)
     th = _parse_regions(args.thresholds, 0.5, float)
@@ -161,8 +161,8 @@ def steps(args) -> int:
         print(f"steps {s:3d}+{s:<3d} | mean Dice {results[s]['mean_dice']:.4f} "
               f"(WT {results[s]['WT']:.3f} TC {results[s]['TC']:.3f} ET {results[s]['ET']:.3f}) | "
               f"{results[s]['latency_median_s']:.2f} s/case", flush=True)
-    agent.exp.config["inference_steps"] = C.STEPS
-    _save(args.output, {"run": run, "split": args.split, "cases": len(keys), "trained_steps": C.STEPS,
+    agent.exp.config["inference_steps"] = cfg.STEPS
+    _save(args.output, {"run": run, "split": args.split, "cases": len(keys), "trained_steps": cfg.STEPS,
                         "ensemble_n": args.ensemble_n, "tta": not args.no_tta, "results": results}, None)
     return 0
 
@@ -195,10 +195,10 @@ def erf(args) -> int:
     from glo_nca.config import REGIONS
     run = os.path.abspath(args.run)
     folders = [os.path.abspath(c) for c in args.case]
-    C, ds, ca, agent, dev = _load(run, os.path.dirname(folders[0]))
+    cfg, ds, cells, agent, dev = _load(run, os.path.dirname(folders[0]))
     if args.modalities:
         ds.MODALITIES = [m.strip() for m in args.modalities.split(",")]
-    for m in ca:
+    for m in cells:
         m.grad_checkpoint = True          # memory: recompute each step in backward
     agent.exp.set_model_state("test")
     region = REGIONS.index(args.region)
@@ -217,7 +217,7 @@ def erf(args) -> int:
         case = os.path.basename(folder)
         img, vox_mm = _case_input(ds, folder, case)
         with torch.no_grad():
-            _, out = forward(img, C.STEPS[-1], 0)
+            _, out = forward(img, cfg.STEPS[-1], 0)
         target = np.unravel_index(int(torch.argmax(out[0, ..., region]).item()), tuple(ds.size))
         idx = np.indices(tuple(ds.size)).reshape(3, -1).T
         dist = np.sqrt((((idx - np.array(target)) * vox_mm) ** 2).sum(1))
@@ -240,7 +240,7 @@ def erf(args) -> int:
                       for q in (0.5, 0.9, 0.95)}
             per_case[case][s] = {**radius, "share_beyond": float(g[dist > args.far_mm].sum() / total)}
         print(f"{case}: " + "; ".join(f"{s} steps r90 {per_case[case][s]['r90_mm']} mm" for s in step_list), flush=True)
-    agent.exp.config["inference_steps"] = C.STEPS
+    agent.exp.config["inference_steps"] = cfg.STEPS
     summary = {}
     for s in step_list:
         vals = [per_case[c][s] for c in per_case if per_case[c][s].get("r90_mm") is not None]
@@ -251,7 +251,7 @@ def erf(args) -> int:
                   f"r90 {summary[s]['r90_mm']['mean']:.1f} +- {summary[s]['r90_mm']['sd']:.1f} mm, beyond "
                   f"{args.far_mm:.0f} mm {summary[s]['share_beyond']['mean']:.1%}", flush=True)
     _save(args.output, {"run": run, "region": args.region, "passes": args.passes, "far_mm": args.far_mm,
-                        "trained_steps": C.STEPS, "note": "gradient sensitivity, not proof of useful information",
+                        "trained_steps": cfg.STEPS, "note": "gradient sensitivity, not proof of useful information",
                         "summary": summary, "per_case": per_case}, None)
     return 0
 
@@ -357,13 +357,13 @@ def manifest(args) -> int:
     r"""One row per case: split, labels present, region volumes, ET presence, spacing and shape."""
     import nibabel as nib
 
-    from glo_nca.data import Dataset_BraTS_Foreground, find_data_root
+    from glo_nca.data import BraTSDataset, find_data_root
     data_root, _ = find_data_root(args.data_root)
     split = {}
     if args.run:
         for name, ids in zip(("train", "validation", "test"), _test_split(os.path.abspath(args.run))):
             split.update({c: name for c in ids})
-    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds = BraTSDataset.__new__(BraTSDataset)
     ds.ET_LABELS = tuple(int(x) for x in args.et_labels.split(","))
     cases = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d)))
     rows = []
@@ -419,13 +419,13 @@ def modalities(args) -> int:
     from glo_nca.evaluation import _parse_regions, decode_regions, predict_case, scan_spacing, to_full_resolution
     run = os.path.abspath(args.run)
     data_root, _ = find_data_root(args.data_root)
-    C, ds, _, agent, _ = _load(run, data_root, _test_split(run))
+    cfg, ds, _, agent, _ = _load(run, data_root, _test_split(run))
     agent.case_seed = args.case_seed
     agent.exp.set_model_state(args.split)
     th = _parse_regions(args.thresholds, 0.5, float)
     mc = _parse_regions(args.min_component, 0, int)
     keys = list(ds.images_list)[:args.limit]
-    variants = ["all"] + [f"without {m}" for m in C.MODALITIES]
+    variants = ["all"] + [f"without {m}" for m in cfg.MODALITIES]
     dice = {v: {r: [] for r in REGIONS} for v in variants}
     with torch.no_grad():
         for n, key in enumerate(keys, 1):
@@ -467,7 +467,7 @@ def perturb(args) -> int:
     run = os.path.abspath(args.run)
     folder = os.path.abspath(args.case)
     case = os.path.basename(folder)
-    C, ds, _, agent, dev = _load(run, os.path.dirname(folder))
+    cfg, ds, _, agent, dev = _load(run, os.path.dirname(folder))
     if args.modalities:
         ds.MODALITIES = [m.strip() for m in args.modalities.split(",")]
     agent.exp.set_model_state("test")
@@ -524,14 +524,14 @@ def preflight(args) -> int:
 
     import nibabel as nib
 
-    from glo_nca.data import Dataset_BraTS_Foreground, find_data_root, labels_to_regions, patient_of
+    from glo_nca.data import BraTSDataset, find_data_root, labels_to_regions, patient_of
     data_root, _ = find_data_root(args.data_root)
     if not data_root:
         print(f"FAILED: no case folders found under {args.data_root}")
         return 2
     mods = [m.strip() for m in args.modalities.split(",")]
     et = tuple(int(x) for x in args.et_labels.split(","))
-    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds = BraTSDataset.__new__(BraTSDataset)
     cases = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d)))
     rows, seen, spacings = [], {}, {}
     for n, case in enumerate(cases, 1):

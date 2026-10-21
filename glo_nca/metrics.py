@@ -25,7 +25,7 @@ def _surface_distances(a, b):
     return distance_transform_edt(~b)[a]
 
 
-def hd95_score(pred, target, threshold=0.5):
+def hd95_voxel_legacy(pred, target, threshold=0.5):
     r"""95th-percentile Hausdorff distance (in voxels) for one binary region."""
     if not _SCIPY_AVAILABLE:
         return float("nan")

@@ -10,7 +10,7 @@ import torch
 import torch.optim as optim
 
 
-class Agent_GLO_NCA:
+class CascadeAgent:
     r"""GLO-NCA cascade agent: holds the NCA levels, their optimisers, and runs training and inference."""
 
     amp = "off"                       # "bf16": autocast the training forward pass to bfloat16
@@ -146,7 +146,7 @@ class Agent_GLO_NCA:
         up = torch.nn.Upsample(scale_factor=scale_fac, mode='nearest')
         last = self.exp.get_from_config('train_model')
         steps = self.inference_steps()
-        fire_rate = self.exp.get_from_config('cell_fire_rate')
+        skip_prob = self.exp.get_from_config('cell_skip_prob')
         n_in = self.exp.get_from_config('input_channels')
 
         # The coarsest level sees the input max-pooled once per finer level.
@@ -159,7 +159,7 @@ class Agent_GLO_NCA:
         with torch.no_grad() if no_grad else contextlib.nullcontext():
             for m in range(last + 1):
                 stp = steps[m] if isinstance(steps, list) else steps
-                outputs = self.model[m](inputs_loc, steps=stp, fire_rate=fire_rate)
+                outputs = self.model[m](inputs_loc, steps=stp, skip_prob=skip_prob)
                 if m == last:
                     break
                 # Upscale this level's state and pair its hidden channels with the finer image.

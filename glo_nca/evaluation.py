@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .metrics import hd95_score, hd95_surface, iou_score
+from .metrics import hd95_voxel_legacy, hd95_surface, iou_score
 
 from .config import REGIONS
 
@@ -39,7 +39,7 @@ def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=N
                 acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
                 acc[r]["iou"].append(iou_score(p, t))
                 acc[r]["hd95"].append(hd95_surface(p[0] >= 0.5, t[0] >= 0.5, convention=_conv(surface_hd95))
-                                      if surface_hd95 else hd95_score(p, t))
+                                      if surface_hd95 else hd95_voxel_legacy(p, t))
             if per_case is not None:
                 per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
     agent.exp.set_model_state("train")
@@ -178,7 +178,7 @@ def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one
                   "hd95": float("nan") if not with_hd95
                   else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0), convention=_conv(surface_hd95))
                   if surface_hd95
-                  else float(hd95_score(pf, tf))}
+                  else float(hd95_voxel_legacy(pf, tf))}
     return out
 
 
@@ -385,7 +385,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
             acc[r]["iou"].append(iou_score(pf, tf))
             acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0),
                                                convention=_conv(surface_hd95))
-                                  if surface_hd95 else hd95_score(pf, tf))
+                                  if surface_hd95 else hd95_voxel_legacy(pf, tf))
         if per_case is not None:
             per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS},
                              **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS}})
@@ -397,40 +397,40 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
     return out
 
 
-def improved_evaluation(C, dataset, val_cases, test_cases):
+def final_evaluation(cfg, dataset, val_cases, test_cases):
     r"""Tune post-processing on validation (if enabled), then score the test cases once."""
-    thresholds, min_component = {r: 0.5 for r in REGIONS}, dict(C.MIN_COMPONENT)
+    thresholds, min_component = {r: 0.5 for r in REGIONS}, dict(cfg.MIN_COMPONENT)
     val_tuned = None
-    if C.TUNE_THRESHOLDS:
+    if cfg.TUNE_THRESHOLDS:
         thresholds, min_component, val_tuned = tune_thresholds(
-            val_cases, dataset, C.FULL_RESOLUTION_EVAL, empty_one=C.BRATS_EMPTY, nested=C.NESTED_REGIONS)
+            val_cases, dataset, cfg.FULL_RESOLUTION_EVAL, empty_one=cfg.BRATS_EMPTY, nested=cfg.NESTED_REGIONS)
     else:
-        val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
-                    C.NESTED_REGIONS, C.hd95)
+        val = score(val_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
+                    cfg.NESTED_REGIONS, cfg.hd95)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
     test_rows = []
-    test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
-                 C.NESTED_REGIONS, C.hd95, per_case=test_rows)
+    test = score(test_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
+                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
-            "evaluation_spec": evaluation_spec(C, thresholds, min_component),
-            "full_resolution": C.FULL_RESOLUTION_EVAL, "brats_empty": C.BRATS_EMPTY,
-            "nested_regions": C.NESTED_REGIONS, "surface_hd95": C.SURFACE_HD95,
+            "evaluation_spec": evaluation_spec(cfg, thresholds, min_component),
+            "full_resolution": cfg.FULL_RESOLUTION_EVAL, "brats_empty": cfg.BRATS_EMPTY,
+            "nested_regions": cfg.NESTED_REGIONS, "surface_hd95": cfg.SURFACE_HD95,
             "val_tuned": val_tuned, "test": test, "test_per_case": test_rows}
 
 
-def evaluation_spec(C, thresholds=None, min_component=None):
+def evaluation_spec(cfg, thresholds=None, min_component=None):
     r"""The complete scoring specification, written next to every result."""
     from .metrics import METRIC_VERSION
-    return {"metric_version": METRIC_VERSION, "full_resolution": C.FULL_RESOLUTION_EVAL,
-            "empty_region": "brats (empty prediction of an absent region scores 1)" if C.BRATS_EMPTY
+    return {"metric_version": METRIC_VERSION, "full_resolution": cfg.FULL_RESOLUTION_EVAL,
+            "empty_region": "brats (empty prediction of an absent region scores 1)" if cfg.BRATS_EMPTY
             else "v7 (absent region scores 0)",
-            "nested_regions": C.NESTED_REGIONS,
-            "hd95": (f"surface, {C.HD95_CONVENTION} convention, "
-                     + ("mm from scan spacing" if C.FULL_RESOLUTION_EVAL else "working-grid voxels"))
-            if C.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined, excluded and counted",
+            "nested_regions": cfg.NESTED_REGIONS,
+            "hd95": (f"surface, {cfg.HD95_CONVENTION} convention, "
+                     + ("mm from scan spacing" if cfg.FULL_RESOLUTION_EVAL else "working-grid voxels"))
+            if cfg.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined, excluded and counted",
             "thresholds": thresholds, "min_component_voxels": min_component,
-            "ensemble_n": C.ENSEMBLE_N, "tta": C.USE_TTA, "case_seed": C.CASE_SEED,
+            "ensemble_n": cfg.ENSEMBLE_N, "tta": cfg.USE_TTA, "case_seed": cfg.CASE_SEED,
             "rows": "single pass and ensemble at threshold 0.5, then tuned post-processing, all with this spec",
             "validation_selection": "working grid, threshold 0.5"
-            + (", nested masks" if C.NESTED_REGIONS else "") + (f", surface HD95 ({C.HD95_CONVENTION})"
-                                                                if C.SURFACE_HD95 else "")}
+            + (", nested masks" if cfg.NESTED_REGIONS else "") + (f", surface HD95 ({cfg.HD95_CONVENTION})"
+                                                                if cfg.SURFACE_HD95 else "")}

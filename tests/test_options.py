@@ -11,7 +11,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from glo_nca.config import load_config  # noqa: E402
-from glo_nca.data import Dataset_BraTS_Foreground, labels_to_regions  # noqa: E402
+from glo_nca.data import BraTSDataset, labels_to_regions  # noqa: E402
 from glo_nca.evaluation import remove_small_components, score, to_full_resolution, tune_thresholds  # noqa: E402
 
 RESULTS = []
@@ -28,7 +28,7 @@ def test_config():
     base = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
     check("defaults reproduce the original recipe",
           base.SPLIT_SEED == base.SEED and not base.AUGMENT and base.REGION_WEIGHTS == [1, 1, 1]
-          and not base.improved_eval)
+          and not base.uses_final_scoring)
     exp = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_improved.yaml"))
     check("base: inheritance merges nested sections",
           exp.MODALITIES == base.MODALITIES and exp.INPUT_SIZE[-1] == [96, 96, 96]
@@ -45,11 +45,11 @@ def test_augmentation():
     label = (img[..., :3] > 0.5).astype(np.float32)
     ok = True
     for _ in range(20):
-        a, b = Dataset_BraTS_Foreground._augment_spatial(img, label)
+        a, b = BraTSDataset._augment_spatial(img, label)
         ok &= np.array_equal(b, (a[..., :3] > 0.5).astype(np.float32)) and a.flags["C_CONTIGUOUS"]
     check("spatial augmentation keeps image and label aligned", bool(ok))
     z = img.copy(); z[:4] = 0
-    out = Dataset_BraTS_Foreground._augment_intensity(z)
+    out = BraTSDataset._augment_intensity(z)
     check("intensity augmentation leaves background at zero",
           bool((out[:4] == 0).all() and not np.allclose(out[4:], z[4:])))
 
@@ -82,7 +82,7 @@ class _FakeDS:
     MODALITIES = ["a", "b"]
     SEG_SUFFIX = "seg"
     use_foreground_crop = True
-    _foreground_bbox = staticmethod(Dataset_BraTS_Foreground._foreground_bbox)
+    _foreground_bbox = staticmethod(BraTSDataset._foreground_bbox)
     _labels_to_regions = staticmethod(lambda seg: labels_to_regions(seg))
 
     def __init__(self, root, vols):
@@ -156,7 +156,7 @@ def test_review_options():
           or base.VALIDATE_EMA or base.CROP_ET_PROB or base.NESTED_REGIONS or base.SURFACE_HD95))
     check("fixed config: all fixes on, same recipe otherwise",
           fixed.ALL_REGION_LOSS and fixed.VALIDATE_EMA and fixed.CROP_ET_PROB == 0.5
-          and fixed.NESTED_REGIONS and fixed.SURFACE_HD95 and abs(fixed.FIRE_RATE - 0.6) < 1e-9
+          and fixed.NESTED_REGIONS and fixed.SURFACE_HD95 and abs(fixed.SKIP_PROB - 0.6) < 1e-9
           and fixed.EPOCHS == base.EPOCHS and fixed.INPUT_SIZE == base.INPUT_SIZE
           and fixed.SPLIT_SEED == base.SPLIT_SEED and fixed.SEED == base.SEED)
     check("plain control differs only in SE and spatial gate",
@@ -168,7 +168,7 @@ def test_review_options():
 def test_all_region_loss():
     r"""With all_regions, positive ET logits on an ET-free crop are penalised and get a gradient."""
     import torch
-    from glo_nca.agent import Agent_GLO_NCA
+    from glo_nca.agent import CascadeAgent
     from glo_nca.losses import FocalTverskyCELoss
 
     class _Exp:
@@ -183,7 +183,7 @@ def test_all_region_loss():
     tgt = torch.zeros((1, 8, 8, 8, 3)); tgt[..., 0:2] = 1.0       # WT and TC present, ET absent
     found = {}
     for all_regions in (False, True):
-        agent = Agent_GLO_NCA.__new__(Agent_GLO_NCA)
+        agent = CascadeAgent.__new__(CascadeAgent)
         agent.exp, agent.optimizer, agent.scheduler = _Exp(), [_Opt()], [_Opt()]
         agent.region_weights, agent.all_regions = None, all_regions
         agent.prepare_data = lambda d: d
@@ -198,40 +198,40 @@ def test_all_region_loss():
 def test_et_crop():
     r"""ET-biased crop origins contain enhancing tumour and stay inside the volume."""
     import torch
-    from glo_nca.agent import Agent_GLO_NCA
+    from glo_nca.agent import CascadeAgent
     t = torch.zeros((40, 40, 40, 3)); t[35:38, 2:4, 30:33, 2] = 1
     ok = True
     for _ in range(50):
-        x, y, z = Agent_GLO_NCA._et_crop(t, (16, 16, 16))
+        x, y, z = CascadeAgent._et_crop(t, (16, 16, 16))
         ok &= 0 <= x <= 24 and 0 <= y <= 24 and 0 <= z <= 24
         ok &= bool(t[x:x+16, y:y+16, z:z+16, 2].any())
     check("ET crop contains ET; none without ET",
-          ok and Agent_GLO_NCA._et_crop(torch.zeros((40, 40, 40, 3)), (16, 16, 16)) is None)
+          ok and CascadeAgent._et_crop(torch.zeros((40, 40, 40, 3)), (16, 16, 16)) is None)
 
 
 def test_global_block():
     r"""Full cell, BatchNorm, batch size 1: the global branch changes the output and receives gradients."""
     import torch
-    from glo_nca.model import GCSpatialBlock3D, GLO_NCA_Cell
+    from glo_nca.model import SpatialGate3D, GLONCACell
     changes, grads = {}, {}
     for norm in ("batch", "layer"):
         torch.manual_seed(11)
-        cell = GLO_NCA_Cell(12, 0.0, "cpu", 32, kernel_size=3, input_channels=4, use_global=True, norm=norm)
-        torch.nn.init.normal_(cell.glob.transform[-1].weight, std=0.5)
-        torch.nn.init.normal_(cell.fc1.weight, std=0.1)
+        cell = GLONCACell(12, 0.0, "cpu", 32, kernel_size=3, input_channels=4, use_global=True, norm=norm)
+        torch.nn.init.normal_(cell.global_context.transform[-1].weight, std=0.5)
+        torch.nn.init.normal_(cell.fc_out.weight, std=0.1)
         x = torch.randn(1, 8, 8, 8, 12)
         torch.manual_seed(1); on = cell(x, steps=2)
-        branch, cell.glob = cell.glob, None              # negative control: the branch bypassed
+        branch, cell.global_context = cell.global_context, None              # negative control: the branch bypassed
         torch.manual_seed(1); off = cell(x, steps=2)
         torch.manual_seed(1); again = cell(x, steps=2)
-        cell.glob = branch
+        cell.global_context = branch
         torch.manual_seed(1); out = cell(x, steps=2)
         out[..., 4:7].sum().backward()
         changes[norm] = ((on - off).abs().max().item(), (off - again).abs().max().item())
         grads[norm] = branch.transform[-1].weight.grad.norm().item()
     # The spatial gate stays local: a distant voxel does not change it.
     torch.manual_seed(0)
-    s = GCSpatialBlock3D(7)
+    s = SpatialGate3D(7)
     y = torch.randn(1, 24, 20, 20, 20); far = y.clone(); far[..., 19, 19, 19] += 50.0
     with torch.no_grad():
         local = (s(far) - s(y))[..., 0, 0, 0].abs().max().item()
@@ -272,14 +272,14 @@ def test_with_weights():
 def test_local_norm():
     r"""Per-voxel LayerNorm keeps a plain cell strictly local; BatchNorm uses volume statistics."""
     import torch
-    from glo_nca.model import GLO_NCA_Cell
+    from glo_nca.model import GLONCACell
     torch.manual_seed(0)
     x = torch.randn(1, 16, 16, 16, 24)
     far = x.clone(); far[0, 15, 15, 15, 4:] += 5.0
     effect = {}
     for norm in ("batch", "layer"):
-        cell = GLO_NCA_Cell(24, 0.0, "cpu", 32, kernel_size=3, input_channels=4, norm=norm)
-        torch.nn.init.normal_(cell.fc1.weight, std=0.1)
+        cell = GLONCACell(24, 0.0, "cpu", 32, kernel_size=3, input_channels=4, norm=norm)
+        torch.nn.init.normal_(cell.fc_out.weight, std=0.1)
         with torch.no_grad():
             torch.manual_seed(1); a = cell.update(x, 0.0)
             torch.manual_seed(1); b = cell.update(far, 0.0)
@@ -304,7 +304,7 @@ def test_bce_logits():
 
 def test_brain_mask():
     r"""Brain-mask normalisation: zero outside the brain, zero mean and unit variance inside."""
-    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds = BraTSDataset.__new__(BraTSDataset)
     ds.size, ds.brain_mask, ds.use_nonzero_norm = (20, 20, 20), True, True
     raw = np.zeros((30, 30, 30, 2), np.float32)
     raw[5:25, 5:25, 5:25] = np.random.default_rng(0).random((20, 20, 20, 2)) * 100 + 1
@@ -359,9 +359,9 @@ def test_labels():
     reg = labels_to_regions(np.array([0, 1, 2, 3, 4]))
     ok = reg[:, 2].tolist() == [0, 0, 0, 1, 1] and reg[:, 1].tolist() == [0, 1, 0, 1, 1]
     rejects = lambda f: (lambda: (f(), False))() if False else _raises(f)
-    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"), ["data.et_labels=[3]"])
+    cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"), ["data.et_labels=[3]"])
     with tempfile.TemporaryDirectory() as out:
-        ds, _, _, _ = build(C, out, out, ([], [], []))
+        ds, _, _, _ = build(cfg, out, out, ([], [], []))
         configured = ds._labels_to_regions(np.array([0, 3]))[:, 2].tolist() == [0, 1]
         post = rejects(lambda: ds._labels_to_regions(np.array([0, 4])))
     check("labels: configured ET labels used by build(); unknown labels rejected",
@@ -382,17 +382,17 @@ def test_saved_split():
     r"""A resumed run reads split.json instead of rebuilding the split from the folders."""
     import json
     from glo_nca.trainer import _load_split
-    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
+    cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
     with tempfile.TemporaryDirectory() as root:
         data, out = os.path.join(root, "data"), os.path.join(root, "run")
         for i in range(10):
             os.makedirs(os.path.join(data, f"case{i}"))
             open(os.path.join(data, f"case{i}", "x.nii.gz"), "w").close()
         os.makedirs(out)
-        fresh = _load_split(C, data, out, resume=False)
+        fresh = _load_split(cfg, data, out, resume=False)
         saved = {"train": ["a"], "validation": ["b"], "test": ["c"], "seed": 0}
         json.dump(saved, open(os.path.join(out, "split.json"), "w"))
-        resumed = _load_split(C, data, out, resume=True)
+        resumed = _load_split(cfg, data, out, resume=True)
     check("resume reuses the saved split.json",
           resumed == (["a"], ["b"], ["c"]) and sum(len(x) for x in fresh) == 10)
 
@@ -400,7 +400,7 @@ def test_saved_split():
 def test_cache_fingerprint():
     r"""The disk-cache key changes when a source scan changes."""
     import time
-    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    ds = BraTSDataset.__new__(BraTSDataset)
     ds.size, ds.use_foreground_crop, ds.MODALITIES = (8, 8, 8), True, ["t1"]
     ds.ET_LABELS, ds.brain_mask, ds.cache_dir = (3, 4), False, "c"
     with tempfile.TemporaryDirectory() as root:
@@ -418,16 +418,16 @@ def test_cache_fingerprint():
 def test_grad_checkpoint():
     r"""Activation checkpointing gives the same loss and gradients as the plain forward pass."""
     import torch
-    from glo_nca.model import GLO_NCA_Cell
+    from glo_nca.model import GLONCACell
     grads = []
     for ckpt in (False, True):
         torch.manual_seed(0)
-        cell = GLO_NCA_Cell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4, use_attention=True,
+        cell = GLONCACell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4, use_se=True,
                             use_spatial=True)
-        torch.nn.init.normal_(cell.fc1.weight, std=0.05)
+        torch.nn.init.normal_(cell.fc_out.weight, std=0.05)
         cell.grad_checkpoint = ckpt
         torch.manual_seed(1)
-        out = cell(torch.randn(1, 8, 8, 8, 24), steps=4, fire_rate=0.6)
+        out = cell(torch.randn(1, 8, 8, 8, 24), steps=4, skip_prob=0.6)
         out[..., 4:7].sum().backward()
         grads.append(torch.cat([q.grad.flatten() for q in cell.parameters() if q.grad is not None]))
     check("activation checkpointing: identical gradients", torch.allclose(grads[0], grads[1], atol=1e-6),
@@ -438,11 +438,11 @@ def test_bf16_and_case_seed():
     r"""bf16 autocast trains with a finite float32 loss; seeded inference passes repeat exactly."""
     import torch
     from glo_nca.evaluation import case_seed
-    from glo_nca.model import GLO_NCA_Cell
-    cell = GLO_NCA_Cell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4)
+    from glo_nca.model import GLONCACell
+    cell = GLONCACell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4)
     x = torch.randn(1, 8, 8, 8, 24)
     with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-        out = cell(x, steps=2, fire_rate=0.6)
+        out = cell(x, steps=2, skip_prob=0.6)
     loss = out.float()[..., 4:7].mean()
     loss.backward()
     ok_amp = loss.dtype == torch.float32 and bool(torch.isfinite(loss))
@@ -450,7 +450,7 @@ def test_bf16_and_case_seed():
     for _ in range(2):
         torch.manual_seed(case_seed(7, "BraTS2021_00001"))
         with torch.no_grad():
-            runs.append(cell(x, steps=3, fire_rate=0.6))
+            runs.append(cell(x, steps=3, skip_prob=0.6))
     ok_seed = torch.equal(runs[0], runs[1]) and case_seed(7, "a") != case_seed(7, "b")
     check("bf16 training step; seeded passes repeat exactly", ok_amp and ok_seed)
 
@@ -459,13 +459,13 @@ def test_run_info():
     r"""run_info.json records code, software and settings, one entry per start or resume."""
     import json
     from glo_nca.trainer import write_run_info
-    C = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"))
+    cfg = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"))
     with tempfile.TemporaryDirectory() as out:
-        write_run_info(out, C, False)
-        write_run_info(out, C, True)
+        write_run_info(out, cfg, False)
+        write_run_info(out, cfg, True)
         info = json.load(open(os.path.join(out, "run_info.json")))
     check("run_info: commit, torch and seed per start/resume",
-          len(info) == 2 and info[1]["resume"] and "torch" in info[0] and info[0]["seed"] == C.SEED,
+          len(info) == 2 and info[1]["resume"] and "torch" in info[0] and info[0]["seed"] == cfg.SEED,
           f"commit {str(info[0]['git_commit'])[:8]}")
 
 
@@ -510,21 +510,21 @@ def test_hd95_reference():
 
 def test_ablation_configs():
     r"""Ablation configs: matched recipe, intended differences and parameter counts."""
-    from glo_nca.model import GLO_NCA_Cell
+    from glo_nca.model import GLONCACell
     load = lambda n: load_config(os.path.join(_ROOT, "configs", "experiments", f"brats2021_res96_{n}.yaml"))
     full, plain, wide, single = load("fixed"), load("fixed_plain"), load("fixed_plain_wide"), load("fixed_single")
     se, spatial = load("fixed_se"), load("fixed_spatial")
-    count = lambda C: sum(p.numel() for k in (7, 3) for p in GLO_NCA_Cell(
-        C.CHANNEL_N, C.FIRE_RATE, "cpu", C.HIDDEN, kernel_size=k, input_channels=len(C.MODALITIES),
-        use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, use_global=C.USE_GLOBAL).parameters())
-    n = {k: count(C) for k, C in (("full", full), ("plain", plain), ("wide", wide), ("single", single))}
+    count = lambda cfg: sum(p.numel() for k in (7, 3) for p in GLONCACell(
+        cfg.CHANNEL_N, cfg.SKIP_PROB, "cpu", cfg.HIDDEN, kernel_size=k, input_channels=len(cfg.MODALITIES),
+        use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, use_global=cfg.USE_GLOBAL).parameters())
+    n = {k: count(cfg) for k, cfg in (("full", full), ("plain", plain), ("wide", wide), ("single", single))}
     same = lambda a, b, skip: ({k: v for k, v in vars(a).items() if k not in skip | {"NAME", "raw"}}
                                == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
     ok = (same(full, single, {"MODALITIES"}) and same(plain, wide, {"HIDDEN"})
           and n["full"] == 30138 and n["plain"] == 28128 and abs(n["wide"] - n["full"]) < 100
           and single.MODALITIES == ["t1ce"] and not full.LEGACY_PATCHIFY
           and same(full, se, {"USE_SPATIAL"}) and same(full, spatial, {"USE_SE"})
-          and full.improved_eval and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
+          and full.uses_final_scoring and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
     check("ablation configs: one difference each, matched capacity", ok,
           f"full {n['full']}, plain {n['plain']}, wide {n['wide']}, single {n['single']}")
 
@@ -534,12 +534,12 @@ def test_rng_untouched():
     import torch
     from glo_nca.evaluation import predict_passes
     from glo_nca.trainer import build
-    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"),
+    cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"),
                     ["model.input_size=[[8,8,8],[16,16,16]]", "evaluation.case_seed=3"])
     with tempfile.TemporaryDirectory() as out:
-        _, ca, agent, _ = build(C, out, out, ([], [], []))
-    for m in ca:
-        torch.nn.init.normal_(m.fc1.weight, std=0.05)
+        _, cells, agent, _ = build(cfg, out, out, ([], [], []))
+    for m in cells:
+        torch.nn.init.normal_(m.fc_out.weight, std=0.05)
     agent.exp.set_model_state("test")
     data = (["_c_0"], torch.randn(1, 16, 16, 16, 4), torch.zeros(1, 16, 16, 16, 3))
     torch.manual_seed(123)
@@ -552,11 +552,11 @@ def test_rng_untouched():
 
 
 def test_forward_default():
-    r"""Cell.forward without fire_rate uses the configured skip probability."""
+    r"""Cell.forward without skip_prob uses the configured skip probability."""
     import torch
-    from glo_nca.model import GLO_NCA_Cell
-    cell = GLO_NCA_Cell(8, 0.6, "cpu", 16, kernel_size=3, input_channels=2)
-    torch.nn.init.normal_(cell.fc1.weight, std=1.0)
+    from glo_nca.model import GLONCACell
+    cell = GLONCACell(8, 0.6, "cpu", 16, kernel_size=3, input_channels=2)
+    torch.nn.init.normal_(cell.fc_out.weight, std=1.0)
     x = torch.randn(1, 24, 24, 24, 8)
     torch.manual_seed(0)
     with torch.no_grad():
@@ -678,6 +678,25 @@ def test_resume_config_changes():
           ch == {"loss.all_regions": [False, True], "training.workers": [4, 8]} and blocked == ["loss.all_regions"])
 
 
+def test_legacy_checkpoint_names():
+    r"""Checkpoints written with the old layer names load into the renamed cell with identical values."""
+    import torch
+    from glo_nca.model import LEGACY_LAYER_NAMES, GLONCACell
+    cell = GLONCACell(24, 0.6, "cpu", 32, kernel_size=3, input_channels=4, use_se=True, use_spatial=True,
+                      use_global=True)
+    new = {k: torch.randn_like(v) for k, v in cell.state_dict().items()}
+    reverse = {v: k for k, v in LEGACY_LAYER_NAMES.items()}
+    def old_name(k):
+        for n, o in reverse.items():
+            if k.startswith(n):
+                return o + k[len(n):]
+        return k
+    legacy = {old_name(k): v.clone() for k, v in new.items()}
+    cell.load_state_dict(legacy)                                  # strict
+    check("old checkpoint layer names load with identical values",
+          any(k != old_name(k) for k in new) and all(torch.equal(cell.state_dict()[k], v) for k, v in new.items()))
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -686,7 +705,7 @@ if __name__ == "__main__":
               test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info,
               test_hd95_reference, test_ablation_configs, test_rng_untouched, test_forward_default,
               test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
-              test_code_identity, test_resume_config_changes):
+              test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

@@ -114,17 +114,17 @@ def main(argv=None) -> int:
     from glo_nca.trainer import build, set_seed
 
     modalities = [m.strip() for m in args.modalities.split(",") if m.strip()]
-    C = load_config(os.path.join(args.run, "config.yaml"))
-    if len(modalities) != len(C.MODALITIES):
-        print(f"FAILED: {len(modalities)} modalities given, the model expects {len(C.MODALITIES)}.")
+    cfg = load_config(os.path.join(args.run, "config.yaml"))
+    if len(modalities) != len(cfg.MODALITIES):
+        print(f"FAILED: {len(modalities)} modalities given, the model expects {len(cfg.MODALITIES)}.")
         return 2
-    ensemble = args.ensemble_n if args.ensemble_n is not None else C.ENSEMBLE_N
-    tta = C.USE_TTA and not args.no_tta
-    set_seed(C.SEED)
-    ds, ca, agent, dev = build(C, args.input, args.run, ([], [], []))
+    ensemble = args.ensemble_n if args.ensemble_n is not None else cfg.ENSEMBLE_N
+    tta = cfg.USE_TTA and not args.no_tta
+    set_seed(cfg.SEED)
+    ds, cells, agent, dev = build(cfg, args.input, args.run, ([], [], []))
     ds.MODALITIES = modalities
     ck = torch.load(os.path.join(args.run, "best.pth"), map_location=dev, weights_only=False)
-    for m, sd in zip(ca, ck["m"]):
+    for m, sd in zip(cells, ck["m"]):
         m.load_state_dict(sd)
     if args.case_seed is not None:
         agent.case_seed = args.case_seed

@@ -65,25 +65,25 @@ def main(argv=None) -> int:
         if args.override:
             print("FAILED: --override is not allowed with --resume (the run keeps its config).")
             return 2
-        C = load_config(cfg_path)
+        cfg = load_config(cfg_path)
     else:
         if not os.path.isfile(args.config):
             print(f"FAILED: config not found: {args.config}")
             return 2
-        C = load_config(args.config, args.override)
-        run_id = args.experiment_id or f"{C.NAME}-{time.strftime('%Y%m%d-%H%M%S')}"
+        cfg = load_config(args.config, args.override)
+        run_id = args.experiment_id or f"{cfg.NAME}-{time.strftime('%Y%m%d-%H%M%S')}"
         run_dir = os.path.join(os.path.abspath(args.output), run_id)
         if os.path.exists(os.path.join(run_dir, "last.pth")):
             print(f"FAILED: {run_dir} already holds a run; use --resume.")
             return 2
         os.makedirs(run_dir, exist_ok=True)
         with open(os.path.join(run_dir, "config.yaml"), "w", encoding="utf-8") as fh:
-            yaml.safe_dump(C.raw, fh, sort_keys=False)
+            yaml.safe_dump(cfg.raw, fh, sort_keys=False)
 
     sys.stdout = _Tee(os.path.join(run_dir, "train.log"))
     print(f"run: {run_dir}")
     try:
-        result = run(C, run_dir, data_root=args.data_root, resume=bool(args.resume),
+        result = run(cfg, run_dir, data_root=args.data_root, resume=bool(args.resume),
                      allow_config_change=args.allow_config_change,
                      stop_after_epoch=args.stop_after_epoch)
     except Exception as exc:

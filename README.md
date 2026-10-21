@@ -92,7 +92,7 @@ volumes: `docs/results/brats2023_validation_per_case.csv`.
 | | |
 |---|---|
 | Cascade | 2 NCA levels, coarse then fine (48³ → 96³ for the results above; 32×32×24 → 64×64×48 in v7) |
-| NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (`fire_rate` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
+| NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (config `fire_rate`/`skip_prob` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
 | Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global-context block (`model.use_global`), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
 | Data | foreground crop, cubic resize, nonzero z-norm, ET-biased patches, optional augmentation |
@@ -185,7 +185,7 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `experiment.split_seed` | fixed split, so runs with other seeds can be ensembled |
 | `model.use_se`, `model.use_spatial` | channel SE block and local spatial gate, each on or off (ablations) |
 | `model.use_global` | attention-pooled global context (GCNet form), added to every voxel's hidden layer after normalisation |
-| `model.update_prob` | probability that a cell updates per step; `fire_rate` is the skip probability (0.6 = 40% update) |
+| `model.update_prob` | probability that a cell updates per step; `fire_rate` (synonym `skip_prob`) is the skip probability (0.6 = 40% update) |
 | `loss.all_regions` | score every region, also when its target is empty, so false positives are penalised |
 | `training.validate_ema` | select the best epoch on the EMA weights that `best.pth` saves |
 | `data.crop_et_prob` | share of training crops centred on enhancing tumour, at the crop that is trained on |

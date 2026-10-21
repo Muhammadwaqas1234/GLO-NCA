@@ -11,7 +11,7 @@ def main(argv=None) -> int:
     ap.add_argument("run", help="run folder with results.json")
     args = ap.parse_args(argv)
 
-    from glo_nca.reporting import load_per_case, make_figures
+    from glo_nca.reporting import load_per_case, write_figures
 
     path = os.path.join(args.run, "results.json")
     if not os.path.isfile(path):
@@ -22,7 +22,7 @@ def main(argv=None) -> int:
     settings = {"Single pass": res["test_plain"], "Ensemble + TTA": res["test"]}
     if res.get("test_tuned"):
         settings["Tuned post-processing"] = res["test_tuned"]["test"]
-    make_figures(args.run, res["history"], res["best_epoch"], settings, load_per_case(args.run),
+    write_figures(args.run, res["history"], res["best_epoch"], settings, load_per_case(args.run),
                  title=os.path.basename(os.path.normpath(args.run)))
     return 0
 

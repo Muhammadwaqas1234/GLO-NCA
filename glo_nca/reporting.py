@@ -34,7 +34,7 @@ def report_tuned(tuned):
         print(f"{r:<8}{t['dice']:<12.4f}{t['iou']:<12.4f}{t['hd95']:<12.3f}")
 
 
-def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None,
+def final_report(cfg, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None,
                  per_case=None):
     r"""Print the test table and write results.json and the per-case CSV."""
     print("\n" + "=" * 60)
@@ -43,7 +43,7 @@ def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time
     print(f"{'setting':<24}{'WT':<8}{'TC':<8}{'ET':<8}{'mean':<8}")
     print("-" * 60)
     show("plain", test_plain)
-    show(f"+ensemble x{C.ENSEMBLE_N} +TTA" if C.USE_TTA else f"+ensemble x{C.ENSEMBLE_N}", test)
+    show(f"+ensemble x{cfg.ENSEMBLE_N} +TTA" if cfg.USE_TTA else f"+ensemble x{cfg.ENSEMBLE_N}", test)
     print("-" * 60)
     print("Full metrics (ensemble+TTA):")
     print(f"{'region':<8}{'Dice':<12}{'mIoU':<12}{'HD95':<12}")
@@ -59,10 +59,10 @@ def final_report(C, out_dir, ck_ep, test_plain, test, hist, n_params, train_time
     with open(os.path.join(out_dir, "results.json"), "w") as fh:
         json.dump({"test": test, "test_plain": test_plain, "history": hist, "best_epoch": ck_ep,
                    "test_tuned": tuned, "params": n_params, "train_time": train_time, "peak_vram": peak,
-                   "config": {"steps": C.STEPS, "fire": C.FIRE_RATE, "patch": C.INPUT_SIZE,
-                              "beta": C.TVERSKY_BETA, "aug": C.USE_AUG,
-                              "augment": C.AUGMENT, "region_weights": C.REGION_WEIGHTS,
-                              "split_seed": C.SPLIT_SEED}},
+                   "config": {"steps": cfg.STEPS, "fire": cfg.SKIP_PROB, "patch": cfg.INPUT_SIZE,
+                              "beta": cfg.TVERSKY_BETA, "aug": cfg.USE_AUG,
+                              "augment": cfg.AUGMENT, "region_weights": cfg.REGION_WEIGHTS,
+                              "split_seed": cfg.SPLIT_SEED}},
                   fh, indent=2, default=str)
 
     if per_case:
@@ -89,7 +89,7 @@ def load_per_case(out_dir, name="test_per_case.csv"):
         return [{"case": row["case"], **{r: float(row[r]) for r in REGIONS}} for row in csv.DictReader(fh)]
 
 
-def make_figures(out_dir, hist, best_epoch, settings, per_case=None, examples=None, title="GLO-NCA cascade"):
+def write_figures(out_dir, hist, best_epoch, settings, per_case=None, examples=None, title="GLO-NCA cascade"):
     r"""Draw every available figure into out_dir/figures; a plotting error is reported, never raised."""
     jobs = [("training curves", lambda: plots.plot_training(hist, best_epoch, out_dir, title)),
             ("test summary", lambda: plots.plot_test_summary(settings, out_dir))]

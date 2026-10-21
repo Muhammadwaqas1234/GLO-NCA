@@ -27,18 +27,18 @@ def main(argv=None) -> int:
     from glo_nca.evaluation import predict_case
     from glo_nca.trainer import build, set_seed
 
-    C = load_config(os.path.join(args.run, "config.yaml"))
-    set_seed(C.SEED)
-    _, ca, agent, dev = build(C, args.run, args.run, ([], [], []))
+    cfg = load_config(os.path.join(args.run, "config.yaml"))
+    set_seed(cfg.SEED)
+    _, cells, agent, dev = build(cfg, args.run, args.run, ([], [], []))
     best = os.path.join(args.run, "best.pth")
     ck = torch.load(best, map_location=dev, weights_only=False)
-    for m, sd in zip(ca, ck["m"]):
+    for m, sd in zip(cells, ck["m"]):
         m.load_state_dict(sd)
     agent.exp.set_model_state("test")
-    ensemble = args.ensemble_n if args.ensemble_n is not None else C.ENSEMBLE_N
-    tta = C.USE_TTA and not args.no_tta
-    size = C.INPUT_SIZE[-1]
-    x = np.random.default_rng(0).standard_normal((1, *size, len(C.MODALITIES))).astype(np.float32)
+    ensemble = args.ensemble_n if args.ensemble_n is not None else cfg.ENSEMBLE_N
+    tta = cfg.USE_TTA and not args.no_tta
+    size = cfg.INPUT_SIZE[-1]
+    x = np.random.default_rng(0).standard_normal((1, *size, len(cfg.MODALITIES))).astype(np.float32)
     data = (["_bench_0"], torch.from_numpy(x), torch.zeros((1, *size, len(REGIONS))))
 
     def once():
@@ -65,7 +65,7 @@ def main(argv=None) -> int:
         if proc is not None:
             rss.append(proc.memory_info().rss)
     res = {"device": str(dev), "ensemble_n": ensemble, "tta": tta, "working_size": size,
-           "parameters": int(sum(p.numel() for m in ca for p in m.parameters())),
+           "parameters": int(sum(p.numel() for m in cells for p in m.parameters())),
            "checkpoint_mb": round(os.path.getsize(best) / 2**20, 3),
            "latency_median_s": round(float(np.median(times)), 4),
            "latency_p95_s": round(float(np.percentile(times, 95)), 4), "repeats": args.repeats,

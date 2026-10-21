@@ -85,7 +85,7 @@ padding); S is squeeze-and-excitation over the 24 channels (global average pooli
 bottleneck and a sigmoid gate); G is a spatial gate A = σ(Conv₇ₓ₇ₓ₇[mean_c, max_c]) applied as
 **p** ⊙ A; W₀ ∈ ℝ¹²⁸ˣ⁴⁸ and W₁ ∈ ℝ²⁴ˣ¹²⁸ (no bias, initialised to zero) form a per-voxel MLP with batch
 normalisation over the volume and dropout 0.1; and mᵢ is a stochastic update mask (each voxel updates
-with probability 0.4; in the code `fire_rate = 0.6` is the probability of skipping). After each step
+with probability 0.4; in the code the skip probability `skip_prob = 0.6`, configured as `fire_rate`). After each step
 the four input channels are reset to the image.
 
 **Cascade.** The coarse cell runs 20 steps on the image max-pooled to 48³. Its state is upsampled to

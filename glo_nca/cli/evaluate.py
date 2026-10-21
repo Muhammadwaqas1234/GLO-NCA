@@ -85,7 +85,7 @@ def main(argv=None) -> int:
 
     from glo_nca.config import REGIONS, load_config
     from glo_nca.data import find_data_root
-    from glo_nca.evaluation import collect_probs, improved_evaluation, score_streaming
+    from glo_nca.evaluation import collect_probs, final_evaluation, score_streaming
     from glo_nca.metrics import METRIC_VERSION
     from glo_nca.reporting import report_tuned
     from glo_nca.trainer import build, code_identity, set_seed
@@ -106,25 +106,25 @@ def main(argv=None) -> int:
 
     models, datasets, ds, C0 = [], [], None, None
     for r in runs:
-        C = load_config(os.path.join(r, "config.yaml"))
+        cfg = load_config(os.path.join(r, "config.yaml"))
         if C0 is not None:
-            differ = [k for k in _INPUT_KEYS if getattr(C, k) != getattr(C0, k)]
+            differ = [k for k in _INPUT_KEYS if getattr(cfg, k) != getattr(C0, k)]
             if differ:
                 print(f"FAILED: ensemble members differ in {', '.join(differ)}.")
                 return 2
-        C0 = C0 or C
-        set_seed(C.SEED)
-        ds_r, ca, agent, dev = build(C, data_root, r, splits[0])
+        C0 = C0 or cfg
+        set_seed(cfg.SEED)
+        ds_r, cells, agent, dev = build(cfg, data_root, r, splits[0])
         ds = ds or ds_r
         datasets.append(ds_r)      # each model reads its own dataset, in its own split state
         if tuple(ds_r.size) != tuple(ds.size) or ds_r.images_path != ds.images_path:
             print("FAILED: ensemble members differ in working size or data root.")
             return 2
         ck = torch.load(os.path.join(r, "best.pth"), map_location=dev, weights_only=False)
-        for m, sd in zip(ca, ck["m"]):
+        for m, sd in zip(cells, ck["m"]):
             m.load_state_dict(sd)
-        n = args.ensemble_n if args.ensemble_n is not None else C.ENSEMBLE_N
-        tta = C.USE_TTA and not args.no_tta
+        n = args.ensemble_n if args.ensemble_n is not None else cfg.ENSEMBLE_N
+        tta = cfg.USE_TTA and not args.no_tta
         print(f"{os.path.basename(r)}: best epoch {ck['ep']} (val {ck['val_mean']:.3f}), "
               f"ensemble {n}, tta {tta}", flush=True)
         if args.case_seed is not None:
@@ -168,7 +168,7 @@ def main(argv=None) -> int:
                 return 2
             cases[state] = [(c, np.mean([b[c][0].astype(np.float32) for b in by_case], axis=0),
                              by_case[0][c][1]) for c in ids]
-        tuned = improved_evaluation(C0, ds, cases["val"], cases["test"])
+        tuned = final_evaluation(C0, ds, cases["val"], cases["test"])
     else:
         # Fixed post-processing: score case by case with a resumable progress file.
         thresholds = _parse_thresholds(args.thresholds)

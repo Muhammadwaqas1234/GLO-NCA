@@ -31,10 +31,10 @@ PREPROCESS_VERSION = 3
 
 def labels_to_regions(seg, et_labels=(3, 4)):
     r"""Nested WT/TC/ET regions from a raw BraTS label map, with an explicit ET label schema."""
-    return Dataset_BraTS_Foreground._labels_to_regions_impl(seg, tuple(et_labels))
+    return BraTSDataset._labels_to_regions_impl(seg, tuple(et_labels))
 
 
-class Dataset_BraTS_Foreground(Dataset):
+class BraTSDataset(Dataset):
     r"""BraTS loader: foreground crop, cubic resize, nonzero z-norm, patches and augmentation."""
 
     MODALITIES = ["t1n", "t1c", "t2w", "t2f"]
