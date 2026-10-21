@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
 # Reproduce the reported BraTS 2021 internal test table (historical model) from its weights.
 # Usage: ./reproduce.sh /path/to/BraTS2021 [run-folder]
-# The run folder needs best.pth, config.yaml and split.json. Missing files are downloaded from
-# GLO_RELEASE_URL when it is set; no public release exists until the weights are published.
+# Missing files are downloaded from the public release (override with GLO_RELEASE_URL); every file is
+# checked against the release's SHA256SUMS before use.
 set -euo pipefail
 
 DATA=${1:?usage: ./reproduce.sh /path/to/BraTS2021 [run-folder]}
 RUN=${2:-release/glo-nca-brats2021-res96}
-URL=${GLO_RELEASE_URL:-}
+URL=${GLO_RELEASE_URL:-https://github.com/Muhammadwaqas1234/GLO-NCA/releases/download/v1.1.0}
 
 mkdir -p "$RUN"
-for f in best.pth config.yaml split.json; do
+for f in best.pth config.yaml split.json SHA256SUMS; do
   if [ ! -f "$RUN/$f" ]; then
-    if [ -z "$URL" ]; then
-      echo "FAILED: $RUN/$f is missing. Copy the run's best.pth, config.yaml and split.json into $RUN,"
-      echo "        or set GLO_RELEASE_URL to a release that contains them."
-      exit 2
-    fi
     curl -fsSL -o "$RUN/$f" "$URL/$f" || { echo "FAILED: could not download $URL/$f"; exit 2; }
   fi
 done
+(cd "$RUN" && sha256sum -c SHA256SUMS) || { echo "FAILED: the files do not match SHA256SUMS"; exit 2; }
 echo "best.pth sha256: $(sha256sum "$RUN/best.pth" | cut -d' ' -f1)"
 
 # The reported setting, stated explicitly: ensemble x4 + flips, thresholds and clean-up chosen on

@@ -51,5 +51,15 @@ to be used for diagnosis or treatment decisions.
 
 ## Files
 
-`best.pth` (EMA weights of the best epoch), `config.yaml` (resolved configuration), `split.json`
-(patient split). Reproduce with `./reproduce.sh /path/to/BraTS2021`.
+Release [v1.1.0](https://github.com/Muhammadwaqas1234/GLO-NCA/releases/tag/v1.1.0): `best.pth` (EMA weights of the best epoch, 0.12 MB), `config.yaml`
+(resolved configuration), `split.json` (patient split 875/187/189) and `SHA256SUMS`.
+
+| File | SHA-256 |
+|---|---|
+| `best.pth` | `94aff4cc8d19ac3b7cd04d22c81f4394d704f861a4c26107ab755974e4a1dc25` |
+| `config.yaml` | `bd1c3ae1b6850ffcf6211eed8c262cee817c41b9bd1a4f606129fc02871b911e` |
+| `split.json` | `330f554a569710951e21b95394a458a8e03607d517001be916cd63a689ee8027` |
+
+Reproduce with `./reproduce.sh /path/to/BraTS2021`, which downloads the files, verifies the hashes and
+checks every reported metric. The data itself is not redistributed; BraTS 2021 is obtained from the
+challenge organisers under their data terms.

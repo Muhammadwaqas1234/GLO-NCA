@@ -55,3 +55,6 @@ cloud/config/gcp.env
 
 # Editable-install metadata
 *.egg-info/
+
+# Weights downloaded by reproduce.sh
+release/

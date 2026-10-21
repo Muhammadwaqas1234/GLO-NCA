@@ -132,7 +132,10 @@ This study used only publicly released, de-identified MRI data from the BraTS 20
 challenges, obtained through the official channels under the challenges' data use terms, which permit
 research use and require citation of the data descriptor publications. No new data were collected, no
 patients were contacted and no attempt was made to re-identify individuals. The data were stored and
-processed on the author's computer and a private cloud project, and were not redistributed.
+processed on the author's computer and a private cloud project, and were not redistributed. The trained weights, resolved
+configuration and patient split (not the images) are published as release v1.1.0 of the code
+repository with SHA-256 hashes, so the reported internal results can be reproduced by anyone with
+access to BraTS 2021 (`reproduce.sh`).
 [Institutional ethics determination: state here whether the university's ethics committee required a
 review for secondary use of public de-identified data, and its reference if one was issued.] The model
 is a research prototype, not a medical device; it has not been validated for clinical use and must

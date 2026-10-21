@@ -5,6 +5,28 @@ on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks an
 multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
 package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
+## Research questions
+
+1. **Accuracy at a small size.** Can a two-level NCA cascade with about 30,000 parameters segment adult
+   glioma (WT, TC, ET) on multi-parametric MRI close to the accuracy of much larger models? Internal
+   test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases), compared with
+   published results on that set.
+2. **Context in the cell.** Does context improve segmentation over a plain multiscale NCA trained with
+   the same recipe: (a) channel recalibration (SE) and local spatial gating, (b) an explicit
+   attention-pooled global-context block? Ablation configs `configs/experiments/brats2021_res96_fixed*.yaml`.
+3. **Multi-modal fusion.** Do the four MRI modalities help compared with contrast-enhanced T1 alone?
+   `brats2021_res96_fixed_single.yaml` and `glo-analyze modalities`.
+4. **Information transport.** How far does information travel in the model, and how do accuracy and run
+   time depend on the number of NCA steps? `glo-analyze erf`, `perturb` and `steps`.
+5. **Cost and inference choices.** What does the model cost to run, and how much accuracy comes from the
+   stochastic ensemble, flips and post-processing rather than the architecture? `benchmark.py` and
+   `glo-analyze decompose`.
+
+Each ablation variant is trained once (one seed) with the same split and frozen protocol, so the
+comparisons are exploratory. Larger models are compared through their published results on the
+BraTS 2023 adult glioma validation set, not retrained. Data: BraTS 2021 adult glioma for training and
+the internal test; BraTS 2023 adult glioma validation for the external evaluation.
+
 ## Results
 
 BraTS 2021: 1,251 glioma cases, seeded random split of 875 training, 187 validation and
@@ -143,14 +165,26 @@ pip install -r requirements.lock    # optional: the exact versions behind the re
 
 ## Reproduce the reported results
 
+The weights, resolved configuration and patient split of the reported run are published as release
+[v1.1.0](https://github.com/Muhammadwaqas1234/GLO-NCA/releases/tag/v1.1.0), with their SHA-256 hashes in `SHA256SUMS`:
+
+| File | SHA-256 |
+|---|---|
+| `best.pth` | `94aff4cc8d19ac3b7cd04d22c81f4394d704f861a4c26107ab755974e4a1dc25` |
+| `config.yaml` | `bd1c3ae1b6850ffcf6211eed8c262cee817c41b9bd1a4f606129fc02871b911e` |
+| `split.json` | `330f554a569710951e21b95394a458a8e03607d517001be916cd63a689ee8027` |
+
 ```bash
 ./reproduce.sh /path/to/BraTS2021
 ```
 
-downloads `best.pth`, `config.yaml` and `split.json` from the release (or uses them if present in
-`release/glo-nca-brats2021-res96/`), scores the 189 test patients with the reported setting and
-compares with the table above (Dice within ±0.005; the ensemble passes are stochastic).
-See `MODEL_CARD.md` for the model's data, intended use and limitations.
+downloads the three files and `SHA256SUMS` from the release (or uses them if present in
+`release/glo-nca-brats2021-res96/`), refuses files whose hashes do not match, scores the 189 test
+patients with the reported setting (ensemble x4 + flips, thresholds 0.65/0.65/0.60, clean-up
+400/25/400, full resolution, BraTS empty-region rule, independent region masks, surface HD95 in the
+medpy convention) and checks Dice within ±0.01 and HD95 within ±0.5 mm of the table above, with all
+189 cases scored; the historical ensemble passes were not seeded. See `MODEL_CARD.md` for the model's
+data, intended use and limitations.
 
 ## Train locally
 
