@@ -1,10 +1,9 @@
 # GLO-NCA thesis sections: revised proposal, data, method, ethics and limitations
 
 Text for the thesis chapters, matching the final implementation (repository `main`) and the reported run
-`BRATS2021-RES96-LONG-20261001-071710`. Numbers in square brackets are to be filled in from the
-corresponding analysis output.
+`BRATS2021-RES96-LONG-20261001-071710`. The bracketed ethics statement in Section 5 is completed by the author.
 
-## 1. Research question and objectives
+## 1. Research questions and objectives
 
 **Research questions.**
 

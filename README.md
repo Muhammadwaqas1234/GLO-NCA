@@ -5,6 +5,10 @@ on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks an
 multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
 package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
+The reported model uses channel recalibration (SE, pooled over the whole volume) and a local
+7×7×7 spatial gate in every cell. An explicit attention-pooled global-context block is implemented
+as a variant (`model.use_global`) and evaluated in the ablation; it is not part of the reported model.
+
 ## Research questions
 
 1. **Accuracy at a small size.** Can a two-level NCA cascade with about 30,000 parameters segment adult
