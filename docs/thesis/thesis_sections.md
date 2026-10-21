@@ -6,9 +6,22 @@ corresponding analysis output.
 
 ## 1. Research question and objectives
 
-**Research question.** How accurately can a compact two-level neural cellular automata (NCA) cascade
-segment adult glioma sub-regions on multi-parametric MRI, and what do its channel recalibration (SE)
-and spatial gating blocks contribute compared with an otherwise matched multiscale NCA?
+**Research questions.**
+
+- **RQ1.** Can a compact two-level neural cellular automata (NCA) cascade with about 30,000 parameters
+  segment adult glioma sub-regions (WT, TC, ET) on multi-parametric MRI at an accuracy close to that of
+  much larger models? *(Internal test, 189 patients; official BraTS 2023 validation on Synapse, 219
+  cases, compared with published results on the same set.)*
+- **RQ2.** Does adding context to the NCA cell improve segmentation over a plain multiscale NCA trained
+  with the same recipe? (a) channel recalibration (SE) and local spatial gating; (b) an explicit
+  attention-pooled global-context block. *(Ablation runs and paired per-patient statistics.)*
+- **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
+  alone? *(Single-modality variant and leave-one-modality-out at inference.)*
+- **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
+  number of NCA steps? *(Receptive-field and remote-perturbation analyses; step-budget analysis.)*
+- **RQ5.** What does the model cost to run, and how much of its accuracy comes from inference-time
+  choices (stochastic ensemble, flips, post-processing) rather than the architecture? *(Measured
+  parameters, memory and latency; inference decomposition.)*
 
 **Objectives, each with an evaluable criterion.**
 
@@ -232,11 +245,17 @@ with its result.
 
 The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
 patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);
-WT, TC and ET differences are secondary, Holm-corrected. Leave-one-modality-out at inference
-(`glo-analyze modalities`) complements the fusion ablation without retraining. Each variant is trained
-with the same frozen protocol. The primary comparison (full model against the plain control) and the
-global comparison use three training seeds each on the same split; the interval resamples patients
-and seeds, and seed-wise effects are reported. The smallest effect of interest is fixed in advance
-at 0.01 mean Dice: an effect is called supported only when its 95% interval excludes zero, and
-practically relevant only when the interval lies above 0.01. Variants run with one seed are reported
-as exploratory. Holm correction is applied across the family of architectural contrasts.
+WT, TC and ET differences are secondary, Holm-corrected, and Holm correction is applied across the
+family of architectural contrasts. Leave-one-modality-out at inference (`glo-analyze modalities`)
+complements the fusion ablation without retraining. Every variant is trained once, with the same seed,
+split and frozen protocol. The confidence intervals therefore cover patient variation but not
+training-seed variation; the smallest effect of interest is fixed in advance at 0.01 mean Dice, and
+differences are reported as exploratory evidence about each mechanism, not as established superiority.
+
+**Baselines.** The plain variant (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
+or global block, trained with the same recipe) is the multiscale-NCA baseline in the style of M3D-NCA,
+so the NCA lineage is compared under identical data, training and evaluation. Larger segmentation
+models (for example nnU-Net and Swin UNETR) are not retrained; they are compared through their published
+results on the BraTS 2023 adult glioma validation set, which is scored by the challenge organisers with
+the same official evaluation as the submissions of this thesis. Results from other datasets, splits or
+scoring conventions are not used for ranking.
