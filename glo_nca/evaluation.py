@@ -15,14 +15,22 @@ from .metrics import hd95_score, hd95_surface, iou_score
 from .config import REGIONS
 
 
-def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None, surface_hd95=False):
-    r"""Evaluate one split; ensemble > 1 averages passes, tta adds flips, per_case collects case Dice."""
+def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None, surface_hd95=False,
+             nested=False):
+    r"""Evaluate one split on the working grid at threshold 0.5; ensemble > 1 averages passes, tta adds flips.
+
+    nested scores the final nested masks (TC includes ET, WT includes TC); per_case collects case Dice.
+    """
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
     with torch.no_grad():
         for data in loader:
             case, prob, gt = predict_case(agent, data, ensemble, tta)
+            if nested:
+                half = {r: 0.5 for r in REGIONS}
+                masks = decode_regions(prob, half, {r: 0 for r in REGIONS})
+                prob = np.stack([masks[r] for r in REGIONS], axis=-1).astype(np.float32)
             # Keep the batch axis: HD95 is computed on (1, X, Y, Z) arrays as in the reference.
             prob, gt = prob[None], gt[None].astype(np.float32)
             for i, r in enumerate(REGIONS):
@@ -30,8 +38,8 @@ def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=N
                 inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
                 acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
                 acc[r]["iou"].append(iou_score(p, t))
-                acc[r]["hd95"].append(hd95_surface(p[0] >= 0.5, t[0] >= 0.5) if surface_hd95
-                                      else hd95_score(p, t))
+                acc[r]["hd95"].append(hd95_surface(p[0] >= 0.5, t[0] >= 0.5, convention=_conv(surface_hd95))
+                                      if surface_hd95 else hd95_score(p, t))
             if per_case is not None:
                 per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
     agent.exp.set_model_state("train")
@@ -54,25 +62,6 @@ def case_id(img_id):
     return img_id[1:-2]
 
 
-def metrics_from_cases(cases, per_case=None):
-    r"""The evaluate() metrics (fixed 0.5 threshold) from probabilities already collected."""
-    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
-    for case, prob, gt in cases:
-        # Same arrays as evaluate(): float32 with a batch axis.
-        prob, gt = prob.astype(np.float32)[None], gt.astype(np.float32)[None]
-        for i, r in enumerate(REGIONS):
-            p, t = prob[..., i], gt[..., i]
-            inter = np.logical_and(p >= 0.5, t >= 0.5).sum()
-            acc[r]["dice"].append((2 * inter) / ((p >= 0.5).sum() + (t >= 0.5).sum() + 1e-6))
-            acc[r]["iou"].append(iou_score(p, t)); acc[r]["hd95"].append(hd95_score(p, t))
-        if per_case is not None:
-            per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS}})
-    out = {}
-    for r in REGIONS:
-        hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
-        out[r] = {"dice": float(np.mean(acc[r]["dice"])), "iou": float(np.mean(acc[r]["iou"])),
-                  "hd95": float(np.mean(hd)) if hd else float("nan")}
-    return out
 
 
 def _parse_regions(text, default, cast):
@@ -112,6 +101,16 @@ def predict_passes(agent, data, ensemble=1, tta=False):
     flips = [None, (1,), (2,), (3,)] if tta else [None]
     seed = case_seed(agent.case_seed, case_id(idx[0])) if getattr(agent, "case_seed", None) is not None else None
     agent.last_seed = seed
+    if seed is None:
+        return _passes(agent, idx, inp0, tgt, flips, ensemble, None)
+    # Seeded passes must not change the training random sequence: fork the CPU and CUDA generators.
+    devices = [inp0.device] if inp0.device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        return _passes(agent, idx, inp0, tgt, flips, ensemble, seed)
+
+
+def _passes(agent, idx, inp0, tgt, flips, ensemble, seed):
+    r"""Run every flip and stochastic pass of one prepared case; pass k is seeded with seed + k."""
     probs = []
     k = 0
     for fl in flips:
@@ -131,6 +130,8 @@ def predict_passes(agent, data, ensemble=1, tta=False):
 
 def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16):
     r"""Mean probability map per case as a list of (case, prob, gt uint8); float16 saves memory."""
+    if dataset is not agent.exp.dataset:
+        raise ValueError("collect_probs needs the agent's own dataset, whose split state it sets")
     agent.exp.set_model_state(state)
     loader = torch.utils.data.DataLoader(dataset, batch_size=1)
     cases = []
@@ -175,7 +176,8 @@ def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one
         pf, tf = p.astype(np.float32), t.astype(np.float32)
         out[r] = {"dice": float(_dice(p, t, empty_one)), "iou": float(iou_score(pf, tf)),
                   "hd95": float("nan") if not with_hd95
-                  else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0)) if surface_hd95
+                  else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0), convention=_conv(surface_hd95))
+                  if surface_hd95
                   else float(hd95_score(pf, tf))}
     return out
 
@@ -289,13 +291,18 @@ def scan_spacing(dataset, case):
     return tuple(float(z) for z in nib.load(path).header.get_zooms()[:3])
 
 
+def _conv(surface_hd95):
+    r"""HD95 convention from a surface_hd95 setting (True means the medpy convention)."""
+    return surface_hd95 if isinstance(surface_hd95, str) else "medpy"
+
+
 def _pairs(cases, dataset=None, full_resolution=False):
-    r"""Yield (prob, gt, spacing) per case; at full resolution, in the original scan and its spacing in mm."""
+    r"""Yield (case, prob, gt, spacing); at full resolution, in the original scan and its spacing in mm."""
     for case, prob, gt in cases:
         if full_resolution:
-            yield (*to_full_resolution(dataset, case, prob), scan_spacing(dataset, case))
+            yield (case, *to_full_resolution(dataset, case, prob), scan_spacing(dataset, case))
         else:
-            yield prob.astype(np.float32), gt, None
+            yield case, prob.astype(np.float32), gt, None
 
 
 def _dice(p, t, empty_one=False):
@@ -316,7 +323,7 @@ def _components(mask):
 def _tune_regions(cases, dataset, full_resolution, grid, size_grid, empty_one, regions, inner):
     r"""Dice table per candidate for the given regions; inner adds the chosen masks of nested regions."""
     table = {r: {(th, sz): [] for th in grid for sz in size_grid} for r in regions}
-    for prob, gt, _ in _pairs(cases, dataset, full_resolution):
+    for _, prob, gt, _ in _pairs(cases, dataset, full_resolution):
         for r in regions:
             i = REGIONS.index(r)
             t = gt[..., i] > 0
@@ -361,10 +368,14 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
 
 
 def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False,
-          nested=False, surface_hd95=False):
-    r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up."""
+          nested=False, surface_hd95=False, per_case=None):
+    r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up.
+
+    surface_hd95 is False (legacy voxel HD95), True (surface, medpy convention) or a convention name;
+    per_case, when given, receives one row per case with the same values.
+    """
     acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
-    for prob, gt, spacing in _pairs(cases, dataset, full_resolution):
+    for case, prob, gt, spacing in _pairs(cases, dataset, full_resolution):
         masks = decode_regions(prob, thresholds, min_component, nested=nested)
         for i, r in enumerate(REGIONS):
             p = masks[r]
@@ -372,8 +383,12 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
             pf, tf = p.astype(np.float32), t.astype(np.float32)
             acc[r]["dice"].append(_dice(p, t, empty_one))
             acc[r]["iou"].append(iou_score(pf, tf))
-            acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0)) if surface_hd95
-                                  else hd95_score(pf, tf))
+            acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0),
+                                               convention=_conv(surface_hd95))
+                                  if surface_hd95 else hd95_score(pf, tf))
+        if per_case is not None:
+            per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS},
+                             **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS}})
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
@@ -391,11 +406,31 @@ def improved_evaluation(C, dataset, val_cases, test_cases):
             val_cases, dataset, C.FULL_RESOLUTION_EVAL, empty_one=C.BRATS_EMPTY, nested=C.NESTED_REGIONS)
     else:
         val = score(val_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
-                    C.NESTED_REGIONS, C.SURFACE_HD95)
+                    C.NESTED_REGIONS, C.hd95)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
+    test_rows = []
     test = score(test_cases, thresholds, min_component, dataset, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY,
-                 C.NESTED_REGIONS, C.SURFACE_HD95)
+                 C.NESTED_REGIONS, C.hd95, per_case=test_rows)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
+            "evaluation_spec": evaluation_spec(C, thresholds, min_component),
             "full_resolution": C.FULL_RESOLUTION_EVAL, "brats_empty": C.BRATS_EMPTY,
             "nested_regions": C.NESTED_REGIONS, "surface_hd95": C.SURFACE_HD95,
-            "val_tuned": val_tuned, "test": test}
+            "val_tuned": val_tuned, "test": test, "test_per_case": test_rows}
+
+
+def evaluation_spec(C, thresholds=None, min_component=None):
+    r"""The complete scoring specification, written next to every result."""
+    from .metrics import METRIC_VERSION
+    return {"metric_version": METRIC_VERSION, "full_resolution": C.FULL_RESOLUTION_EVAL,
+            "empty_region": "brats (empty prediction of an absent region scores 1)" if C.BRATS_EMPTY
+            else "v7 (absent region scores 0)",
+            "nested_regions": C.NESTED_REGIONS,
+            "hd95": (f"surface, {C.HD95_CONVENTION} convention, "
+                     + ("mm from scan spacing" if C.FULL_RESOLUTION_EVAL else "working-grid voxels"))
+            if C.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined, excluded and counted",
+            "thresholds": thresholds, "min_component_voxels": min_component,
+            "ensemble_n": C.ENSEMBLE_N, "tta": C.USE_TTA, "case_seed": C.CASE_SEED,
+            "rows": "single pass and ensemble at threshold 0.5, then tuned post-processing, all with this spec",
+            "validation_selection": "working grid, threshold 0.5"
+            + (", nested masks" if C.NESTED_REGIONS else "") + (f", surface HD95 ({C.HD95_CONVENTION})"
+                                                                if C.SURFACE_HD95 else "")}

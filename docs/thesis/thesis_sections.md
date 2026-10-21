@@ -51,15 +51,18 @@ segmentation of necrotic tumour core (label 1), peritumoural oedema (label 2) an
 (label 4). The regions evaluated are whole tumour (WT: labels 1, 2, 4), tumour core (TC: 1, 4) and
 enhancing tumour (ET: 4). Each scan belongs to a different patient. The cases were split at random by
 patient into 875 training, 187 validation and 189 test cases (seed 42, saved as `split.json`). The
-validation cases were used for model selection and post-processing choices; the test cases were used
-once, for the final internal results.
+validation cases were used for model selection and post-processing choices. No training, selection or
+tuning choice was based on the test cases; they were scored by the run's final test and later re-scored
+with the same frozen settings (for example to add surface HD95), as recorded in the run's evaluation
+files.
 
 **External evaluation.** The labels of the official BraTS 2021 validation cases are not released, and
 the 2021 validation phase is closed; the same 219 cases are scored in the BraTS 2023 adult glioma
 continuous evaluation on Synapse, where predictions are uploaded and the organisers compute the
 metrics. This set was used for external evaluation (labels 1, 2 and 3 in the 2023 release, with 3 for
-enhancing tumour). Its cases are disjoint from the BraTS 2021 training cases by construction of the
-challenge; the official ID mapping table can confirm this (`glo-analyze overlap`).
+enhancing tumour). These cases are expected to be disjoint from the BraTS 2021 training cases by construction of the
+challenge; this is verified with the official ID mapping table (`glo-analyze overlap`, which fails if
+any evaluated case is unmapped) and the result is reported with its coverage.
 
 **Preprocessing.** Each scan is cropped to the bounding box of non-zero voxels across modalities,
 resized slice-wise to 96³ (cubic interpolation for images, nearest neighbour for labels) and
@@ -139,10 +142,10 @@ not be used for diagnosis or treatment decisions.
   reported numbers are from the original run.
 - **Run history.** The run was resumed several times with changed validation frequency (every 5
   epochs until epoch 38, then every epoch) and early-stopping settings, recorded in `train.log`.
-- **Internal HD95 definition.** The internal HD95 values reported so far pooled the distances of both
-  directions before taking the 95th percentile; the standard definition (the larger of the two directed
-  percentiles) is usually slightly higher, and the internal values are recomputed with it. The Synapse
-  values are computed by the organisers and are not affected.
+- **HD95 convention.** Internal HD95 uses the medpy convention (one 95th percentile over the surface
+  distances of both directions); other evaluators take the larger of the two directed percentiles,
+  which can be higher. HD95 is undefined when exactly one mask is empty; such cases are excluded from
+  the mean and counted separately. Internal values are not directly comparable with challenge HD95.
 - **Resolution.** Resizing each brain to 96³ discards detail; most remaining errors are missed or
   misplaced small enhancing tumour.
 - **Scope.** Pre-operative adult glioma only; post-treatment scans, other tumour types and other
@@ -184,8 +187,10 @@ segmentation, at a fixed parameter budget, with its cost.
 ## 8. Contribution and the global-context question
 
 The proposal described an attention-pooled global context operator. The reported model instead uses
-SE (global over channels) and a local spatial gate; the attention-pooled block (Section 7, GCNet form)
-is implemented as an optional variant. The thesis states this directly and turns it into the
+SE (global over channels) and a local spatial gate. The attention-pooled block (GCNet form) is
+implemented as an optional variant; its context vector is added to every voxel's hidden layer after
+normalisation, because a constant added before the per-volume batch normalisation would be removed by
+its centring. A full-cell test confirms that the branch changes the output and receives gradients. The thesis states this directly and turns it into the
 experimental question:
 
 > At a fixed budget of about 30,000 parameters, does channel recalibration and spatial gating, or an
@@ -195,12 +200,14 @@ experimental question:
 The model name GLO-NCA is kept for the family of models; the reported model is described as a
 multiscale NCA with channel recalibration (SE) and local spatial gating.
 
-**Measured reach of the reported model.** Input-gradient analysis (effective receptive field) on one
-scan shows that about 70% of the influence on a tumour voxel comes from more than 30 mm away, and that
-this reach is the same for 5 and for 40 steps per level (90% of influence within about 115 mm). The
-model therefore already integrates information from most of the brain; the coarse level and the
-volume-wide operations (SE pooling and batch-normalisation statistics) provide this reach, not slow
-step-by-step propagation. Whether this global dependence helps is answered by the ablation.
+**Measured reach (preliminary).** An input-gradient analysis on one scan (exploratory, n = 1) found
+about 70% of the gradient sensitivity of a tumour voxel more than 30 mm away, with a similar reach for
+5 and 40 steps per level. Gradient sensitivity is not proof of useful information transport; the
+thesis reports the multi-patient analysis (`glo-analyze erf` over the test cases, fixed target per
+case) and the remote-perturbation analysis, and interprets them together with the ablation. Both
+measure every path by which a distant voxel can act, including the volume-wide statistics of batch
+normalisation and SE pooling at inference, not only step-by-step NCA propagation; separating these
+requires the per-voxel normalisation control (`model.norm: layer`) without SE.
 
 ## 9. Ablation design
 
@@ -215,12 +222,21 @@ respect.
 | Without context blocks | `fixed_plain` | no SE, no spatial gate | 28,128 | do the context blocks help? |
 | Without context, widened | `fixed_plain_wide` | no SE, no spatial gate, hidden 141 | 30,078 | is a gain due to the blocks or to the extra parameters? |
 | Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | does fusing the four modalities help? |
-| With global context | `fixed_global` | plus attention-pooled global block | 30,848 | does explicit global aggregation help further? |
+| SE only | `fixed_se` | no spatial gate | 28,764 | factorial: contribution of SE |
+| Spatial gate only | `fixed_spatial` | no SE | 29,502 | factorial: contribution of the spatial gate |
+| With global context | `fixed_global` | plus attention-pooled global context after normalisation | 32,304 | does explicit global aggregation help further? |
 
-\*The same cell; the input has one channel instead of four.
+\*The same cell and parameter count; with one input channel the 24-channel state holds 20 hidden
+channels instead of 17, so this variant also changes the hidden-state allocation, which is reported
+with its result.
 
 The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
 patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);
 WT, TC and ET differences are secondary, Holm-corrected. Leave-one-modality-out at inference
 (`glo-analyze modalities`) complements the fusion ablation without retraining. Each variant is trained
-once; differences smaller than about 0.01 Dice are reported as inconclusive.
+with the same frozen protocol. The primary comparison (full model against the plain control) and the
+global comparison use three training seeds each on the same split; the interval resamples patients
+and seeds, and seed-wise effects are reported. The smallest effect of interest is fixed in advance
+at 0.01 mean Dice: an effect is called supported only when its 95% interval excludes zero, and
+practically relevant only when the interval lies above 0.01. Variants run with one seed are reported
+as exploratory. Holm correction is applied across the family of architectural contrasts.

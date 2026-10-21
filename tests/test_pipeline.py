@@ -45,18 +45,57 @@ def main() -> int:
             n_test = len(list(csv.DictReader(fh)))
         check("per-case test scores written", n_test > 0, f"{n_test} cases")
 
+        # Parity: the saved fixed config, run as-is, writes per-case scores from its own final scoring.
+        res = json.load(open(os.path.join(fixed, "results.json")))
+        tuned = res["test_tuned"]
+        with open(os.path.join(fixed, "test_per_case.csv"), newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        parity = all(abs(sum(float(r[g]) for r in rows) / len(rows) - tuned["test"][g]["dice"]) < 1e-6
+                     for g in ("WT", "TC", "ET"))
+        spec = tuned.get("evaluation_spec", {})
+        check("fixed config: final table, per-case CSV and spec agree", parity and spec.get("full_resolution")
+              and spec.get("nested_regions") and "medpy" in spec.get("hd95", ""), spec.get("hd95", ""))
+
+        # Stale results: a changed config makes a resumed evaluation refuse.
+        ev = ["--run", fixed, "--data-root", data, "--splits", "test", "--full-resolution", "--brats-empty",
+              "--hd95-surface", "--nested-regions", "--output", os.path.join(work, "resume.json")]
+        rc1, rc2 = evaluate.main(ev), evaluate.main(ev)
+        cfg = os.path.join(fixed, "config.yaml")
+        original = open(cfg, encoding="utf-8").read()
+        open(cfg, "w", encoding="utf-8").write(original + "\n# changed\n")
+        rc3 = evaluate.main(ev)
+        open(cfg, "w", encoding="utf-8").write(original)
+        check("evaluate: resumes unchanged inputs, refuses a changed config", (rc1, rc2, rc3) == (0, 0, 2))
+
+        # Ensemble of two runs with threshold tuning: predictions aligned by case ID.
+        rc = evaluate.main(["--run", fixed, "--run", os.path.join(runs, "fixed_plain"), "--data-root", data,
+                            "--tune-thresholds", "--ensemble-n", "1", "--no-tta", "--no-hd95",
+                            "--output", os.path.join(work, "ens.json")])
+        ens = json.load(open(os.path.join(work, "ens.json")))
+        check("evaluate: tuned two-model ensemble aligned by case", rc == 0 and ens["test_mean_dice"] is not None)
+
         out = os.path.join(work, "pred")
         rc = predict.main(["--run", fixed, "--input", data, "--output", out, "--limit", "2", "--save-probs",
                            os.path.join(work, "probs")])
         rebuilt = os.path.join(work, "rebuilt")
         rc2 = predict.main(["--from-probs", os.path.join(work, "probs"), "--output", rebuilt])
-        same = rc == 0 and rc2 == 0 and sorted(os.listdir(out)) == sorted(os.listdir(rebuilt))
+        maps = lambda d: sorted(f for f in os.listdir(d) if f.endswith(".nii.gz"))
+        same = rc == 0 and rc2 == 0 and maps(out) == maps(rebuilt) and len(maps(out)) == 2
         if same:
             import nibabel as nib
             import numpy as np
             same = all(np.array_equal(nib.load(os.path.join(out, f)).get_fdata(),
-                                      nib.load(os.path.join(rebuilt, f)).get_fdata()) for f in os.listdir(out))
-        check("predict: label maps, identical from saved probabilities", same, f"{len(os.listdir(out))} cases")
+                                      nib.load(os.path.join(rebuilt, f)).get_fdata()) for f in maps(out))
+        check("predict: label maps, identical from saved probabilities", same, f"{len(maps(out))} cases")
+        rc = predict.main(["--run", fixed, "--input", data, "--output", out, "--limit", "2",
+                           "--thresholds", "WT=0.3"])
+        check("predict: refuses to mix outputs of other settings", rc == 2)
+        other = os.path.join(work, "syn_copy")
+        shutil.copytree(data, other)
+        rc_in = predict.main(["--run", fixed, "--input", other, "--output", out, "--limit", "2"])
+        rc_fp = predict.main(["--from-probs", os.path.join(work, "probs"), "--output", rebuilt,
+                              "--thresholds", "WT=0.9"])
+        check("predict: refuses another input folder and a mismatched --from-probs decode", (rc_in, rc_fp) == (2, 2))
 
         rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--nested-regions",
                             "--hd95-surface", "--full-resolution", "--brats-empty",
@@ -64,6 +103,15 @@ def main() -> int:
         res = json.load(open(os.path.join(work, "eval.json")))
         check("evaluate: nested regions, surface HD95 at full resolution",
               rc == 0 and res.get("nested_regions") is True, f"keys {sorted(res)[:4]}")
+        rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test",
+                            "--output", os.path.join(work, "default.json")])
+        spec = json.load(open(os.path.join(work, "default.json")))["evaluation_spec"]
+        check("evaluate: without flags follows the run's evaluation spec",
+              rc == 0 and spec["full_resolution"] and spec["nested_regions"] and "medpy" in spec["hd95"])
+        rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--legacy",
+                            "--output", os.path.join(work, "legacy.json")])
+        mixed = compare_runs.main([fixed, os.path.join(work, "legacy.json.progress.jsonl"), "--boot", "50"])
+        check("compare_runs: refuses inputs scored under different rules", rc == 0 and mixed == 2)
 
         rc = analyze.main(["decompose", "--run", fixed, "--data-root", data, "--limit", "2",
                            "--output", os.path.join(work, "dec.json")])
@@ -76,11 +124,15 @@ def main() -> int:
         st = json.load(open(os.path.join(work, "steps.json")))
         check("analyze steps: one row per step count", rc == 0 and set(st["results"]) == {"2", "4"})
         case = sorted(d for d in os.listdir(data) if os.path.isdir(os.path.join(data, d)))[0]
-        rc = analyze.main(["erf", "--run", fixed, "--case", os.path.join(data, case), "--steps", "2,8",
+        cases2 = [os.path.join(data, c) for c in sorted(d for d in os.listdir(data)
+                                                        if os.path.isdir(os.path.join(data, d)))[:2]]
+        rc = analyze.main(["erf", "--run", fixed, "--case", *cases2, "--steps", "2,8",
                            "--passes", "1", "--output", os.path.join(work, "erf.json")])
-        er = json.load(open(os.path.join(work, "erf.json")))["results"]
-        check("analyze erf: influence radius grows with steps", rc == 0
-              and er["8"]["r90_mm"] >= er["2"]["r90_mm"], f"r90 {er['2']['r90_mm']:.0f} -> {er['8']['r90_mm']:.0f} mm")
+        er = json.load(open(os.path.join(work, "erf.json")))
+        targets = {c: er["per_case"][c]["target_voxel"] for c in er["per_case"]}
+        check("analyze erf: fixed target per case, summary over cases", rc == 0
+              and er["summary"]["8"]["r90_mm"]["cases"] == 2 and len(targets) == 2,
+              f"r90 {er['summary']['2']['r90_mm']['mean']:.0f} -> {er['summary']['8']['r90_mm']['mean']:.0f} mm")
 
         rc = analyze.main(["modalities", "--run", fixed, "--data-root", data, "--limit", "2", "--ensemble-n", "1",
                            "--no-tta", "--output", os.path.join(work, "lomo.json")])

@@ -10,18 +10,27 @@ data:
   crop_et_prob: 0.5               # half of the training crops are centred on enhancing tumour
   brain_mask: true                # one brain mask for resizing and normalisation
   legacy_patchify: false          # skip the dataset-stage patch that never moves
+  split_by_patient: true          # all scans of one patient in the same split (same split for BraTS 2021)
 
 model:
   update_prob: 0.4                # a cell updates with probability 0.4 (same as fire_rate 0.6)
 
 training:
   validate_ema: true              # select the best epoch on the EMA weights that best.pth saves
+  early_stop_patience: 0          # every variant trains the full 150 epochs (equal budgets)
   log_live_and_ema: true          # also record the live weights' validation Dice
 
 loss:
   all_regions: true               # also penalise predictions of regions absent from the crop
   bce_logits: true                # numerically stable BCE on logits
 
-evaluation:
-  nested_regions: true            # score the final masks: TC includes ET, WT includes TC
-  surface_hd95: true              # BraTS surface HD95 in mm at full resolution
+evaluation:                       # frozen protocol, the same for every variant
+  ensemble_n: 4                   # stochastic passes, as in the reported model
+  tta: true                       # plus three flips
+  case_seed: 0                    # seeded passes: repeated evaluations give identical predictions
+  tune_thresholds: true           # threshold and clean-up chosen on validation only
+  full_resolution: true           # scored in the original scan space
+  brats_empty: true               # an empty prediction of an absent region scores Dice 1
+  nested_regions: true            # final masks: TC includes ET, WT includes TC (as exported)
+  surface_hd95: true              # surface HD95 in mm from the scan spacing
+  hd95_convention: medpy          # one 95th percentile over both directions (medpy.metric.binary.hd95)

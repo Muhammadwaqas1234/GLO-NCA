@@ -1,8 +1,38 @@
 r"""Segment unlabelled BraTS cases with a trained run and write one BraTS label map per case."""
 import argparse
 import io
+import json
 import os
 import sys
+
+
+def folder_fingerprint(folder, suffixes):
+    r"""SHA-256 over the names, sizes and modification times of the files below a folder."""
+    import hashlib
+    h = hashlib.sha256()
+    for root, _, files in sorted(os.walk(folder)):
+        for f in sorted(files):
+            if f.endswith(suffixes):
+                st = os.stat(os.path.join(root, f))
+                h.update(f"{os.path.relpath(os.path.join(root, f), folder)}:{st.st_size}:{st.st_mtime_ns};".encode())
+    return h.hexdigest()
+
+
+def claim_folder(folder, identity, name):
+    r"""Record the identity of a folder's outputs, or refuse when it holds outputs of another identity."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    identity = json.loads(json.dumps(identity))
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            if json.load(fh) != identity:
+                print(f"FAILED: {folder} holds outputs of other inputs, checkpoint, code or settings "
+                      f"({name} differs); use an empty folder.")
+                return False
+        return True
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(identity, fh, indent=2)
+    return True
 
 
 def main(argv=None) -> int:
@@ -41,7 +71,9 @@ def main(argv=None) -> int:
     thresholds = _parse_regions(args.thresholds, 0.5, float)
     min_component = _parse_regions(args.min_component, 0, int)
     et_rule = tuple(float(x) for x in args.et_to_ncr.split(",")) if args.et_to_ncr else None
-    os.makedirs(args.output, exist_ok=True)
+    from glo_nca.trainer import code_identity
+    decoder = {"thresholds": thresholds, "min_component": min_component, "et_rule": et_rule,
+               "et_label": args.et_label}
 
     def write_label(prob, bbox, shape, affine, header, out_path):
         r"""Threshold, clean and relabel one probability map, then save it as a BraTS label map."""
@@ -54,6 +86,13 @@ def main(argv=None) -> int:
         os.replace(tmp, out_path)
 
     if args.from_probs:
+        probs_identity_path = os.path.join(args.from_probs, "probs_identity.json")
+        source = json.load(open(probs_identity_path, encoding="utf-8")) if os.path.exists(probs_identity_path) else None
+        identity = {"from_probs": os.path.abspath(args.from_probs), "probs_identity": source,
+                    "probs_fingerprint": folder_fingerprint(args.from_probs, (".npz",)),
+                    "code": code_identity(), **decoder}
+        if not claim_folder(args.output, identity, "prediction_identity.json"):
+            return 2
         cases = sorted(f[:-4] for f in os.listdir(args.from_probs) if f.endswith(".npz"))[:args.limit]
         print(f"{len(cases)} cases from saved probabilities | thresholds {thresholds} | "
               f"min component {min_component} | et-to-ncr {et_rule}", flush=True)
@@ -90,8 +129,17 @@ def main(argv=None) -> int:
     if args.case_seed is not None:
         agent.case_seed = args.case_seed
     agent.exp.set_model_state("test")
-    if args.save_probs:
-        os.makedirs(args.save_probs, exist_ok=True)
+    # Outputs are resumable only for the same inputs, checkpoint, code and settings; otherwise refuse.
+    from glo_nca.cli.evaluate import file_sha256
+    model = {"input": os.path.abspath(args.input),
+             "input_fingerprint": folder_fingerprint(args.input, (".nii", ".nii.gz")),
+             "best_pth_sha256": file_sha256(os.path.join(args.run, "best.pth")),
+             "config_sha256": file_sha256(os.path.join(args.run, "config.yaml")), "code": code_identity(),
+             "modalities": modalities, "ensemble_n": ensemble, "tta": tta, "case_seed": agent.case_seed}
+    if not claim_folder(args.output, {**model, **decoder}, "prediction_identity.json"):
+        return 2
+    if args.save_probs and not claim_folder(args.save_probs, model, "probs_identity.json"):
+        return 2
 
     cases = sorted(d for d in os.listdir(args.input) if os.path.isdir(os.path.join(args.input, d))
                    and any(f.endswith((".nii", ".nii.gz")) for f in os.listdir(os.path.join(args.input, d))))

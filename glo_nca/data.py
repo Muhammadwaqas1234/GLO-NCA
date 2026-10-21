@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
 
 import cv2
 import nibabel as nib
@@ -25,7 +26,12 @@ class _ConfigView:
 
 
 # Bump when preprocessing changes, so disk caches written by older code are not reused.
-PREPROCESS_VERSION = 2
+PREPROCESS_VERSION = 3
+
+
+def labels_to_regions(seg, et_labels=(3, 4)):
+    r"""Nested WT/TC/ET regions from a raw BraTS label map, with an explicit ET label schema."""
+    return Dataset_BraTS_Foreground._labels_to_regions_impl(seg, tuple(et_labels))
 
 
 class Dataset_BraTS_Foreground(Dataset):
@@ -111,14 +117,21 @@ class Dataset_BraTS_Foreground(Dataset):
         zs = np.where(fg.any(axis=(0, 1)))[0]
         return xs[0], xs[-1] + 1, ys[0], ys[-1] + 1, zs[0], zs[-1] + 1
 
-    @classmethod
-    def _labels_to_regions(cls, seg):
-        r"""Convert raw BraTS labels into the nested WT/TC/ET regions; unknown labels are an error."""
-        unknown = set(np.unique(seg).astype(int).tolist()) - {0, 1, 2, *cls.ET_LABELS}
+    def _labels_to_regions(self, seg):
+        r"""Convert raw BraTS labels into nested WT/TC/ET with this dataset's configured ET labels."""
+        return labels_to_regions(seg, self.ET_LABELS)
+
+    @staticmethod
+    def _labels_to_regions_impl(seg, et_labels):
+        r"""Nested WT/TC/ET from raw labels: 1 necrotic core, 2 oedema, ``et_labels`` enhancing tumour."""
+        values = np.unique(seg)
+        if not np.all(np.isclose(values, np.round(values))):
+            raise ValueError("segmentation labels are not integers")
+        unknown = set(np.round(values).astype(int).tolist()) - {0, 1, 2, *et_labels}
         if unknown:
-            raise ValueError(f"unexpected segmentation labels {sorted(unknown)}; "
-                             f"set data.et_labels for this release")
-        et = np.isin(seg, cls.ET_LABELS)
+            raise ValueError(f"unexpected segmentation labels {sorted(unknown)} for ET labels "
+                             f"{list(et_labels)}; set data.et_labels for this release")
+        et = np.isin(seg, et_labels)
         ncr = (seg == 1)
         ed = (seg == 2)
         wt = np.logical_or(np.logical_or(ncr, ed), et)   # whole tumour
@@ -142,6 +155,7 @@ class Dataset_BraTS_Foreground(Dataset):
         raw = np.stack([self.load_item(self._find_modality_file(folder, folder_name, m))
                         for m in self.MODALITIES], axis=-1)
         seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
+        self._labels_to_regions(np.unique(seg))     # validate the raw label set before resizing
         if self.use_foreground_crop:
             bbox = self._foreground_bbox(raw)
             if bbox is not None:
@@ -182,8 +196,8 @@ class Dataset_BraTS_Foreground(Dataset):
         parts = []
         for m in [*self.MODALITIES, self.SEG_SUFFIX]:
             st = os.stat(self._find_modality_file(folder, folder_name, m))
-            parts.append(f"{m}:{st.st_size}:{int(st.st_mtime)}")
-        return ";".join(parts)
+            parts.append(f"{m}:{st.st_size}:{st.st_mtime_ns}")
+        return os.path.abspath(folder) + "|" + ";".join(parts)
 
     def _cache_path(self, folder_name):
         r"""Disk-cache file for one case; the name encodes the preprocessing version, settings and source files."""
@@ -306,13 +320,29 @@ def find_data_root(base="/kaggle/input"):
     return None, 0
 
 
-def make_split(data_root, seed, n_patients=None):
-    r"""Seeded random 70/15/15 split of the case folders in ``data_root``."""
+def patient_of(case):
+    r"""Patient of a case folder: BraTS 2023+ names end in a scan number (BraTS-GLI-00001-001), others are one scan."""
+    m = re.match(r"^(.*-\d+)-\d+$", case)
+    return m.group(1) if m else case
+
+
+def make_split(data_root, seed, n_patients=None, by_patient=False):
+    r"""Seeded random 70/15/15 split; by_patient keeps all scans of one patient in the same split.
+
+    The default shuffles case folders (the original recipe). When every folder is its own patient
+    (BraTS 2021) both give the same split; with several scans per patient (BraTS 2023 naming) they
+    differ, and ``n_patients`` then counts patients instead of folders.
+    """
     # Case folders only: a folder that holds scans (skips nested cohort folders).
-    pats = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))
-                  and any(f.endswith((".nii", ".nii.gz")) for f in os.listdir(os.path.join(data_root, d))))
+    cases = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))
+                   and any(f.endswith((".nii", ".nii.gz")) for f in os.listdir(os.path.join(data_root, d))))
+    groups = {}
+    for c in cases:
+        groups.setdefault(patient_of(c) if by_patient else c, []).append(c)
+    pats = sorted(groups)
     random.Random(seed).shuffle(pats)
     if n_patients:
         pats = pats[:n_patients]
     n = len(pats); a, b = int(n*0.70), int(n*0.15)
-    return pats[:a], pats[a:a+b], pats[a+b:]
+    expand = lambda ps: [c for p in ps for c in groups[p]]
+    return expand(pats[:a]), expand(pats[a:a+b]), expand(pats[a+b:])

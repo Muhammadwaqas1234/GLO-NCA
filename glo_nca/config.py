@@ -74,6 +74,8 @@ class GLO_NCA_Config:
     LEGACY_PATCHIFY: bool = True
     LOG_LIVE_AND_EMA: bool = False
     PERSISTENT_WORKERS: bool = False
+    HD95_CONVENTION: str = "medpy"
+    SPLIT_BY_PATIENT: bool = False
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -81,7 +83,12 @@ class GLO_NCA_Config:
     def improved_eval(self) -> bool:
         r"""True when any evaluation improvement is enabled."""
         return (self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or self.BRATS_EMPTY
-                or any(self.MIN_COMPONENT.values()))
+                or any(self.MIN_COMPONENT.values()) or self.NESTED_REGIONS or self.SURFACE_HD95)
+
+    @property
+    def hd95(self):
+        r"""Surface-HD95 setting passed to the scorers: the convention name, or False for the legacy metric."""
+        return self.HD95_CONVENTION if self.SURFACE_HD95 else False
 
 
 def _merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
@@ -167,5 +174,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLO_NCA_Con
         LEGACY_PATCHIFY=bool(d.get("legacy_patchify", True)),
         LOG_LIVE_AND_EMA=bool(t.get("log_live_and_ema", False)),
         PERSISTENT_WORKERS=bool(t.get("persistent_workers", False)),
+        HD95_CONVENTION=str(v.get("hd95_convention", "medpy")),
+        SPLIT_BY_PATIENT=bool(d.get("split_by_patient", False)),
         raw=raw,
     )

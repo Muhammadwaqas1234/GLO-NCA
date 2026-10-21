@@ -45,12 +45,21 @@ def _surface(mask):
     return mask & ~binary_erosion(mask, structure=generate_binary_structure(3, 1), border_value=0)
 
 
-def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0), pooled=False):
+# Bump when a metric definition changes, so stored per-case results are not mixed with new ones.
+METRIC_VERSION = 2
+HD95_CONVENTIONS = ("medpy", "max_directed")
+
+
+def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0), convention="medpy"):
     r"""Surface HD95 in physical units: 0 if both masks are empty, NaN if one is.
 
-    Standard definition (medpy, BraTS): the larger of the two directed 95th-percentile surface
-    distances. pooled=True takes one percentile over both directions together, the definition used
-    for the internal HD95 reported before this correction; it is usually slightly lower.
+    Surface voxels are mask voxels with a 6-connected background neighbour. ``convention``:
+
+    - ``"medpy"``: the 95th percentile of the distances of both directions pooled together, as
+      ``medpy.metric.binary.hd95`` computes it.
+    - ``"max_directed"``: the larger of the two directed 95th percentiles, the form of
+      ``compute_robust_hausdorff`` in DeepMind's surface-distance package (voxel-based here, without
+      its surface-element weighting).
     """
     if not _SCIPY_AVAILABLE:
         return float("nan")
@@ -62,6 +71,8 @@ def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0), pooled=False):
     sp, st = _surface(p), _surface(t)
     d_pt = distance_transform_edt(~st, sampling=spacing)[sp]
     d_tp = distance_transform_edt(~sp, sampling=spacing)[st]
-    if pooled:
+    if convention == "medpy":
         return float(np.percentile(np.concatenate([d_pt, d_tp]), 95))
-    return float(max(np.percentile(d_pt, 95), np.percentile(d_tp, 95)))
+    if convention == "max_directed":
+        return float(max(np.percentile(d_pt, 95), np.percentile(d_tp, 95)))
+    raise ValueError(f"unknown HD95 convention: {convention}")

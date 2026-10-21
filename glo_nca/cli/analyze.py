@@ -8,7 +8,9 @@ import time
 
 import numpy as np
 
-STAGES = ["single pass", "+ ensemble x4", "+ flips", "+ thresholds", "+ clean-up", "+ ET rule"]
+HD95_CONVENTION = "medpy"     # set from --hd95-convention
+
+STAGES = ["single pass", "+ ensemble", "+ flips", "+ thresholds", "+ clean-up", "+ ET rule"]
 
 
 def _load(run, data_root, splits=None):
@@ -42,7 +44,7 @@ def _metrics(masks, gt, spacing):
     for i, r in enumerate(REGIONS):
         t = gt[..., i] > 0
         out[r] = {"dice": float(_dice(masks[r], t, True)),
-                  "hd95": float(hd95_surface(masks[r], t, spacing=spacing))}
+                  "hd95": float(hd95_surface(masks[r], t, spacing=spacing, convention=HD95_CONVENTION))}
     return out
 
 
@@ -87,13 +89,13 @@ def decompose(args) -> int:
             data = torch.utils.data.default_collate([ds[list(ds.images_list).index(key)]])
             case, passes, _ = predict_passes(agent, data, args.ensemble_n, True)
             spacing = scan_spacing(ds, case)
-            probs = {"single pass": passes[0], "+ ensemble x4": np.mean(passes[:args.ensemble_n], axis=0),
+            probs = {"single pass": passes[0], "+ ensemble": np.mean(passes[:args.ensemble_n], axis=0),
                      "+ flips": np.mean(passes, axis=0)}
             full, gt = {}, None
             for k, p in probs.items():
                 full[k], gt = to_full_resolution(ds, case, p)
             settings = [("single pass", full["single pass"], half, none, None),
-                        ("+ ensemble x4", full["+ ensemble x4"], half, none, None),
+                        ("+ ensemble", full["+ ensemble"], half, none, None),
                         ("+ flips", full["+ flips"], half, none, None),
                         ("+ thresholds", full["+ flips"], th, none, None),
                         ("+ clean-up", full["+ flips"], th, mc, None)]
@@ -102,21 +104,16 @@ def decompose(args) -> int:
             for stage, p, t, m, rule in settings:
                 rows.append({"case": case, "stage": stage, "seed": agent.last_seed,
                              **_metrics(decode_regions(p, t, m, rule), gt, spacing)})
-            # Uncertainty on the working grid: spread of the passes and low confidence inside the tumour.
-            mean_p = np.mean(passes, axis=0)
-            tumour = mean_p[..., 0] >= 0.5
-            final = rows[-1]
-            qc.append({"case": case, "mean_dice": float(np.mean([final[r]["dice"] for r in REGIONS])),
-                       "pass_std": float(np.std(passes, axis=0)[tumour].mean()) if tumour.any() else 0.0,
-                       "low_confidence": float(1 - np.maximum(mean_p, 1 - mean_p)[tumour].mean())
-                       if tumour.any() else 0.0})
+            qc.append({"case": case, "mean_dice": float(np.mean([rows[-1][r]["dice"] for r in REGIONS])),
+                       **_uncertainty(passes, args.ensemble_n, data[1][0].numpy())})
             if n % 10 == 0 or n == len(keys):
                 print(f"  {n}/{len(keys)} cases", flush=True)
     summary = _summary(rows)
     _print_table(summary, "Inference decomposition")
     quality = _quality_control(qc, args.failure_dice)
     print(f"Uncertainty QC (failure: mean Dice < {args.failure_dice}, {quality['failures']} of {len(qc)}): "
-          f"pass spread AUROC {quality['pass_std']['auroc_failure']:.3f}, "
+          f"pass spread AUROC {quality['stochastic_std']['auroc_failure']:.3f}, "
+          f"flip spread AUROC {quality['tta_std']['auroc_failure']:.3f}, "
           f"low confidence AUROC {quality['low_confidence']['auroc_failure']:.3f}")
     _save(args.output, {"run": run, "split": args.split, "cases": len(keys), "ensemble_n": args.ensemble_n,
                         "thresholds": th, "min_component": mc, "et_rule": et_rule,
@@ -170,60 +167,101 @@ def steps(args) -> int:
     return 0
 
 
+
+def _case_input(ds, folder, case):
+    r"""Preprocessed working-grid input of one case and its working voxel size in mm (from the header)."""
+    if len(ds.MODALITIES) != ds.exp.get_from_config("input_channels"):
+        raise ValueError(f"{len(ds.MODALITIES)} modalities given, the model expects "
+                         f"{ds.exp.get_from_config('input_channels')}")
+    import nibabel as nib
+    files = [ds._find_modality_file(folder, case, m) for m in ds.MODALITIES]
+    raw = np.stack([ds.load_item(f) for f in files], axis=-1)
+    zooms = np.array(nib.load(files[0]).header.get_zooms()[:3], float)
+    bbox = ds._foreground_bbox(raw) if ds.use_foreground_crop else None
+    x0, x1, y0, y1, z0, z1 = bbox if bbox is not None else (0, raw.shape[0], 0, raw.shape[1], 0, raw.shape[2])
+    img = ds.normalize(ds.resize_image(raw[x0:x1, y0:y1, z0:z1]))
+    vox_mm = np.array([(x1 - x0), (y1 - y0), (z1 - z0)]) * zooms / np.array(ds.size)
+    return img, vox_mm
+
+
 def erf(args) -> int:
-    r"""Effective receptive field: input-gradient magnitude of the output at one tumour voxel."""
+    r"""Effective receptive field: input-gradient sensitivity of the output at one fixed tumour voxel.
+
+    Per case the target is the voxel of highest predicted probability at the trained step count, and
+    the same target is used for every step count. The summary is over all given cases.
+    """
     import torch
 
     from glo_nca.config import REGIONS
     run = os.path.abspath(args.run)
-    folder = os.path.abspath(args.case)
-    case = os.path.basename(folder)
-    C, ds, ca, agent, dev = _load(run, os.path.dirname(folder))
+    folders = [os.path.abspath(c) for c in args.case]
+    C, ds, ca, agent, dev = _load(run, os.path.dirname(folders[0]))
     if args.modalities:
         ds.MODALITIES = [m.strip() for m in args.modalities.split(",")]
     for m in ca:
         m.grad_checkpoint = True          # memory: recompute each step in backward
     agent.exp.set_model_state("test")
-    files = [ds._find_modality_file(folder, case, m) for m in ds.MODALITIES]
-    raw = np.stack([ds.load_item(f) for f in files], axis=-1)
-    bbox = ds._foreground_bbox(raw)
-    x0, x1, y0, y1, z0, z1 = bbox
-    img = ds.normalize(ds.resize_image(raw[x0:x1, y0:y1, z0:z1]))
-    # Working voxel size in mm (scans are 1 mm isotropic; the crop is resized to the working cube).
-    vox_mm = np.array([(x1 - x0), (y1 - y0), (z1 - z0)]) / np.array(ds.size)
     region = REGIONS.index(args.region)
-    results = {}
-    for s in [int(x) for x in args.steps.split(",")]:
+    step_list = [int(x) for x in args.steps.split(",")]
+
+    def forward(img, s, k):
         agent.exp.config["inference_steps"] = [s, s]
-        grads = []
-        for k in range(args.passes):
-            torch.manual_seed(k)
-            x = torch.from_numpy(img[None].astype(np.float32)).to(dev).requires_grad_(True)
-            seed = agent.make_seed(x)
-            out, _ = agent.get_outputs((["_" + case + "_0"], seed, torch.zeros((1, *ds.size, 3), device=dev)),
-                                       full_img=True, keep_grad=True)
-            if k == 0:
-                # Target: the voxel of highest predicted probability for the region (a tumour voxel).
-                target = np.unravel_index(int(torch.argmax(out[0, ..., region]).item()), tuple(ds.size))
-            out[0, target[0], target[1], target[2], region].backward()
-            grads.append(x.grad[0].abs().sum(-1).cpu().numpy())
-        g = np.mean(grads, axis=0)
-        idx = np.indices(g.shape).reshape(3, -1).T
+        torch.manual_seed(k)
+        x = torch.from_numpy(img[None].astype(np.float32)).to(dev).requires_grad_(True)
+        out, _ = agent.get_outputs((["_erf_0"], agent.make_seed(x), torch.zeros((1, *ds.size, 3), device=dev)),
+                                   full_img=True, keep_grad=True)
+        return x, out
+
+    per_case = {}
+    for folder in folders:
+        case = os.path.basename(folder)
+        img, vox_mm = _case_input(ds, folder, case)
+        with torch.no_grad():
+            _, out = forward(img, C.STEPS[-1], 0)
+        target = np.unravel_index(int(torch.argmax(out[0, ..., region]).item()), tuple(ds.size))
+        idx = np.indices(tuple(ds.size)).reshape(3, -1).T
         dist = np.sqrt((((idx - np.array(target)) * vox_mm) ** 2).sum(1))
         order = np.argsort(dist)
-        cum = np.cumsum(g.ravel()[order]) / max(g.sum(), 1e-12)
-        radius = {f"r{int(q * 100)}_mm": float(dist[order][np.searchsorted(cum, q)]) for q in (0.5, 0.9, 0.95)}
-        far = float(g.ravel()[dist > args.far_mm].sum() / max(g.sum(), 1e-12))
-        results[s] = {**radius, f"share_beyond_{int(args.far_mm)}mm": far, "target_voxel": [int(v) for v in target]}
-        print(f"steps {s:3d}+{s:<3d} | influence radius 50% {radius['r50_mm']:.1f} mm, 90% {radius['r90_mm']:.1f} mm, "
-              f"95% {radius['r95_mm']:.1f} mm | beyond {args.far_mm:.0f} mm {far:.1%}", flush=True)
-    _save(args.output, {"run": run, "case": case, "region": args.region, "passes": args.passes,
-                        "working_voxel_mm": vox_mm.tolist(), "trained_steps": C.STEPS, "results": results}, None)
+        per_case[case] = {"target_voxel": [int(v) for v in target], "working_voxel_mm": vox_mm.tolist()}
+        for s in step_list:
+            grads = []
+            for k in range(args.passes):
+                x, out = forward(img, s, k)
+                out[0, target[0], target[1], target[2], region].backward()
+                grads.append(x.grad[0].abs().sum(-1).cpu().numpy())
+            g = np.mean(grads, axis=0).ravel()
+            total = g.sum()
+            if total <= 0:
+                per_case[case][s] = {"r50_mm": None, "r90_mm": None, "r95_mm": None, "share_beyond": None,
+                                     "note": "zero gradient"}
+                continue
+            cum = np.cumsum(g[order]) / total
+            radius = {f"r{int(q * 100)}_mm": float(dist[order][min(np.searchsorted(cum, q), len(cum) - 1)])
+                      for q in (0.5, 0.9, 0.95)}
+            per_case[case][s] = {**radius, "share_beyond": float(g[dist > args.far_mm].sum() / total)}
+        print(f"{case}: " + "; ".join(f"{s} steps r90 {per_case[case][s]['r90_mm']} mm" for s in step_list), flush=True)
+    agent.exp.config["inference_steps"] = C.STEPS
+    summary = {}
+    for s in step_list:
+        vals = [per_case[c][s] for c in per_case if per_case[c][s].get("r90_mm") is not None]
+        summary[s] = {k: {"mean": float(np.mean([v[k] for v in vals])), "sd": float(np.std([v[k] for v in vals])),
+                          "cases": len(vals)} for k in ("r50_mm", "r90_mm", "r95_mm", "share_beyond")} if vals else {}
+        if vals:
+            print(f"steps {s:3d}+{s:<3d} | over {len(vals)} cases: r50 {summary[s]['r50_mm']['mean']:.1f} mm, "
+                  f"r90 {summary[s]['r90_mm']['mean']:.1f} +- {summary[s]['r90_mm']['sd']:.1f} mm, beyond "
+                  f"{args.far_mm:.0f} mm {summary[s]['share_beyond']['mean']:.1%}", flush=True)
+    _save(args.output, {"run": run, "region": args.region, "passes": args.passes, "far_mm": args.far_mm,
+                        "trained_steps": C.STEPS, "note": "gradient sensitivity, not proof of useful information",
+                        "summary": summary, "per_case": per_case}, None)
     return 0
 
 
+
 def overlap(args) -> int:
-    r"""Check a BraTS ID mapping table for evaluation cases that were in the run's training or validation split."""
+    r"""Check a BraTS ID mapping table for evaluated cases that were in the run's training or validation split.
+
+    Every evaluated case must appear in the table; unmapped cases are listed and make the check fail.
+    """
     import re
     path = args.mapping
     if path.lower().endswith((".xlsx", ".xls")):
@@ -235,29 +273,56 @@ def overlap(args) -> int:
     with open(os.path.join(args.run, "split.json"), encoding="utf-8") as fh:
         split = json.load(fh)
     where = {c: name for name in ("train", "validation", "test") for c in split[name]}
-    # Each row links IDs of one patient across releases; keep the BraTS 2021 ID found in the row.
-    ids_2021 = re.compile(r"BraTS2021_\d{5}")
-    evaluated = None
-    if args.cases:
-        with open(args.cases, newline="", encoding="utf-8-sig") as fh:
-            evaluated = {row[0] for row in csv.reader(fh) if row}
-    hits = {"train": [], "validation": [], "test": []}
-    checked = 0
+    with open(args.cases, newline="", encoding="utf-8-sig") as fh:
+        evaluated = sorted({row[0].strip() for row in csv.reader(fh)
+                            if row and re.match(r"BraTS-GLI-\d{5}-\d{3}$", row[0].strip())})
+    # Each row links IDs of one patient across releases.
+    mapped = {}
     for row in rows:
         text = " ".join(str(x) for x in row)
-        other = [x for x in re.findall(r"BraTS-GLI-\d{5}-\d{3}", text)]
-        if not other or (evaluated is not None and not any(o in evaluated for o in other)):
-            continue
-        checked += 1
-        for b in ids_2021.findall(text):
-            if b in where:
-                hits[where[b]].append((other[0] if other else "", b))
-    print(f"{checked} mapped evaluation cases checked against {len(where)} split cases")
-    for name, h in hits.items():
-        print(f"  in {name:10s}: {len(h)}" + (f"  e.g. {h[:3]}" if h else ""))
-    _save(args.output, {"mapping": path, "checked": checked,
-                        "overlap": {k: [list(x) for x in v] for k, v in hits.items()}}, None)
-    return 1 if hits["train"] or hits["validation"] else 0
+        for gli in re.findall(r"BraTS-GLI-\d{5}-\d{3}", text):
+            mapped.setdefault(gli, set()).update(re.findall(r"BraTS2021_\d{5}", text))
+    status = {}
+    for case in evaluated:
+        if case not in mapped:
+            status[case] = "unmapped"
+        else:
+            hits = sorted({where[b] for b in mapped[case] if b in where})
+            status[case] = "+".join(hits) if hits else "not in split"
+    counts = {k: sum(v == k for v in status.values()) for k in sorted(set(status.values()))}
+    overlap_cases = {c: v for c, v in status.items() if v not in ("unmapped", "not in split")}
+    print(f"{len(evaluated)} evaluated cases: {counts}")
+    if overlap_cases:
+        print(f"  overlap with the run's split: {list(overlap_cases.items())[:5]}")
+    _save(args.output, {"mapping": path, "evaluated": len(evaluated), "counts": counts,
+                        "status": status}, None)
+    if not evaluated:
+        print("FAILED: no evaluated case IDs were found in --cases.")
+        return 2
+    if counts.get("unmapped"):
+        print("FAILED: the mapping does not cover every evaluated case.")
+        return 2
+    return 1 if overlap_cases else 0
+
+
+def _uncertainty(passes, ensemble_n, image):
+    r"""Per-case uncertainty on the working grid, from passes ordered flip by flip.
+
+    Support: voxels any pass calls whole tumour; when none does, the brain (and the case is flagged),
+    so a complete miss is not scored as certain. ``stochastic_std`` is the spread of the passes within
+    each flip, ``tta_std`` the spread of the flip means, ``low_confidence`` 1 - max(p, 1 - p).
+    """
+    p = np.stack(passes)[..., 0]                               # (passes, X, Y, Z), whole tumour
+    support = (p >= 0.5).any(axis=0)
+    empty = not support.any()
+    if empty:
+        support = np.any(image != 0, axis=-1)
+    groups = p.reshape(-1, ensemble_n, *p.shape[1:])            # (flips, ensemble, X, Y, Z)
+    mean_p = p.mean(axis=0)
+    return {"empty_prediction": empty, "support_voxels": int(support.sum()),
+            "stochastic_std": float(groups.std(axis=1).mean(axis=0)[support].mean()),
+            "tta_std": float(groups.mean(axis=1).std(axis=0)[support].mean()) if len(groups) > 1 else 0.0,
+            "low_confidence": float(1 - np.maximum(mean_p, 1 - mean_p)[support].mean())}
 
 
 def _auroc(score, positive):
@@ -276,7 +341,8 @@ def _quality_control(qc, failure_dice):
     dice = np.array([q["mean_dice"] for q in qc])
     fail = dice < failure_dice
     out = {"failure_dice": failure_dice, "failures": int(fail.sum()), "cases": len(qc)}
-    for k in ("pass_std", "low_confidence"):
+    out["empty_predictions"] = int(sum(q["empty_prediction"] for q in qc))
+    for k in ("stochastic_std", "tta_std", "low_confidence"):
         u = np.array([q[k] for q in qc])
         rho = spearmanr(u, dice).correlation if len(qc) > 2 else float("nan")
         # Risk-coverage: keep the most certain cases first; risk is 1 - mean Dice of the kept cases.
@@ -388,9 +454,15 @@ def modalities(args) -> int:
     return 0
 
 
+
 def perturb(args) -> int:
-    r"""Remote perturbation: change of the tumour prediction when a noise cube is placed at a distance."""
+    r"""Remote perturbation: change of the tumour prediction when noise is placed away from the lesion.
+
+    Noise cubes are centred at a given distance from the predicted tumour boundary and never touch it;
+    baseline and perturbed passes use the same seeds, so only the input differs.
+    """
     import torch
+    from scipy.ndimage import distance_transform_edt
 
     run = os.path.abspath(args.run)
     folder = os.path.abspath(args.case)
@@ -399,10 +471,7 @@ def perturb(args) -> int:
     if args.modalities:
         ds.MODALITIES = [m.strip() for m in args.modalities.split(",")]
     agent.exp.set_model_state("test")
-    raw = np.stack([ds.load_item(ds._find_modality_file(folder, case, m)) for m in ds.MODALITIES], axis=-1)
-    x0, x1, y0, y1, z0, z1 = ds._foreground_bbox(raw)
-    img = ds.normalize(ds.resize_image(raw[x0:x1, y0:y1, z0:z1]))
-    vox_mm = np.array([(x1 - x0), (y1 - y0), (z1 - z0)]) / np.array(ds.size)
+    img, vox_mm = _case_input(ds, folder, case)
     brain = np.any(img != 0, axis=-1)
 
     def run_once(volume, seed):
@@ -418,29 +487,104 @@ def perturb(args) -> int:
     if not tumour.any():
         print("FAILED: no tumour predicted in this case.")
         return 2
-    centre = np.argwhere(tumour).mean(0)
-    idx = np.argwhere(brain & ~tumour)
-    dist = np.sqrt((((idx - centre) * vox_mm) ** 2).sum(1))
-    rng = np.random.default_rng(0)
+    # Distance of every voxel to the tumour boundary in mm; a cube centre must keep its whole cube outside.
+    to_tumour = distance_transform_edt(~tumour, sampling=vox_mm)
     half = args.cube // 2
+    margin = float(np.linalg.norm(half * vox_mm))
+    rng = np.random.default_rng(0)
     results = {}
     for d in [float(x) for x in args.distances.split(",")]:
-        cand = idx[np.abs(dist - d) < 3.0]
+        cand = np.argwhere(brain & (np.abs(to_tumour - d) < 3.0) & (to_tumour > margin))
+        cand = cand[np.all((cand >= half) & (cand < np.array(ds.size) - half), axis=1)]
         if len(cand) == 0:
+            results[d] = {"mean_abs_change": None, "positions": 0}
             continue
         effects = []
         for c in cand[rng.choice(len(cand), size=min(args.positions, len(cand)), replace=False)]:
             vol = img.copy()
-            sl = tuple(slice(max(int(c[a]) - half, 0), int(c[a]) + half) for a in range(3))
+            sl = tuple(slice(int(c[a]) - half, int(c[a]) + half) for a in range(3))
             vol[sl] += rng.normal(0, args.noise, size=vol[sl].shape).astype(np.float32)
             pert = [run_once(vol, k) for k in range(args.passes)]
-            effects.append(float(np.mean([np.abs(p - b)[tumour].mean() for p, b in zip(pert, base)])))
+            effects.append(float(np.mean([np.abs(q - b)[tumour].mean() for q, b in zip(pert, base)])))
         results[d] = {"mean_abs_change": float(np.mean(effects)), "positions": len(effects)}
-        print(f"noise cube at {d:5.0f} mm from the tumour centre | mean |change| of tumour probability "
+        print(f"noise cube {d:5.0f} mm from the tumour boundary | mean |change| of tumour probability "
               f"{results[d]['mean_abs_change']:.2e} ({len(effects)} positions)", flush=True)
     _save(args.output, {"run": run, "case": case, "cube_voxels": args.cube, "noise_sd": args.noise,
-                        "passes": args.passes, "working_voxel_mm": vox_mm.tolist(), "results": results}, None)
+                        "passes": args.passes, "working_voxel_mm": vox_mm.tolist(),
+                        "distance_from": "predicted tumour boundary", "results": results}, None)
     return 0
+
+
+def preflight(args) -> int:
+    r"""Data checks before training: files, shapes, co-registration, spacing, values, labels, duplicates.
+
+    Exits with an error when any case fails; the per-case table records every problem.
+    """
+    import hashlib
+
+    import nibabel as nib
+
+    from glo_nca.data import Dataset_BraTS_Foreground, find_data_root, labels_to_regions, patient_of
+    data_root, _ = find_data_root(args.data_root)
+    if not data_root:
+        print(f"FAILED: no case folders found under {args.data_root}")
+        return 2
+    mods = [m.strip() for m in args.modalities.split(",")]
+    et = tuple(int(x) for x in args.et_labels.split(","))
+    ds = Dataset_BraTS_Foreground.__new__(Dataset_BraTS_Foreground)
+    cases = sorted(d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d)))
+    rows, seen, spacings = [], {}, {}
+    for n, case in enumerate(cases, 1):
+        folder = os.path.join(data_root, case)
+        problems, shapes, affines = [], set(), []
+        for m in mods + ["seg"]:
+            try:
+                img = nib.load(ds._find_modality_file(folder, case, m))
+            except FileNotFoundError:
+                problems.append(f"missing {m}")
+                continue
+            shapes.add(tuple(img.shape[:3]))
+            affines.append(img.affine)
+            zooms = tuple(round(float(z), 4) for z in img.header.get_zooms()[:3])
+            spacings[zooms] = spacings.get(zooms, 0) + (m == "seg")
+            data = np.asanyarray(img.dataobj)
+            if m == "seg":
+                try:
+                    labels_to_regions(np.unique(data), et)
+                except ValueError as exc:
+                    problems.append(str(exc))
+            else:
+                if not np.all(np.isfinite(data)):
+                    problems.append(f"non-finite values in {m}")
+                if not np.any(data):
+                    problems.append(f"{m} is empty")
+                if m == mods[0]:
+                    digest = hashlib.sha1(np.ascontiguousarray(data).tobytes()).hexdigest()
+                    if digest in seen:
+                        problems.append(f"duplicate of {seen[digest]}")
+                    seen.setdefault(digest, case)
+        if len(shapes) > 1:
+            problems.append(f"shapes differ: {sorted(shapes)}")
+        if len(affines) > 1 and not all(np.allclose(a, affines[0], atol=1e-3) for a in affines[1:]):
+            problems.append("affines differ (not co-registered)")
+        rows.append({"case": case, "patient": patient_of(case), "problems": "; ".join(problems)})
+        if n % 100 == 0 or n == len(cases):
+            print(f"  {n}/{len(cases)} cases", flush=True)
+    bad = [r for r in rows if r["problems"]]
+    summary = {"cases": len(rows), "patients": len({r["patient"] for r in rows}), "failed": len(bad),
+               "segmentation_spacings_mm": {"x".join(map(str, k)): v for k, v in spacings.items() if v},
+               "modalities": mods, "et_labels": list(et)}
+    print(f"{len(rows)} cases, {summary['patients']} patients, {len(bad)} with problems; "
+          f"segmentation spacings {summary['segmentation_spacings_mm']}")
+    for r in bad[:10]:
+        print(f"  {r['case']}: {r['problems']}")
+    if args.output:
+        with open(args.output, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=["case", "patient", "problems"])
+            w.writeheader(); w.writerows(rows)
+        with open(os.path.splitext(args.output)[0] + "_summary.json", "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2)
+    return 2 if bad else 0
 
 
 def _json_default(o):
@@ -488,6 +632,7 @@ def main(argv=None) -> int:
     scoring.add_argument("--ensemble-n", type=int, default=4)
     scoring.add_argument("--thresholds", default="WT=0.65,TC=0.65,ET=0.6")
     scoring.add_argument("--min-component", default="WT=400,TC=25,ET=400")
+    scoring.add_argument("--hd95-convention", default="medpy", choices=["medpy", "max_directed"])
 
     d = sub.add_parser("decompose", parents=[common, scoring],
                        help="score single pass, +ensemble, +flips, +thresholds, +clean-up, +ET rule")
@@ -497,7 +642,7 @@ def main(argv=None) -> int:
     s.add_argument("--steps", default="5,10,20,40")
     s.add_argument("--no-tta", action="store_true")
     e = sub.add_parser("erf", parents=[common], help="effective receptive field at one tumour voxel")
-    e.add_argument("--case", required=True, help="one case folder with the four modalities")
+    e.add_argument("--case", required=True, nargs="+", help="case folders (several for a population summary)")
     e.add_argument("--modalities", default="", help="modality suffixes if they differ from the run's")
     e.add_argument("--region", default="WT", choices=["WT", "TC", "ET"])
     e.add_argument("--steps", default="20")
@@ -505,6 +650,11 @@ def main(argv=None) -> int:
     e.add_argument("--far-mm", type=float, default=30.0)
     md = sub.add_parser("modalities", parents=[common, scoring], help="leave-one-modality-out at inference")
     md.add_argument("--no-tta", action="store_true")
+    pf = sub.add_parser("preflight", help="data checks: files, shapes, co-registration, values, labels, duplicates")
+    pf.add_argument("--data-root", required=True)
+    pf.add_argument("--modalities", default="t1,t1ce,t2,flair", help="modality suffixes to require")
+    pf.add_argument("--et-labels", default="3,4")
+    pf.add_argument("--output", help="CSV of per-case problems; a _summary.json is written next to it")
     mf = sub.add_parser("manifest", help="per-case table: split, labels, region volumes, ET presence")
     mf.add_argument("--data-root", required=True)
     mf.add_argument("--run", default="", help="run folder whose split.json assigns the splits")
@@ -513,7 +663,7 @@ def main(argv=None) -> int:
     pt = sub.add_parser("perturb", parents=[common], help="remote perturbation: effect of distant noise")
     pt.add_argument("--case", required=True, help="one case folder with the four modalities")
     pt.add_argument("--modalities", default="")
-    pt.add_argument("--distances", default="20,40,60,80", help="mm from the predicted tumour centre")
+    pt.add_argument("--distances", default="10,20,40,60", help="mm from the predicted tumour boundary")
     pt.add_argument("--cube", type=int, default=8, help="noise cube edge in working voxels")
     pt.add_argument("--noise", type=float, default=1.0, help="noise standard deviation (z-score units)")
     pt.add_argument("--positions", type=int, default=4, help="cube positions per distance")
@@ -521,11 +671,13 @@ def main(argv=None) -> int:
     o = sub.add_parser("overlap", help="evaluation cases that appear in the run's training or validation split")
     o.add_argument("--run", required=True, help="run folder with split.json")
     o.add_argument("--mapping", required=True, help="BraTS ID mapping table (.csv or .xlsx) linking releases")
-    o.add_argument("--cases", default="", help="optional CSV whose first column lists the evaluated case IDs")
+    o.add_argument("--cases", required=True, help="CSV whose first column lists the evaluated case IDs")
     o.add_argument("--output", help="write the result as JSON")
     args = ap.parse_args(argv)
+    global HD95_CONVENTION
+    HD95_CONVENTION = getattr(args, "hd95_convention", HD95_CONVENTION)
     return {"decompose": decompose, "steps": steps, "erf": erf, "overlap": overlap, "modalities": modalities,
-            "manifest": manifest, "perturb": perturb}[args.cmd](args)
+            "manifest": manifest, "perturb": perturb, "preflight": preflight}[args.cmd](args)
 
 
 if __name__ == "__main__":

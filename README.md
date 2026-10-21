@@ -29,10 +29,8 @@ The test patients were never used for training, model selection or tuning.
   thresholds WT/TC/ET 0.65/0.65/0.60 and small-lesion clean-up 400/25/400 voxels, both chosen
   on validation; predictions resampled to the original 240×240×155 scans; BraTS scoring, where an
   empty prediction of an absent region scores Dice 1.
-- HD95 is surface-based, in mm, computed as one 95th percentile over the distances of both
-  directions pooled (`hd95_surface(..., pooled=True)`); the standard BraTS/medpy definition takes the
-  larger of the two directed percentiles and is usually slightly higher, so these values are being
-  recomputed with it; for ET it is undefined in the 5 cases
+- HD95 is surface-based, in mm, in the medpy convention (one 95th percentile over the surface
+  distances of both directions, as `medpy.metric.binary.hd95`); for ET it is undefined in the 5 cases
   where exactly one of the two masks is empty.
 - The ensemble passes are stochastic: the training run's own final test of the same setting gave
   0.880 mean Dice (0.921 / 0.896 / 0.823).
@@ -95,7 +93,7 @@ volumes: `docs/results/brats2023_validation_per_case.csv`.
 |---|---|
 | Cascade | 2 NCA levels, coarse then fine (48³ → 96³ for the results above; 32×32×24 → 64×64×48 in v7) |
 | NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (`fire_rate` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
-| Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global block (`model.use_global`) |
+| Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global-context block (`model.use_global`), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
 | Data | foreground crop, cubic resize, nonzero z-norm, ET-biased patches, optional augmentation |
 | Loss | focal Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5), optional per-region weights |
@@ -186,13 +184,13 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `evaluation.brats_empty` | BraTS scoring of absent regions |
 | `experiment.split_seed` | fixed split, so runs with other seeds can be ensembled |
 | `model.use_se`, `model.use_spatial` | channel SE block and local spatial gate, each on or off (ablations) |
-| `model.use_global` | attention-pooled global-context block (GCNet style) added to every cell |
+| `model.use_global` | attention-pooled global context (GCNet form), added to every voxel's hidden layer after normalisation |
 | `model.update_prob` | probability that a cell updates per step; `fire_rate` is the skip probability (0.6 = 40% update) |
 | `loss.all_regions` | score every region, also when its target is empty, so false positives are penalised |
 | `training.validate_ema` | select the best epoch on the EMA weights that `best.pth` saves |
 | `data.crop_et_prob` | share of training crops centred on enhancing tumour, at the crop that is trained on |
 | `evaluation.nested_regions` | score the final nested masks (TC includes ET, WT includes TC), as written by `predict.py` |
-| `evaluation.surface_hd95` | surface HD95 (BraTS definition) in mm, using each scan's voxel spacing |
+| `evaluation.surface_hd95`, `evaluation.hd95_convention` | surface HD95 in mm from each scan's spacing; convention `medpy` (pooled percentile) or `max_directed` (larger directed percentile) |
 | `model.norm` | `batch` (BatchNorm over the volume) or `layer` (per-voxel, strictly local update) |
 | `loss.bce_logits` | BCE computed on logits instead of clamped probabilities |
 | `data.brain_mask` | one brain mask (any modality non-zero) for resizing and normalisation |
@@ -202,7 +200,7 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `evaluation.case_seed` | seed the stochastic inference passes per case, so predictions repeat exactly |
 | `data.legacy_patchify` | the old dataset-stage patch (working size, so it never moves); kept on only to reproduce earlier runs |
 | `training.log_live_and_ema` | validate both the live and the EMA weights and record both |
-| `training.persistent_workers` | keep data-loader workers alive across epochs |
+| `training.persistent_workers` | keep data-loader workers alive across epochs (a resumed run is then not bit-identical to an uninterrupted one) |
 | `data.modalities` | the input modalities; one modality gives the fusion ablation (`brats2021_res96_fixed_single.yaml`) |
 
 `configs/experiments/brats2021_res96_fixed.yaml` switches all of the corrections above on;

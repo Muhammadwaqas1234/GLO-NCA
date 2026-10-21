@@ -39,6 +39,8 @@ def main(argv=None) -> int:
                     help="exact run folder name (default: <name>-<timestamp>)")
     ap.add_argument("--stop-after-epoch", type=int, default=None, metavar="EPOCH",
                     help="pause after this epoch (full checkpoint, no final test)")
+    ap.add_argument("--allow-config-change", action="store_true",
+                    help="resume although the run's config.yaml changed since the last epoch (recorded)")
     ap.add_argument("--override", action="append", default=[], metavar="SECTION.KEY=VALUE",
                     help="override a config value (repeatable), e.g. training.epochs=2")
     args = ap.parse_args(argv)
@@ -82,6 +84,7 @@ def main(argv=None) -> int:
     print(f"run: {run_dir}")
     try:
         result = run(C, run_dir, data_root=args.data_root, resume=bool(args.resume),
+                     allow_config_change=args.allow_config_change,
                      stop_after_epoch=args.stop_after_epoch)
     except Exception as exc:
         traceback.print_exc(file=sys.stdout)

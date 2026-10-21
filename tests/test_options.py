@@ -11,7 +11,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from glo_nca.config import load_config  # noqa: E402
-from glo_nca.data import Dataset_BraTS_Foreground  # noqa: E402
+from glo_nca.data import Dataset_BraTS_Foreground, labels_to_regions  # noqa: E402
 from glo_nca.evaluation import remove_small_components, score, to_full_resolution, tune_thresholds  # noqa: E402
 
 RESULTS = []
@@ -19,7 +19,7 @@ RESULTS = []
 
 def check(name, ok, detail=""):
     r"""Record and print one check result."""
-    RESULTS.append(ok)
+    RESULTS.append(bool(ok))
     print(f"  {'PASS' if ok else 'FAIL'}  {name:<58}{detail}")
 
 
@@ -83,7 +83,7 @@ class _FakeDS:
     SEG_SUFFIX = "seg"
     use_foreground_crop = True
     _foreground_bbox = staticmethod(Dataset_BraTS_Foreground._foreground_bbox)
-    _labels_to_regions = staticmethod(Dataset_BraTS_Foreground._labels_to_regions)
+    _labels_to_regions = staticmethod(lambda seg: labels_to_regions(seg))
 
     def __init__(self, root, vols):
         r"""Store the fake volumes."""
@@ -210,26 +210,34 @@ def test_et_crop():
 
 
 def test_global_block():
-    r"""The global block starts as identity and reaches every voxel; the spatial gate stays local."""
+    r"""Full cell, BatchNorm, batch size 1: the global branch changes the output and receives gradients."""
     import torch
-    from glo_nca.model import GCSpatialBlock3D, GLO_NCA_Cell, GlobalContextBlock3D
+    from glo_nca.model import GCSpatialBlock3D, GLO_NCA_Cell
+    changes, grads = {}, {}
+    for norm in ("batch", "layer"):
+        torch.manual_seed(11)
+        cell = GLO_NCA_Cell(12, 0.0, "cpu", 32, kernel_size=3, input_channels=4, use_global=True, norm=norm)
+        torch.nn.init.normal_(cell.glob.transform[-1].weight, std=0.5)
+        torch.nn.init.normal_(cell.fc1.weight, std=0.1)
+        x = torch.randn(1, 8, 8, 8, 12)
+        torch.manual_seed(1); on = cell(x, steps=2)
+        branch, cell.glob = cell.glob, None              # negative control: the branch bypassed
+        torch.manual_seed(1); off = cell(x, steps=2)
+        torch.manual_seed(1); again = cell(x, steps=2)
+        cell.glob = branch
+        torch.manual_seed(1); out = cell(x, steps=2)
+        out[..., 4:7].sum().backward()
+        changes[norm] = ((on - off).abs().max().item(), (off - again).abs().max().item())
+        grads[norm] = branch.transform[-1].weight.grad.norm().item()
+    # The spatial gate stays local: a distant voxel does not change it.
     torch.manual_seed(0)
-    x = torch.randn(1, 24, 20, 20, 20)
-    far = x.clone(); far[..., 19, 19, 19] += 50.0                # perturb one distant voxel
-    g = GlobalContextBlock3D(24)
-    identity = torch.allclose(g(x), x)
-    torch.nn.init.normal_(g.transform[-1].weight); torch.nn.init.normal_(g.key.weight)
     s = GCSpatialBlock3D(7)
+    y = torch.randn(1, 24, 20, 20, 20); far = y.clone(); far[..., 19, 19, 19] += 50.0
     with torch.no_grad():
-        g_far = (g(far) - g(x))[..., 0, 0, 0].abs().max().item()
-        s_far = (s(far) - s(x))[..., 0, 0, 0].abs().max().item()
-    count = lambda **kw: sum(p.numel() for k in (7, 3) for p in GLO_NCA_Cell(
-        24, 0.6, "cpu", 128, kernel_size=k, input_channels=4, **kw).parameters())
-    glo, plain = count(use_attention=True, use_spatial=True), count()
-    check("global block: identity at start, reaches a distant voxel", identity and g_far > 1e-3 and s_far == 0,
-          f"far effect {g_far:.3f} vs gate {s_far:.0f}")
-    check("parameters: GLO-NCA 30,138, plain 28,128", glo == 30138 and plain == 28128,
-          f"global +{count(use_attention=True, use_spatial=True, use_global=True) - glo}")
+        local = (s(far) - s(y))[..., 0, 0, 0].abs().max().item()
+    ok = all(c[0] > 1e-2 and c[1] == 0 for c in changes.values()) and all(g > 1e-3 for g in grads.values())
+    check("global branch survives BatchNorm in the full cell (batch 1)", ok and local == 0,
+          f"change {changes['batch'][0]:.2f}, grad {grads['batch']:.1e}, control {changes['batch'][1]:.0f}")
 
 
 def test_decoder():
@@ -239,7 +247,7 @@ def test_decoder():
     prob = rng.random((20, 20, 20, 3)).astype(np.float32)
     th, mc = {"WT": 0.5, "TC": 0.6, "ET": 0.7}, {"WT": 0, "TC": 0, "ET": 0}
     masks = decode_regions(prob, th, mc)
-    back = Dataset_BraTS_Foreground._labels_to_regions(masks_to_label(masks, 3)) > 0
+    back = labels_to_regions(masks_to_label(masks, 3)) > 0
     raw = decode_regions(prob, th, mc, nested=False)
     legacy = np.zeros((20, 20, 20), np.uint8)       # the earlier predict.py label map
     legacy[raw["WT"]] = 2; legacy[raw["TC"]] = 1; legacy[raw["ET"]] = 3
@@ -327,36 +335,47 @@ def test_nested_tuning_and_spacing():
 
 
 def test_compare_runs():
-    r"""Paired comparison: identical runs give zero difference, patients are clustered by scan."""
+    r"""Paired comparison: patient-level estimand, scans averaged per patient, several seeds."""
     from glo_nca.cli.compare_runs import compare, patient_of
     rng = np.random.default_rng(0)
     a = {f"BraTS-GLI-{i:05d}-{j:03d}": {r: float(rng.random()) for r in ["WT", "TC", "ET"]}
-         for i in range(30) for j in range(2)}
+         for i in range(30) for j in range(1 + (i % 3 == 0))}          # some patients have two scans
     b = {c: {r: v + 0.05 for r, v in s.items()} for c, s in a.items()}
+    b2 = {c: {r: v + 0.03 for r, v in s.items()} for c, s in a.items()}
     _, patients, same = compare(a, a, boot=200)
     _, _, up = compare(a, b, boot=200)
-    check("compare_runs: zero for identical runs, +0.05 detected, 30 patients",
+    _, _, seeds = compare([a, a], [b, b2], boot=300)
+    check("compare_runs: patient estimand, seed-wise effects",
           same["mean"]["mean_diff"] == 0 and abs(up["mean"]["mean_diff"] - 0.05) < 1e-9
           and up["mean"]["ci95"][0] > 0.04 and len(patients) == 30
+          and np.allclose(seeds["mean"]["seed_effects"], [0.05, 0.03]) and abs(seeds["mean"]["mean_diff"] - 0.04) < 1e-9
+          and seeds["mean"]["ci95"][0] <= 0.03 + 1e-9 and seeds["mean"]["ci95"][1] >= 0.05 - 1e-9
           and patient_of("BraTS2021_00001") == "BraTS2021_00001")
 
 
 def test_labels():
-    r"""Known BraTS labels map to nested regions; an unknown label stops loading."""
-    reg = Dataset_BraTS_Foreground._labels_to_regions(np.array([0, 1, 2, 3, 4]))
+    r"""The configured ET labels reach the production loader; unknown labels are rejected."""
+    from glo_nca.trainer import build
+    reg = labels_to_regions(np.array([0, 1, 2, 3, 4]))
     ok = reg[:, 2].tolist() == [0, 0, 0, 1, 1] and reg[:, 1].tolist() == [0, 1, 0, 1, 1]
-    try:
-        Dataset_BraTS_Foreground._labels_to_regions(np.array([0, 5])); raised = False
-    except ValueError:
-        raised = True
+    rejects = lambda f: (lambda: (f(), False))() if False else _raises(f)
+    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"), ["data.et_labels=[3]"])
+    with tempfile.TemporaryDirectory() as out:
+        ds, _, _, _ = build(C, out, out, ([], [], []))
+        configured = ds._labels_to_regions(np.array([0, 3]))[:, 2].tolist() == [0, 1]
+        post = rejects(lambda: ds._labels_to_regions(np.array([0, 4])))
+    check("labels: configured ET labels used by build(); unknown labels rejected",
+          ok and configured and post and rejects(lambda: labels_to_regions(np.array([0, 5])))
+          and rejects(lambda: labels_to_regions(np.array([0.0, 1.5]))))
 
-    class _Post(Dataset_BraTS_Foreground):
-        ET_LABELS = (3,)
+
+def _raises(fn):
+    r"""True when fn raises ValueError."""
     try:
-        _Post._labels_to_regions(np.array([0, 4])); post = False
+        fn()
     except ValueError:
-        post = True   # label 4 is not silently merged into ET when only 3 is ET
-    check("labels: 3/4 are ET by default, unknown labels rejected", ok and raised and post)
+        return True
+    return False
 
 
 def test_saved_split():
@@ -451,39 +470,50 @@ def test_run_info():
 
 
 def test_hd95_reference():
-    r"""Surface HD95 equals an independent brute-force computation (medpy definition) on random shapes."""
+    r"""HD95 conventions: medpy matches medpy itself; max_directed matches a brute-force reference."""
     from scipy.ndimage import binary_erosion, generate_binary_structure
     from scipy.spatial import cKDTree
     from glo_nca.metrics import hd95_surface
 
-    def reference(a, b, spacing):
-        # medpy: border = mask minus its erosion (connectivity 1); HD95 = max of both directed 95th percentiles.
+    def directed(a, b, spacing):
         st = generate_binary_structure(3, 1)
         sa = np.argwhere(a & ~binary_erosion(a, st, border_value=0)) * spacing
         sb = np.argwhere(b & ~binary_erosion(b, st, border_value=0)) * spacing
-        d_ab = cKDTree(sb).query(sa)[0]
-        d_ba = cKDTree(sa).query(sb)[0]
-        return max(np.percentile(d_ab, 95), np.percentile(d_ba, 95))
+        return cKDTree(sb).query(sa)[0], cKDTree(sa).query(sb)[0]
 
+    try:
+        from medpy.metric.binary import hd95 as medpy_hd95
+    except ImportError:
+        medpy_hd95 = None
     rng = np.random.default_rng(3)
-    worst = 0.0
+    worst = {"medpy": 0.0, "max_directed": 0.0}
+    differ = False
     for _ in range(6):
         a = np.zeros((40, 40, 30), bool); b = np.zeros_like(a)
-        for m in (a, b):
-            for _ in range(3):
-                c = rng.integers(8, 30, 3); r = rng.integers(3, 7, 3)
+        for m, n in ((a, 3), (b, 1)):               # asymmetric: different surface sizes
+            for _ in range(n):
+                c = rng.integers(8, 30, 3); r = rng.integers(3, 8, 3)
                 m[c[0]-r[0]:c[0]+r[0], c[1]-r[1]:c[1]+r[1], max(c[2]-r[2], 0):c[2]+r[2]] = True
-        spacing = np.array([1.0, 1.0, 1.5])
-        worst = max(worst, abs(hd95_surface(a, b, spacing=tuple(spacing)) - reference(a, b, spacing)))
-    check("surface HD95 matches an independent reference", worst < 1e-6, f"max diff {worst:.1e}")
+        spacing = np.array([1.0, 0.8, 1.5])             # anisotropic
+        d_ab, d_ba = directed(a, b, spacing)
+        pooled = np.percentile(np.concatenate([d_ab, d_ba]), 95)
+        if medpy_hd95 is not None:
+            pooled = medpy_hd95(a, b, voxelspacing=tuple(spacing), connectivity=1)
+        maxd = max(np.percentile(d_ab, 95), np.percentile(d_ba, 95))
+        worst["medpy"] = max(worst["medpy"], abs(hd95_surface(a, b, tuple(spacing), "medpy") - pooled))
+        worst["max_directed"] = max(worst["max_directed"],
+                                    abs(hd95_surface(a, b, tuple(spacing), "max_directed") - maxd))
+        differ |= abs(pooled - maxd) > 1e-3
+    check("HD95 conventions match medpy and a directed reference", max(worst.values()) < 1e-6 and differ,
+          f"reference {'medpy' if medpy_hd95 else 'brute force'}; max diff {max(worst.values()):.1e}")
 
 
 def test_ablation_configs():
     r"""Ablation configs: matched recipe, intended differences and parameter counts."""
-    import torch
     from glo_nca.model import GLO_NCA_Cell
     load = lambda n: load_config(os.path.join(_ROOT, "configs", "experiments", f"brats2021_res96_{n}.yaml"))
     full, plain, wide, single = load("fixed"), load("fixed_plain"), load("fixed_plain_wide"), load("fixed_single")
+    se, spatial = load("fixed_se"), load("fixed_spatial")
     count = lambda C: sum(p.numel() for k in (7, 3) for p in GLO_NCA_Cell(
         C.CHANNEL_N, C.FIRE_RATE, "cpu", C.HIDDEN, kernel_size=k, input_channels=len(C.MODALITIES),
         use_attention=C.USE_SE, use_spatial=C.USE_SPATIAL, use_global=C.USE_GLOBAL).parameters())
@@ -492,9 +522,160 @@ def test_ablation_configs():
                                == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
     ok = (same(full, single, {"MODALITIES"}) and same(plain, wide, {"HIDDEN"})
           and n["full"] == 30138 and n["plain"] == 28128 and abs(n["wide"] - n["full"]) < 100
-          and single.MODALITIES == ["t1ce"] and not full.LEGACY_PATCHIFY)
+          and single.MODALITIES == ["t1ce"] and not full.LEGACY_PATCHIFY
+          and same(full, se, {"USE_SPATIAL"}) and same(full, spatial, {"USE_SE"})
+          and full.improved_eval and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
     check("ablation configs: one difference each, matched capacity", ok,
           f"full {n['full']}, plain {n['plain']}, wide {n['wide']}, single {n['single']}")
+
+
+def test_rng_untouched():
+    r"""Seeded evaluation repeats exactly and leaves the caller's random state unchanged."""
+    import torch
+    from glo_nca.evaluation import predict_passes
+    from glo_nca.trainer import build
+    C = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"),
+                    ["model.input_size=[[8,8,8],[16,16,16]]", "evaluation.case_seed=3"])
+    with tempfile.TemporaryDirectory() as out:
+        _, ca, agent, _ = build(C, out, out, ([], [], []))
+    for m in ca:
+        torch.nn.init.normal_(m.fc1.weight, std=0.05)
+    agent.exp.set_model_state("test")
+    data = (["_c_0"], torch.randn(1, 16, 16, 16, 4), torch.zeros(1, 16, 16, 16, 3))
+    torch.manual_seed(123)
+    before = torch.get_rng_state()
+    with torch.no_grad():
+        first = predict_passes(agent, data, 2, False)[1]
+        second = predict_passes(agent, data, 2, False)[1]
+    check("seeded evaluation: repeatable, caller RNG unchanged",
+          torch.equal(before, torch.get_rng_state()) and all(np.array_equal(x, y) for x, y in zip(first, second)))
+
+
+def test_forward_default():
+    r"""Cell.forward without fire_rate uses the configured skip probability."""
+    import torch
+    from glo_nca.model import GLO_NCA_Cell
+    cell = GLO_NCA_Cell(8, 0.6, "cpu", 16, kernel_size=3, input_channels=2)
+    torch.nn.init.normal_(cell.fc1.weight, std=1.0)
+    x = torch.randn(1, 24, 24, 24, 8)
+    torch.manual_seed(0)
+    with torch.no_grad():
+        moved = (cell(x, steps=1) - x)[..., 2:].abs().sum(-1) > 0
+    share = moved.float().mean().item()
+    check("forward default: configured skip 0.6 -> about 40% of cells update", abs(share - 0.4) < 0.03,
+          f"{share:.1%}")
+
+
+def test_overlap_coverage():
+    r"""The overlap check fails when the mapping does not cover every evaluated case."""
+    import csv as _csv, json as _json
+    from glo_nca.cli import analyze
+    with tempfile.TemporaryDirectory() as d:
+        _json.dump({"train": ["BraTS2021_00001"], "validation": [], "test": []}, open(f"{d}/split.json", "w"))
+        with open(f"{d}/map.csv", "w", newline="") as fh:
+            w = _csv.writer(fh); w.writerow(["BraTS2023", "BraTS2021"])
+            w.writerow(["BraTS-GLI-01667-000", "BraTS2021_00009"])
+        with open(f"{d}/cases.csv", "w", newline="") as fh:
+            w = _csv.writer(fh); w.writerow(["BraTS-GLI-01667-000"]); w.writerow(["BraTS-GLI-01668-000"])
+        incomplete = analyze.main(["overlap", "--run", d, "--mapping", f"{d}/map.csv", "--cases", f"{d}/cases.csv"])
+        with open(f"{d}/cases.csv", "w", newline="") as fh:
+            _csv.writer(fh).writerow(["BraTS-GLI-01667-000"])
+        clean = analyze.main(["overlap", "--run", d, "--mapping", f"{d}/map.csv", "--cases", f"{d}/cases.csv"])
+    check("overlap: incomplete mapping fails, covered and disjoint passes", incomplete == 2 and clean == 0)
+
+
+def test_patient_split():
+    r"""Patient-grouped split: identical to the folder shuffle for one scan per patient; scans kept together."""
+    import random as _random
+    from glo_nca.data import make_split
+    with tempfile.TemporaryDirectory() as root:
+        names = [f"BraTS2021_{i:05d}" for i in range(40)]
+        for n in names:
+            os.makedirs(os.path.join(root, n)); open(os.path.join(root, n, "x.nii.gz"), "w").close()
+        old = sorted(names); _random.Random(42).shuffle(old)
+        a, b = int(40 * 0.7), int(40 * 0.15)
+        same = make_split(root, 42) == (old[:a], old[a:a + b], old[a + b:])
+    with tempfile.TemporaryDirectory() as root:
+        for i in range(20):
+            for j in range(1 + (i % 2)):
+                d = os.path.join(root, f"BraTS-GLI-{i:05d}-{j:03d}"); os.makedirs(d)
+                open(os.path.join(d, "x.nii.gz"), "w").close()
+        tr, va, te = make_split(root, 1, by_patient=True)
+        side = {c[:15]: k for k, part in enumerate((tr, va, te)) for c in part}
+        together = all(side[c[:15]] == k for k, part in enumerate((tr, va, te)) for c in part)
+    check("split by patient: same split for one scan each, scans of a patient together", same and together)
+
+
+def test_preflight():
+    r"""Preflight flags a missing modality, mismatched affines and a duplicate scan; clean data passes."""
+    import nibabel as nib
+    from glo_nca.cli import analyze
+
+    def case(root, name, vol, affine=np.eye(4), skip=None):
+        d = os.path.join(root, name); os.makedirs(d)
+        for m in ("t1", "t1ce", "t2", "flair", "seg"):
+            if m == skip:
+                continue
+            data = (vol > 0.5).astype(np.int16) if m == "seg" else vol
+            nib.save(nib.Nifti1Image(data, affine if m == "t2" else np.eye(4)), os.path.join(d, f"{name}_{m}.nii.gz"))
+
+    rng = np.random.default_rng(0)
+    with tempfile.TemporaryDirectory() as root:
+        case(root, "BraTS2021_00001", rng.random((8, 8, 8)).astype(np.float32))
+        case(root, "BraTS2021_00002", rng.random((8, 8, 8)).astype(np.float32))
+        clean = analyze.main(["preflight", "--data-root", root])
+        dup = rng.random((8, 8, 8)).astype(np.float32)
+        case(root, "BraTS2021_00003", dup)
+        case(root, "BraTS2021_00004", dup)                                       # duplicate scan
+        case(root, "BraTS2021_00005", rng.random((8, 8, 8)).astype(np.float32), skip="flair")
+        shifted = np.eye(4); shifted[0, 3] = 5.0
+        case(root, "BraTS2021_00006", rng.random((8, 8, 8)).astype(np.float32), affine=shifted)
+        out = os.path.join(root, "pre.csv")
+        bad = analyze.main(["preflight", "--data-root", root, "--output", out])
+        import csv as _csv
+        problems = {r["case"]: r["problems"] for r in _csv.DictReader(open(out, newline=""))}
+    check("preflight: clean data passes; duplicate, missing file and affine mismatch fail",
+          clean == 0 and bad == 2 and "duplicate" in problems["BraTS2021_00004"]
+          and "missing flair" in problems["BraTS2021_00005"] and "affines" in problems["BraTS2021_00006"])
+
+
+def test_contrast_family():
+    r"""Several contrasts: Holm correction across their primary p-values."""
+    import csv as _csv, json as _json
+    from glo_nca.cli import compare_runs
+    rng = np.random.default_rng(1)
+    with tempfile.TemporaryDirectory() as d:
+        def write(name, shift):
+            with open(os.path.join(d, name), "w", newline="") as fh:
+                w = _csv.writer(fh); w.writerow(["case", "WT", "TC", "ET", "mean"])
+                for i in range(40):
+                    v = [float(x) for x in rng.random(3) * 0.1 + 0.7 + shift]
+                    w.writerow([f"BraTS2021_{i:05d}", *v, sum(v) / 3])
+        write("a.csv", 0.0); write("b.csv", 0.05); write("c.csv", 0.0)
+        rc = compare_runs.main(["--contrast", f"big={d}/a.csv::{d}/b.csv", "--contrast", f"none={d}/a.csv::{d}/c.csv",
+                                "--boot", "200", "--output", f"{d}/fam.json"])
+        fam = _json.load(open(f"{d}/fam.json"))["contrasts"]
+    check("contrast family: Holm across contrasts", rc == 0 and fam["big"]["p_holm_family"] >= fam["big"]["results"]["mean"]["p_wilcoxon"]
+          and fam["big"]["p_holm_family"] < 0.05)
+
+
+def test_code_identity():
+    r"""The code identity reports the commit and whether the checkout has uncommitted changes."""
+    from glo_nca.trainer import code_identity
+    ident = code_identity()
+    check("code identity: commit and dirty state", bool(ident["commit"]) and ident["dirty"] in (True, False),
+          f"dirty {ident['dirty']}")
+
+
+def test_resume_config_changes():
+    r"""Resume detects config changes; only worker and cache settings pass without permission."""
+    from glo_nca.trainer import RESUME_ALLOWED, config_changes
+    old = {"training": {"epochs": 150, "workers": 4}, "loss": {"all_regions": False}}
+    new = {"training": {"epochs": 150, "workers": 8}, "loss": {"all_regions": True}}
+    ch = config_changes(old, new)
+    blocked = sorted(k for k in ch if k not in RESUME_ALLOWED)
+    check("resume: config changes found, training changes need permission",
+          ch == {"loss.all_regions": [False, True], "training.workers": [4, 8]} and blocked == ["loss.all_regions"])
 
 
 if __name__ == "__main__":
@@ -503,7 +684,9 @@ if __name__ == "__main__":
               test_with_weights, test_labels, test_saved_split, test_local_norm, test_bce_logits,
               test_brain_mask, test_nested_tuning_and_spacing, test_compare_runs,
               test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info,
-              test_hd95_reference, test_ablation_configs):
+              test_hd95_reference, test_ablation_configs, test_rng_untouched, test_forward_default,
+              test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
+              test_code_identity, test_resume_config_changes):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

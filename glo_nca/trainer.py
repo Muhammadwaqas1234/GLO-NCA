@@ -16,7 +16,7 @@ from . import checkpoint as ckpt
 from .agent import Agent_GLO_NCA
 from .config import REGIONS, GLO_NCA_Config
 from .data import Dataset_BraTS_Foreground, find_data_root, make_split
-from .evaluation import collect_probs, evaluate, improved_evaluation, metrics_from_cases, predict_case
+from .evaluation import collect_probs, evaluate, improved_evaluation, predict_case, score
 from .experiment import Experiment
 from .losses import FocalTverskyCELoss
 from .model import GLO_NCA_Cell
@@ -71,13 +71,41 @@ def _git_commit() -> Optional[str]:
         return None
 
 
+def code_identity() -> dict:
+    r"""Commit, whether the checkout had uncommitted changes, and a hash of those changes."""
+    import hashlib
+    import subprocess
+    commit = _git_commit()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scope = ["glo_nca", "configs"]                      # the code and the recipes; docs do not count
+    git = lambda *a: subprocess.run(["git", "-C", root, *a], capture_output=True, text=True, timeout=20)
+    try:
+        status = git("status", "--porcelain", "--", *scope)
+        if status.returncode != 0:
+            raise RuntimeError(status.stderr)
+        diff = git("diff", "HEAD", "--", *scope).stdout
+        untracked = sorted(git("ls-files", "--others", "--exclude-standard", "--", *scope).stdout.split())
+        h = hashlib.sha256(diff.encode())
+        for path in untracked:                          # new files count by content, not only by name
+            h.update(path.encode())
+            with open(os.path.join(root, path), "rb") as fh:
+                h.update(fh.read())
+        dirty = bool(status.stdout.strip())
+        return {"commit": commit, "dirty": dirty, "diff_sha256": h.hexdigest() if dirty else None,
+                "untracked": untracked}
+    except Exception:
+        # Inside the Docker image there is no checkout: the entrypoint passes the commit.
+        return {"commit": commit, "dirty": None, "diff_sha256": None}
+
+
 def write_run_info(out_dir: str, C: GLO_NCA_Config, resume: bool) -> None:
     r"""Record code, container, software and hardware of each start or resume in run_info.json."""
     import platform
     import sys
     path = os.path.join(out_dir, "run_info.json")
     info = {"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "resume": resume, "command": sys.argv,
-            "git_commit": _git_commit(), "docker_image": os.environ.get("GLO_IMAGE_DIGEST"),
+            "git_commit": _git_commit(), "code": code_identity(),
+            "docker_image": os.environ.get("GLO_IMAGE_DIGEST"),
             "python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda,
             "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
@@ -91,6 +119,15 @@ def write_run_info(out_dir: str, C: GLO_NCA_Config, resume: bool) -> None:
     runs.append(info)   # one entry per start or resume
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(runs, fh, indent=2)
+
+
+def _record_config_changes(out_dir, start_epoch, changes):
+    r"""Append the settings changed at a resume to the latest run_info.json entry."""
+    path = os.path.join(out_dir, "run_info.json")
+    runs = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else [{}]
+    runs[-1]["config_changes"] = {"after_epoch": start_epoch, "changes": changes}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(runs, fh, indent=2, default=str)
 
 
 def with_weights(models, states, fn):
@@ -218,9 +255,10 @@ def _load_split(C: GLO_NCA_Config, data_root: str, out_dir: str, resume: bool) -
             sp = json.load(fh)
         tr, va, te = sp["train"], sp["validation"], sp["test"]
     else:
-        tr, va, te = make_split(data_root, C.SPLIT_SEED, C.N_PATIENTS)
+        tr, va, te = make_split(data_root, C.SPLIT_SEED, C.N_PATIENTS, by_patient=C.SPLIT_BY_PATIENT)
     with open(split_path, "w") as fh:
-        json.dump({"train": tr, "validation": va, "test": te, "seed": C.SPLIT_SEED}, fh, indent=2)
+        json.dump({"train": tr, "validation": va, "test": te, "seed": C.SPLIT_SEED,
+                   "by_patient": C.SPLIT_BY_PATIENT}, fh, indent=2)
     return tr, va, te
 
 
@@ -296,7 +334,8 @@ def _validate(C, ds, ca, agent, ema) -> Tuple[Dict[str, dict], Optional[float]]:
     Selection uses the EMA weights with training.validate_ema (the weights best.pth saves), otherwise
     the live weights; training.log_live_and_ema also scores the other set for the record.
     """
-    score = lambda: evaluate(agent, ds, "val", workers=C.VAL_WORKERS, surface_hd95=C.SURFACE_HD95)
+    score = lambda: evaluate(agent, ds, "val", workers=C.VAL_WORKERS, surface_hd95=C.hd95,
+                             nested=C.NESTED_REGIONS)
     mean = lambda v: float(np.mean([v[r]["dice"] for r in REGIONS]))
     if C.VALIDATE_EMA and ema is not None:
         val = with_weights(ca, ema.states, score)
@@ -315,22 +354,35 @@ def _final_test(C, out_dir, ds, ca, agent, dev, best_path, hist, n_params, train
         m.load_state_dict(sd)
     last_epoch = hist["epoch"][-1] if hist["epoch"] else C.EPOCHS
     _write_status(out_dir, state="testing", epoch=last_epoch, epochs=C.EPOCHS, best=best)
-    test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
     per_case = []
     tuned = None
     if C.improved_eval:
-        # One ensemble pass over test serves both the standard metric and the tuned evaluation.
+        # Every row of the final table uses one specification (resolution, empty-region rule, nesting,
+        # HD95 convention): single pass and ensemble at threshold 0.5, then tuned post-processing.
+        half, none = {r: 0.5 for r in REGIONS}, {r: 0 for r in REGIONS}
+        spec = (ds, C.FULL_RESOLUTION_EVAL, C.BRATS_EMPTY, C.NESTED_REGIONS, C.hd95)
+        plain_cases = collect_probs(agent, ds, "test", ensemble=1, tta=False, dtype=np.float32)
+        test_plain = score(plain_cases, half, none, *spec)
         test_cases = collect_probs(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA,
                                    dtype=np.float32)
-        test = metrics_from_cases(test_cases, per_case)
+        test = score(test_cases, half, none, *spec)
         # Post-processing is tuned on validation only; the test split is scored once.
         _write_status(out_dir, state="tuning", epoch=last_epoch, epochs=C.EPOCHS, best=best)
-        val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA)
+        val_cases = collect_probs(agent, ds, "val", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA, dtype=np.float32)
         tuned = improved_evaluation(C, ds, val_cases, test_cases)
+        # Per-case scores from the final scoring (decoder, resolution and HD95 of the reported row).
+        per_case = tuned.pop("test_per_case")
     else:
+        test_plain = evaluate(agent, ds, "test", ensemble=1, tta=False)
         test = evaluate(agent, ds, "test", ensemble=C.ENSEMBLE_N, tta=C.USE_TTA, per_case=per_case)
     final_report(C, out_dir, ck["ep"], test_plain, test, hist, n_params, train_time, peak, tuned,
                  per_case=per_case)
+    # The per-case CSV's scoring rules, so comparisons can refuse files scored differently.
+    case_spec = tuned["evaluation_spec"] if tuned is not None else {
+        "metric_version": 0, "full_resolution": False, "empty_region": "v7 (absent region scores 0)",
+        "nested_regions": False, "hd95": "legacy voxel-based", "rows": "ensemble, working grid, threshold 0.5"}
+    with open(os.path.join(out_dir, "test_per_case_spec.json"), "w", encoding="utf-8") as fh:
+        json.dump(case_spec, fh, indent=2, default=str)
     ens = f"Ensemble x{C.ENSEMBLE_N}" + (" + TTA" if C.USE_TTA else "")
     settings = {"Single pass": test_plain, ens: test}
     if tuned is not None:
@@ -344,8 +396,25 @@ def _final_test(C, out_dir, ds, ca, agent, dev, best_path, hist, n_params, train
     return {"status": "completed", "best_epoch": ck["ep"]}
 
 
+# Settings that may change on resume without changing what is trained.
+RESUME_ALLOWED = {"training.workers", "training.val_workers", "evaluation.val_workers", "data.cache",
+                  "data.cache_dir", "data.base", "training.persistent_workers"}
+
+
+def config_changes(old: dict, new: dict, prefix: str = "") -> dict:
+    r"""Differences between two nested configs as {"section.key": [old, new]}."""
+    out = {}
+    for k in sorted(set(old) | set(new)):
+        a, b, key = old.get(k), new.get(k), f"{prefix}{k}"
+        if isinstance(a, dict) and isinstance(b, dict):
+            out.update(config_changes(a, b, key + "."))
+        elif a != b:
+            out[key] = [a, b]
+    return out
+
+
 def run(C: GLO_NCA_Config, out_dir: str, data_root: Optional[str] = None, resume: bool = False,
-        stop_after_epoch: Optional[int] = None) -> dict:
+        stop_after_epoch: Optional[int] = None, allow_config_change: bool = False) -> dict:
     r"""Train, validate, checkpoint and test one run; supports resume and planned pauses."""
     os.makedirs(out_dir, exist_ok=True)
     last_path = os.path.join(out_dir, "last.pth")
@@ -375,6 +444,14 @@ def run(C: GLO_NCA_Config, out_dir: str, data_root: Optional[str] = None, resume
     if resume:
         # Restore the exact state after the last saved epoch.
         ck = ckpt.load_last(last_path, ca, agent, dev)
+        changes = config_changes(ck.get("config") or {}, C.raw)
+        if changes:
+            print(f"RESUME: config changed since the last epoch: {changes}", flush=True)
+            blocked = sorted(k for k in changes if k not in RESUME_ALLOWED)
+            if blocked and not allow_config_change:
+                raise ValueError(f"resume with changed settings {blocked}; pass --allow-config-change "
+                                 f"to accept them (they are recorded in run_info.json)")
+            _record_config_changes(out_dir, start_epoch=int(ck["epoch"]), changes=changes)
         if ema is not None and ck["ema"] is not None:
             ema.load(ck["ema"])
         best, hist = ck["best"], ck["history"]

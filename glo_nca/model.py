@@ -44,25 +44,34 @@ class GCSpatialBlock3D(nn.Module):
 
 
 class GlobalContextBlock3D(nn.Module):
-    r"""Global-context block (GCNet): attention-pooled context vector added back to every voxel."""
-    def __init__(self, channel_n, reduction=4):
-        r"""Build the block's layers; the last layer starts at zero, so the block starts as identity."""
+    r"""Global-context block (GCNet form): attention pooling over the whole volume to one context vector.
+
+    g = sum_i softmax(w^T x)_i x_i, transformed by a bottleneck to ``out_channels``. The cell adds the
+    result to every voxel of its hidden layer after normalisation; added before normalisation, a
+    constant shift would be removed by the per-volume centring. The last layer starts at zero, so the
+    block starts with no effect.
+    """
+    def __init__(self, channel_n, out_channels=None, reduction=4):
+        r"""Build the attention key and the bottleneck transform."""
         super(GlobalContextBlock3D, self).__init__()
+        out_channels = out_channels or channel_n
         # At least 4 channels: LayerNorm over fewer values collapses the context to near-constant signs.
         reduced = max(4, channel_n // reduction)
         self.key = nn.Conv3d(channel_n, 1, kernel_size=1)
-        self.transform = nn.Sequential(
-            nn.Conv3d(channel_n, reduced, kernel_size=1), nn.LayerNorm([reduced, 1, 1, 1]),
-            nn.ReLU(inplace=True), nn.Conv3d(reduced, channel_n, kernel_size=1))
+        self.transform = nn.Sequential(nn.Linear(channel_n, reduced), nn.LayerNorm(reduced),
+                                       nn.ReLU(inplace=True), nn.Linear(reduced, out_channels))
         with torch.no_grad():
             self.transform[-1].weight.zero_(); self.transform[-1].bias.zero_()
 
-    def forward(self, x):
-        r"""Softmax attention over all voxels pools one context vector, broadcast back as a residual."""
+    def context(self, x):
+        r"""Context vector per volume, (B, out_channels), from channels-first features (B, C, X, Y, Z)."""
         b, c = x.shape[0], x.shape[1]
         attn = torch.softmax(self.key(x).view(b, 1, -1), dim=-1)
-        context = (x.view(b, c, -1) * attn).sum(dim=-1).view(b, c, 1, 1, 1)
-        return x + self.transform(context)
+        return self.transform((x.view(b, c, -1) * attn).sum(dim=-1))
+
+    def forward(self, x):
+        r"""Residual form for standalone use: x plus the context broadcast over the volume."""
+        return x + self.context(x).view(x.shape[0], -1, 1, 1, 1)
 
 
 class GLO_NCA_Cell(nn.Module):
@@ -94,7 +103,8 @@ class GLO_NCA_Cell(nn.Module):
         self.use_spatial = use_spatial
         self.se = SEBlock3D(channel_n, reduction=se_reduction) if use_attention else None
         self.gc = GCSpatialBlock3D(kernel_size=7) if use_spatial else None
-        self.glob = GlobalContextBlock3D(channel_n, reduction=se_reduction) if use_global else None
+        self.glob = GlobalContextBlock3D(channel_n, out_channels=hidden_size, reduction=se_reduction) \
+            if use_global else None
 
         with torch.no_grad():
             self.fc1.weight.zero_()
@@ -108,14 +118,13 @@ class GLO_NCA_Cell(nn.Module):
         self.to(self.device)
 
     def perceive(self, x):
-        r"""Perception: learned convolutions plus the cell identity, gated by the global-context blocks."""
+        r"""Perception: learned convolutions plus the cell identity, gated by SE and the spatial gate."""
         y1 = self.p0(x)
         if self.se is not None:
-            y1 = self.se(y1)          # channel global-context (SE)
+            y1 = self.se(y1)          # channel recalibration (SE): global pooling over the volume per channel
         if self.gc is not None:
             y1 = self.gc(y1)          # spatial gate: local 7x7x7 convolution over channel mean and max
-        if self.glob is not None:
-            y1 = self.glob(y1)        # global context: attention pooling over the whole volume
+        self._perceived = y1          # input of the global-context block
         y = torch.cat((x,y1),1)
         return y
 
@@ -131,6 +140,10 @@ class GLO_NCA_Cell(nn.Module):
             dx = dx.transpose(1,4)
         else:
             dx = self.ln(dx)
+        if self.glob is not None:
+            # Global context after normalisation, so the volume-wide centring cannot remove it.
+            g = self.glob.context(self._perceived)
+            dx = dx + g.view(g.shape[0], 1, 1, 1, -1)
         dx = F.relu(dx)
         if self.drop is not None:
             dx = self.drop(dx)
@@ -149,8 +162,11 @@ class GLO_NCA_Cell(nn.Module):
 
         return x
 
-    def forward(self, x, steps=10, fire_rate=0.5):
-        r"""Run the update for the given number of steps, keeping the input channels fixed."""
+    def forward(self, x, steps=10, fire_rate=None):
+        r"""Run the update for the given number of steps, keeping the input channels fixed.
+
+        fire_rate is the skip probability; None uses the cell's configured value.
+        """
         for step in range(steps):
             if self.grad_checkpoint and torch.is_grad_enabled():
                 # preserve_rng_state (default) replays the same stochastic update mask on recompute.
