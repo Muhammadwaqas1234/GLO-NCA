@@ -121,7 +121,7 @@ volumes: `docs/results/brats2023_validation_per_case.csv`.
 | NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (config `fire_rate`/`skip_prob` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
 | Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global-context block (`model.use_global`), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
-| Data | foreground crop, cubic resize, nonzero z-norm, ET-biased patches, optional augmentation |
+| Data | foreground crop, cubic resize, nonzero z-norm, random 48³ training crops (ET-centred in the corrected recipe), augmentation |
 | Loss | focal Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5), optional per-region weights |
 | Optimiser | AdamW, LR 1.6e-3 → 1e-5 per-step cosine, element-wise gradient clip ±1 |
 | Weights | EMA 0.999; the best validation epoch is kept as `best.pth` |
@@ -154,7 +154,7 @@ MODEL_CARD.md             data, results, intended use and limitations of the rel
 legacy/kaggle/            the original Kaggle scripts (v4-v7); they run against tag kaggle-v7-reference
 tests/                    unit checks, pipeline test, v7 equivalence test, synthetic data generator
 docker/, cloud/           training image; GCP scripts and systemd units
-docs/                     figures and per-case results of the reported run
+docs/                     figures, per-case results and analyses of the reported run; thesis text
 .github/workflows/        CI: unit and pipeline tests on every push, v7 equivalence weekly
 ```
 
@@ -240,15 +240,37 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 | `training.log_live_and_ema` | validate both the live and the EMA weights and record both |
 | `training.persistent_workers` | keep data-loader workers alive across epochs (a resumed run is then not bit-identical to an uninterrupted one) |
 | `data.modalities` | the input modalities; one modality gives the fusion ablation (`brats2021_res96_fixed_single.yaml`) |
+| `data.split_by_patient` | keep all scans of one patient in the same split (identical split for BraTS 2021) |
 
-`configs/experiments/brats2021_res96_fixed.yaml` switches all of the corrections above on;
-`brats2021_res96_fixed_plain.yaml` is its ablation control without SE and spatial gate, and
-`brats2021_res96_fixed_global.yaml` adds the global-context block, `brats2021_res96_fixed_plain_wide.yaml`
-widens the control to the same number of parameters, and `brats2021_res96_fixed_single.yaml` uses one
-modality (contrast-enhanced T1). The results above were produced
-before these corrections, with all of them off: the loss skipped regions absent from a crop,
-validation scored the live weights while `best.pth` holds the EMA weights, the training crop was
-uniformly random, and the spatial block is a local 7×7×7 gate rather than a global operator.
+`configs/experiments/brats2021_res96_fixed.yaml` switches the corrections above on and freezes one
+evaluation protocol for every variant (ensemble ×4 + flips with case seeds, validation-tuned
+thresholds, full resolution, BraTS empty rule, nested masks, surface HD95 in the medpy convention,
+150 epochs without early stopping). The results above were produced before these corrections, with
+all of them off: the loss skipped regions absent from a crop, validation scored the live weights
+while `best.pth` holds the EMA weights, the training crop was uniformly random, and the spatial
+block is a local 7×7×7 gate rather than a global operator.
+
+## Ablation
+
+Each variant differs from the corrected full model in one respect and uses its frozen protocol; each
+is trained once (seed 42, same patient split), so the comparisons are exploratory.
+
+| Variant | Config (`configs/experiments/`) | Change | Parameters | Question |
+|---|---|---|---|---|
+| Full model | `brats2021_res96_fixed.yaml` | — | 30,138 | reference |
+| Plain multiscale NCA | `brats2021_res96_fixed_plain.yaml` | no SE, no spatial gate | 28,128 | RQ2a; the NCA baseline |
+| SE only | `brats2021_res96_fixed_se.yaml` | no spatial gate | 28,764 | RQ2a, factorial |
+| Spatial gate only | `brats2021_res96_fixed_spatial.yaml` | no SE | 29,502 | RQ2a, factorial |
+| Plain, widened | `brats2021_res96_fixed_plain_wide.yaml` | no SE, no gate, hidden 141 | 30,078 | capacity vs mechanism |
+| Global context | `brats2021_res96_fixed_global.yaml` | plus attention-pooled global block | 32,304 | RQ2b |
+| T1ce only | `brats2021_res96_fixed_single.yaml` | one input modality | 30,138 | RQ3 |
+
+```bash
+python train.py --config configs/experiments/brats2021_res96_fixed_plain.yaml --data-root /path/to/BraTS2021
+python compare_runs.py experiments/<plain-run> experiments/<full-run>
+python compare_runs.py --contrast plain=experiments/<plain>::experiments/<full> \
+                       --contrast global=experiments/<full>::experiments/<global> --output family.json
+```
 
 ## Evaluate and ensemble
 
@@ -261,23 +283,38 @@ python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run exp
     --data-root /path/to/BraTS2021 --tune-thresholds --full-resolution
 ```
 
-Two runs on the same test cases are compared with
-`python compare_runs.py experiments/<run-a> experiments/<run-b>` (difference B minus A, 95%
-bootstrap interval over patients, Wilcoxon test, Holm correction for WT/TC/ET), and inference cost
-is measured with `python benchmark.py --run experiments/<run-id> [--device cpu]`.
+Scoring options default to the run's own `evaluation:` section; flags override them and `--legacy`
+gives the original scoring (working grid, v7 empty rule, independent masks, voxel HD95). The output
+records the full evaluation specification. Without tuning, cases are scored one at a time into a
+progress file, so an interrupted evaluation resumes where it stopped; the file is tied to the
+checkpoint, config, split and data, the metric version, the code (including uncommitted changes) and
+the options, and a resume with any of them changed is refused. Ensemble members must share
+`split.json` and every input setting; their predictions are aligned by case ID. `predict.py` keeps an
+equivalent identity for its output folder.
 
-`analyze.py` adds the analyses of a trained run: `decompose` scores the same seeded passes after each
-inference stage (single pass, ensemble, flips, thresholds, clean-up, ET rule) at full resolution;
-`steps` measures accuracy and latency for other NCA step counts; `erf` measures the effective
-receptive field from input gradients; `perturb` measures the effect of noise placed at a distance;
-`modalities` removes each modality in turn; `manifest` lists every case with its split, ET presence and
-region volumes; `overlap` checks an official ID mapping table for evaluation cases that were in
-training. `decompose` also reports how well the spread of the stochastic passes flags poor cases. Every start or resume of a run records its commit, Docker image,
-software versions and GPU in `run_info.json`.
+`compare_runs.py` compares runs on the same test cases (difference B minus A, patient-level: the scans
+of a patient are averaged first). It reports a 95% bootstrap interval over patients, a Wilcoxon test
+and Holm correction for WT/TC/ET; several seeds per arm are given as comma-separated lists, and
+`--contrast NAME=A::B` (repeatable) adds Holm correction across a family of contrasts. Inputs scored
+under different rules are refused. Inference cost is measured with
+`python benchmark.py --run experiments/<run-id> [--device cpu]`.
 
-Without tuning, cases are scored one at a time into a progress file, so an interrupted
-evaluation resumes where it stopped. Ensemble members must share `split.json` and the
-working resolution.
+`analyze.py` adds the analyses of a trained run:
+
+| Command | Purpose |
+|---|---|
+| `decompose` | the same seeded passes scored after each inference stage (single pass, ensemble, flips, thresholds, clean-up, ET rule) at full resolution, plus how well pass and flip spread flag poor cases |
+| `steps` | accuracy and latency for other NCA step counts |
+| `erf` | effective receptive field from input gradients, at a fixed tumour voxel per case, over several cases |
+| `perturb` | effect of noise placed at a set distance from the predicted tumour boundary |
+| `modalities` | leave-one-modality-out at inference |
+| `manifest` | every case with its split, labels, region volumes and ET presence |
+| `preflight` | data checks before training: files, shapes, co-registration, spacing, finite values, labels, duplicates |
+| `overlap` | evaluated cases found in the run's training or validation split, from an official ID mapping table; fails when any case is unmapped |
+
+Every start or resume of a run records its commit, uncommitted changes, Docker image, software
+versions and GPU in `run_info.json`; a resume whose config changed is refused unless
+`--allow-config-change` is given, and the changes are recorded.
 
 ## Train on GCP
 
@@ -304,6 +341,16 @@ python tests/test_pipeline.py                                  # train, predict,
 python tests/make_synthetic_data.py /tmp/syn --cases 12         # synthetic BraTS-style cases
 python tests/test_equivalence.py /tmp/syn                       # identical to the Kaggle v7 script
 ```
+
+## Status
+
+| Part | State |
+|---|---|
+| Reported model (BraTS 2021, internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
+| Code corrections from two external reviews and an independent audit | done; tested (`tests/`) and identical to the original recipe by default |
+| Ablation runs of the corrected recipe (table above) | configured; not yet trained |
+| Analyses on BraTS 2021 (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; to run with the ablation |
+| Overlap of the BraTS 2023 validation cases with the training split | tool ready; needs the official BraTS 2023 glioma ID mapping |
 
 ## Credits
 
