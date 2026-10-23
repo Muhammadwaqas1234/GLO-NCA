@@ -1,4 +1,4 @@
-r"""GLO-NCA cell: learned depthwise perception, SE, spatial gate, optional global block (after Med-NCA, Kalkhof et al.)."""
+r"""GLO-NCA cell: learned depthwise perception, SE, spatial gate, optional global block."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

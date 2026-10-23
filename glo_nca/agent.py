@@ -1,4 +1,4 @@
-r"""Cascade agent: one NCA per level, coarse-to-fine inference and joint training (after M3D-NCA, Kalkhof et al.)."""
+r"""Cascade agent: one NCA per level, coarse-to-fine inference and joint training."""
 from __future__ import annotations
 
 import contextlib

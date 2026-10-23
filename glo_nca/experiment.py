@@ -1,4 +1,4 @@
-r"""Experiment state: configuration, data split and train/val/test mode (after M3D-NCA, Kalkhof et al.)."""
+r"""Experiment state: configuration, data split and train/val/test mode."""
 import torch
 
 DEFAULTS = {
