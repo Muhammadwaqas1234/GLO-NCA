@@ -37,6 +37,19 @@ Text for the thesis chapters, matching the final implementation (repository `mai
    and 95th percentile) and peak memory on stated hardware, for the reported inference setting and for
    a single pass.
 
+**Contributions.** The implementation starts from the Med-NCA / M3D-NCA framework (Kalkhof et al.,
+2023), which provides the basic NCA update and the idea of a coarse-to-fine cascade. The contributions
+of this thesis are:
+
+| Area | This work |
+|---|---|
+| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an optional attention-pooled global-context block, and a two-level 48³ → 96³ cascade |
+| Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
+| Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
+| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
+| Analysis | Ablation design (without global context, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
+
 ## 2. Corrections to the proposal
 
 The final study differs from the proposal in the following points; the proposal's preliminary

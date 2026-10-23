@@ -9,6 +9,20 @@ The model's context blocks are channel recalibration (SE, pooled over the whole 
 7×7×7 spatial gate in every cell. An explicit attention-pooled global-context block is also
 implemented (`model.use_global`) but is not part of the reported model or of this study.
 
+## Contributions of this work
+
+The package started from an existing neural cellular automata framework (see `LICENSE`). The following
+are contributions of this work:
+
+| Area | This work |
+|---|---|
+| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an optional attention-pooled global-context block, and a two-level 48³ → 96³ cascade |
+| Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
+| Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
+| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
+| Analysis | Ablation design (without global context, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
+
 ## Research questions
 
 1. **Accuracy at a small size.** Can a two-level NCA cascade with about 30,000 parameters segment adult
