@@ -352,6 +352,4 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 | Analyses on BraTS 2021 (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; to run with the ablation |
 | Overlap of the BraTS 2023 validation cases with the training split | tool ready; needs the official BraTS 2023 glioma ID mapping |
 
-## Credits
 
-Built on the Med-NCA / M3D-NCA framework by John Kalkhof et al. (MIT). See `LICENSE`.
