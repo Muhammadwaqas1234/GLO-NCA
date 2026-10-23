@@ -5,9 +5,9 @@ on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks an
 multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
 package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
-The reported model uses channel recalibration (SE, pooled over the whole volume) and a local
-7×7×7 spatial gate in every cell. An explicit attention-pooled global-context block is implemented
-as a variant (`model.use_global`) and evaluated in the ablation; it is not part of the reported model.
+The model's context blocks are channel recalibration (SE, pooled over the whole volume) and a local
+7×7×7 spatial gate in every cell. An explicit attention-pooled global-context block is also
+implemented (`model.use_global`) but is not part of the reported model or of this study.
 
 ## Research questions
 
@@ -15,9 +15,8 @@ as a variant (`model.use_global`) and evaluated in the ablation; it is not part 
    glioma (WT, TC, ET) on multi-parametric MRI close to the accuracy of much larger models? Internal
    test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases), compared with
    published results on that set.
-2. **Context in the cell.** Does context improve segmentation over a plain multiscale NCA trained with
-   the same recipe: (a) channel recalibration (SE) and local spatial gating, (b) an explicit
-   attention-pooled global-context block? Ablation configs `configs/experiments/brats2021_res96_fixed*.yaml`.
+2. **Global context.** Do the context blocks (SE and the spatial gate) improve segmentation over the
+   same multiscale NCA without them, trained with the same recipe? `brats2021_res96_fixed_plain.yaml`.
 3. **Multi-modal fusion.** Do the four MRI modalities help compared with contrast-enhanced T1 alone?
    `brats2021_res96_fixed_single.yaml` and `glo-analyze modalities`.
 4. **Information transport.** How far does information travel in the model, and how do accuracy and run
@@ -26,7 +25,7 @@ as a variant (`model.use_global`) and evaluated in the ablation; it is not part 
    stochastic ensemble, flips and post-processing rather than the architecture? `benchmark.py` and
    `glo-analyze decompose`.
 
-Each ablation variant is trained once (one seed) with the same split and frozen protocol, so the
+Each of the three runs is trained once (one seed) with the same split and frozen protocol, so the
 comparisons are exploratory. Larger models are compared through their published results on the
 BraTS 2023 adult glioma validation set, not retrained. Data: BraTS 2021 adult glioma for training and
 the internal test; BraTS 2023 adult glioma validation for the external evaluation.
@@ -252,24 +251,22 @@ block is a local 7×7×7 gate rather than a global operator.
 
 ## Ablation
 
-Each variant differs from the corrected full model in one respect and uses its frozen protocol; each
-is trained once (seed 42, same patient split), so the comparisons are exploratory.
+Three runs of the corrected recipe, each trained once (seed 42, same patient split) with the frozen
+evaluation protocol, so the comparisons are exploratory. The second and third differ from GLO-NCA in
+one respect each.
 
-| Variant | Config (`configs/experiments/`) | Change | Parameters | Question |
+| Run | Config (`configs/experiments/`) | Change | Parameters | Question |
 |---|---|---|---|---|
-| Full model | `brats2021_res96_fixed.yaml` | — | 30,138 | reference |
-| Plain multiscale NCA | `brats2021_res96_fixed_plain.yaml` | no SE, no spatial gate | 28,128 | RQ2a; the NCA baseline |
-| SE only | `brats2021_res96_fixed_se.yaml` | no spatial gate | 28,764 | RQ2a, factorial |
-| Spatial gate only | `brats2021_res96_fixed_spatial.yaml` | no SE | 29,502 | RQ2a, factorial |
-| Plain, widened | `brats2021_res96_fixed_plain_wide.yaml` | no SE, no gate, hidden 141 | 30,078 | capacity vs mechanism |
-| Global context | `brats2021_res96_fixed_global.yaml` | plus attention-pooled global block | 32,304 | RQ2b |
-| T1ce only | `brats2021_res96_fixed_single.yaml` | one input modality | 30,138 | RQ3 |
+| GLO-NCA | `brats2021_res96_fixed.yaml` | — | 30,138 | reference |
+| Without global context | `brats2021_res96_fixed_plain.yaml` | no SE, no spatial gate | 28,128 | RQ2 |
+| Without multi-modal fusion | `brats2021_res96_fixed_single.yaml` | contrast-enhanced T1 only | 30,138 | RQ3 |
 
 ```bash
+python train.py --config configs/experiments/brats2021_res96_fixed.yaml --data-root /path/to/BraTS2021
 python train.py --config configs/experiments/brats2021_res96_fixed_plain.yaml --data-root /path/to/BraTS2021
-python compare_runs.py experiments/<plain-run> experiments/<full-run>
-python compare_runs.py --contrast plain=experiments/<plain>::experiments/<full> \
-                       --contrast global=experiments/<full>::experiments/<global> --output family.json
+python train.py --config configs/experiments/brats2021_res96_fixed_single.yaml --data-root /path/to/BraTS2021
+python compare_runs.py --contrast context=experiments/<plain>::experiments/<glo-nca> \
+                       --contrast fusion=experiments/<t1ce-only>::experiments/<glo-nca> --output ablation.json
 ```
 
 ## Evaluate and ensemble
@@ -348,7 +345,7 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 |---|---|
 | Reported model (BraTS 2021, internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
 | Code corrections from two external reviews and an independent audit | done; tested (`tests/`) and identical to the original recipe by default |
-| Ablation runs of the corrected recipe (table above) | configured; not yet trained |
+| The three runs: GLO-NCA, without global context, without multi-modal fusion | configured; not yet trained |
 | Analyses on BraTS 2021 (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; to run with the ablation |
 | Overlap of the BraTS 2023 validation cases with the training split | tool ready; needs the official BraTS 2023 glioma ID mapping |
 

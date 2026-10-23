@@ -11,9 +11,9 @@ Text for the thesis chapters, matching the final implementation (repository `mai
   segment adult glioma sub-regions (WT, TC, ET) on multi-parametric MRI at an accuracy close to that of
   much larger models? *(Internal test, 189 patients; official BraTS 2023 validation on Synapse, 219
   cases, compared with published results on the same set.)*
-- **RQ2.** Does adding context to the NCA cell improve segmentation over a plain multiscale NCA trained
-  with the same recipe? (a) channel recalibration (SE) and local spatial gating; (b) an explicit
-  attention-pooled global-context block. *(Ablation runs and paired per-patient statistics.)*
+- **RQ2.** Do the global-context blocks of the cell (channel recalibration, SE, and the spatial gate)
+  improve segmentation over the same multiscale NCA without them, trained with the same recipe?
+  *(GLO-NCA against the run without global context; paired per-patient statistics.)*
 - **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
   alone? *(Single-modality variant and leave-one-modality-out at inference.)*
 - **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
@@ -208,9 +208,11 @@ normalisation, because a constant added before the per-volume batch normalisatio
 its centring. A full-cell test confirms that the branch changes the output and receives gradients. The thesis states this directly and turns it into the
 experimental question:
 
-> At a fixed budget of about 30,000 parameters, does channel recalibration and spatial gating, or an
-> explicit attention-pooled global context, improve patient-level glioma segmentation over an
-> otherwise identical multiscale NCA?
+> Do the context blocks of GLO-NCA (channel recalibration and spatial gating) improve patient-level
+> glioma segmentation over an otherwise identical multiscale NCA without them?
+
+The attention-pooled global block is implemented but not evaluated in this thesis; it is left for
+future work.
 
 The model name GLO-NCA is kept for the family of models; the reported model is described as a
 multiscale NCA with channel recalibration (SE) and local spatial gating.
@@ -228,18 +230,17 @@ requires the per-voxel normalisation control (`model.norm: layer`) without SE.
 
 All variants are retrained with the corrected configuration (`brats2021_res96_fixed.yaml`: loss on
 every region, ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored
-with the same final decoder at full resolution. Each variant differs from the full model in one
-respect.
+with the same final decoder at full resolution. The study has three runs; the second and third differ from GLO-NCA in one respect each.
 
-| Variant | Config | Difference | Parameters | Question |
+| Run | Config | Difference | Parameters | Question |
 |---|---|---|---|---|
-| Full model | `fixed` | — | 30,138 | reference |
-| Without context blocks | `fixed_plain` | no SE, no spatial gate | 28,128 | do the context blocks help? |
-| Without context, widened | `fixed_plain_wide` | no SE, no spatial gate, hidden 141 | 30,078 | is a gain due to the blocks or to the extra parameters? |
-| Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | does fusing the four modalities help? |
-| SE only | `fixed_se` | no spatial gate | 28,764 | factorial: contribution of SE |
-| Spatial gate only | `fixed_spatial` | no SE | 29,502 | factorial: contribution of the spatial gate |
-| With global context | `fixed_global` | plus attention-pooled global context after normalisation | 32,304 | does explicit global aggregation help further? |
+| GLO-NCA | `fixed` | — | 30,138 | reference |
+| Without global context | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2: do the context blocks help? |
+| Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | RQ3: does fusing the four modalities help? |
+
+Removing the context blocks also removes 2,010 parameters (7%). A difference between the first two runs
+therefore reflects the blocks together with this capacity difference; a capacity-matched control
+(`fixed_plain_wide`, 30,078 parameters) is available but not part of this study.
 
 \*The same cell and parameter count; with one input channel the 24-channel state holds 20 hidden
 channels instead of 17, so this variant also changes the hidden-state allocation, which is reported
@@ -254,7 +255,7 @@ split and frozen protocol. The confidence intervals therefore cover patient vari
 training-seed variation; the smallest effect of interest is fixed in advance at 0.01 mean Dice, and
 differences are reported as exploratory evidence about each mechanism, not as established superiority.
 
-**Baselines.** The plain variant (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
+**Baselines.** The run without global context (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
 or global block, trained with the same recipe) is the multiscale-NCA baseline in the style of M3D-NCA,
 so the NCA lineage is compared under identical data, training and evaluation. Larger segmentation
 models (for example nnU-Net and Swin UNETR) are not retrained; they are compared through their published
