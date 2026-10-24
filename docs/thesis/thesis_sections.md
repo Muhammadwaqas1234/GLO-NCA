@@ -12,9 +12,10 @@ Text for the thesis chapters, matching the final implementation (repository `mai
   the gap in mean Dice to published results on the same official validation set? *(Internal test, 189
   patients; official BraTS 2023 validation on Synapse, 219 cases. The published results were obtained
   with other training budgets and are reported as context, not as a controlled comparison.)*
-- **RQ2.** Do the context blocks of the cell (channel recalibration, SE, and the spatial gate)
-  improve segmentation over the same multiscale NCA without them, trained with the same recipe?
-  *(GLO-NCA against the run without SE and spatial gating; paired per-patient statistics.)*
+- **RQ2.** (a) Do the context blocks of the cell (channel recalibration, SE, and the spatial gate)
+  improve segmentation over the same multiscale NCA without them, and which block contributes?
+  (b) Does an explicit attention-pooled global-context block help further? *(2×2 factorial of SE and
+  the spatial gate, plus the global-context run; paired per-patient statistics.)*
 - **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
   alone? *(Single-modality variant and leave-one-modality-out at inference.)*
 - **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
@@ -48,7 +49,7 @@ of this thesis are:
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
-| Analysis | Ablation design (without SE and spatial gating, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Analysis | Ablation design (2×2 factorial of SE and spatial gating, global-context block, multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## 2. Corrections to the proposal
@@ -223,10 +224,8 @@ its centring. A full-cell test confirms that the branch changes the output and r
 experimental question:
 
 > Do the context blocks of GLO-NCA (channel recalibration and spatial gating) improve patient-level
-> glioma segmentation over an otherwise identical multiscale NCA without them?
-
-The attention-pooled global block is implemented but not evaluated in this thesis; it is left for
-future work.
+> glioma segmentation over an otherwise identical multiscale NCA, which block contributes, and does
+> an explicit attention-pooled global context help further?
 
 The model name GLO-NCA is kept for the family of models; the reported model is described as a
 multiscale NCA with channel recalibration (SE) and local spatial gating.
@@ -244,23 +243,28 @@ requires the per-voxel normalisation control (`model.norm: layer`) without SE.
 
 All variants are retrained with the corrected configuration (`brats2021_res96_fixed.yaml`: loss on
 every region, ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored
-with the same final decoder at full resolution. The study has three runs; the second and third differ from GLO-NCA in one respect each.
+with the same final decoder at full resolution. The study has six runs; each differs from GLO-NCA in one respect.
 
 | Run | Config | Difference | Parameters | Question |
 |---|---|---|---|---|
 | GLO-NCA | `fixed` | — | 30,138 | reference |
-| Without SE and spatial gating | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2: do the context blocks help? |
-| Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | RQ3: does fusing the four modalities help? |
+| Without SE and spatial gating | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2a: do the context blocks help? |
+| SE only | `fixed_se` | no spatial gate | 28,764 | RQ2a: contribution of SE |
+| Spatial gate only | `fixed_spatial` | no SE | 29,502 | RQ2a: contribution of the spatial gate |
+| With global context | `fixed_global` | plus attention-pooled global context after normalisation | 32,304 | RQ2b: does explicit global aggregation help? |
+| Without multi-modal fusion | `fixed_single` | T1ce only; the other three input slots stay empty | 30,138 | RQ3: does fusing the four modalities help? |
+
+The first four runs form a 2×2 factorial design (SE on or off × spatial gate on or off), so the
+contribution of each block and their interaction can be estimated. The single-modality run keeps the
+four input slots of the full model and leaves three of them empty, so the cell keeps its 4 input,
+3 output and 17 hidden channels and differs from GLO-NCA only in the information it receives.
 
 The second run is named after what it removes: batch normalisation still uses statistics of the whole
-volume, so it is not free of all global information. Removing the context blocks also removes 2,010
-parameters (7%). A difference between the first two runs
-therefore reflects the blocks together with this capacity difference; a capacity-matched control
-(`fixed_plain_wide`, 30,078 parameters) is available but not part of this study.
+volume, so it is not free of all global information. Removing both context blocks also removes 2,010
+parameters (7%), so a difference between GLO-NCA and the run without them reflects the blocks together
+with this capacity difference; a capacity-matched control (`fixed_plain_wide`, 30,078 parameters) is
+available but not part of this study.
 
-\*The same cell and parameter count; with one input channel the 24-channel state holds 20 hidden
-channels instead of 17, so this variant also changes the hidden-state allocation, which is reported
-with its result.
 
 The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
 patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);

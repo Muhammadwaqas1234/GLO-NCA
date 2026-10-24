@@ -36,7 +36,7 @@ def main() -> int:
         for name in ("fixed", "fixed_plain", "fixed_single"):
             rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", f"brats2021_res96_{name}.yaml"),
                              "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL,
-                             *(["--override", "data.modalities=[t1c]"] if name == "fixed_single" else [])])
+                             *(["--override", "data.modalities=[none,t1c,none,none]"] if name == "fixed_single" else [])])
             status = json.load(open(os.path.join(runs, name, "status.json")))
             check(f"train {name}: completes and tests", rc == 0 and status["state"] == "completed",
                   status["state"])

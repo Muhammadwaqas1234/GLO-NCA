@@ -263,8 +263,7 @@ def relabel_small_et(masks, max_ratio, max_voxels):
 def to_full_resolution(dataset, case, prob):
     r"""Resample a working-resolution prob map into the original scan; returns (prob, gt)."""
     folder = os.path.join(dataset.images_path, case)
-    raw = np.stack([dataset.load_item(dataset._find_modality_file(folder, case, m))
-                    for m in dataset.MODALITIES], axis=-1)
+    raw, _ = dataset.load_modalities(folder, case)
     seg = dataset.load_item(dataset._find_modality_file(folder, case, dataset.SEG_SUFFIX))
     gt = dataset._labels_to_regions(seg).astype(np.uint8)
     bbox = dataset._foreground_bbox(raw) if dataset.use_foreground_crop else None

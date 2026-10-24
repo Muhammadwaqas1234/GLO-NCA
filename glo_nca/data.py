@@ -25,6 +25,10 @@ class _ConfigView:
         return self.config.get(tag)
 
 
+# Modality name for an input slot that is kept but left empty (all zeros), e.g. single-modality
+# ablations that keep the four input channels of the full model.
+EMPTY_MODALITY = "none"
+
 # Bump when preprocessing changes, so disk caches written by older code are not reused.
 PREPROCESS_VERSION = 3
 
@@ -152,8 +156,7 @@ class BraTSDataset(Dataset):
     def _preprocess(self, folder_name):
         r"""Load, crop and resample one case to (image, regions) at the working size."""
         folder = os.path.join(self.images_path, folder_name)
-        raw = np.stack([self.load_item(self._find_modality_file(folder, folder_name, m))
-                        for m in self.MODALITIES], axis=-1)
+        raw, _ = self.load_modalities(folder, folder_name)
         seg = self.load_item(self._find_modality_file(folder, folder_name, self.SEG_SUFFIX))
         self._labels_to_regions(np.unique(seg))     # validate the raw label set before resizing
         if self.use_foreground_crop:
@@ -195,9 +198,26 @@ class BraTSDataset(Dataset):
         folder = os.path.join(self.images_path, folder_name)
         parts = []
         for m in [*self.MODALITIES, self.SEG_SUFFIX]:
+            if m == EMPTY_MODALITY:
+                continue
             st = os.stat(self._find_modality_file(folder, folder_name, m))
             parts.append(f"{m}:{st.st_size}:{st.st_mtime_ns}")
         return os.path.abspath(folder) + "|" + ";".join(parts)
+
+    def load_modalities(self, folder, case, modalities=None):
+        r"""Scan of one case as (X, Y, Z, C) in the configured channel order, and its first real file.
+
+        A modality named ``none`` is an empty input slot filled with zeros.
+        """
+        modalities = modalities or self.MODALITIES
+        real = [m for m in modalities if m != EMPTY_MODALITY]
+        if not real:
+            raise ValueError("at least one modality must be a real scan")
+        files = {m: self._find_modality_file(folder, case, m) for m in real}
+        volumes = {m: self.load_item(f) for m, f in files.items()}
+        shape = next(iter(volumes.values())).shape
+        raw = np.stack([volumes[m] if m != EMPTY_MODALITY else np.zeros(shape) for m in modalities], axis=-1)
+        return raw, files[real[0]]
 
     def _cache_path(self, folder_name):
         r"""Disk-cache file for one case; the name encodes the preprocessing version, settings and source files."""

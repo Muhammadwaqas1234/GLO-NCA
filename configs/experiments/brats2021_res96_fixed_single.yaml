@@ -1,8 +1,10 @@
-# Fusion ablation: the full model with one input modality instead of four.
+# Fusion ablation: the full model with one input modality (T1ce) instead of four.
 base: brats2021_res96_fixed.yaml
 
 experiment:
   name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-SINGLE
 
 data:
-  modalities: [t1ce]              # contrast-enhanced T1, which defines enhancing tumour and tumour core
+  # Contrast-enhanced T1 only, in its usual slot; the other three input slots stay empty (zeros), so
+  # the cell keeps the full model's 4 input, 3 output and 17 hidden channels.
+  modalities: [none, t1ce, none, none]

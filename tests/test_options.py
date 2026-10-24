@@ -84,6 +84,7 @@ class _FakeDS:
     use_foreground_crop = True
     _foreground_bbox = staticmethod(BraTSDataset._foreground_bbox)
     _labels_to_regions = staticmethod(lambda seg: labels_to_regions(seg))
+    load_modalities = BraTSDataset.load_modalities
 
     def __init__(self, root, vols):
         r"""Store the fake volumes."""
@@ -522,7 +523,7 @@ def test_ablation_configs():
                                == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
     ok = (same(full, single, {"MODALITIES"}) and same(plain, wide, {"HIDDEN"})
           and n["full"] == 30138 and n["plain"] == 28128 and abs(n["wide"] - n["full"]) < 100
-          and single.MODALITIES == ["t1ce"] and not full.LEGACY_PATCHIFY
+          and single.MODALITIES == ["none", "t1ce", "none", "none"] and not full.LEGACY_PATCHIFY
           and same(full, se, {"USE_SPATIAL"}) and same(full, spatial, {"USE_SE"})
           and full.uses_final_scoring and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
     check("ablation configs: one difference each, matched capacity", ok,
@@ -770,6 +771,23 @@ def test_missing_spec_refused():
     check("compare_runs: missing spec refused unless allowed", ok_known and refused and allowed)
 
 
+def test_empty_modality_slots():
+    r"""Placeholder slots are zero channels; a single-modality model keeps 4 input and 17 hidden channels."""
+    import nibabel as nib
+    ds = BraTSDataset.__new__(BraTSDataset)
+    ds.MODALITIES = ["none", "t1ce", "none", "none"]
+    with tempfile.TemporaryDirectory() as root:
+        d = os.path.join(root, "BraTS2021_00001"); os.makedirs(d)
+        vol = np.random.default_rng(0).random((6, 6, 6)).astype(np.float32) + 1
+        nib.save(nib.Nifti1Image(vol, np.eye(4)), os.path.join(d, "BraTS2021_00001_t1ce.nii.gz"))
+        raw, first = ds.load_modalities(d, "BraTS2021_00001")
+    cfg = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed_single.yaml"))
+    hidden = cfg.CHANNEL_N - len(cfg.MODALITIES) - 3
+    check("empty modality slots: zeros, T1ce in its slot, 17 hidden channels",
+          raw.shape == (6, 6, 6, 4) and not raw[..., [0, 2, 3]].any() and np.allclose(raw[..., 1], vol)
+          and first.endswith("t1ce.nii.gz") and hidden == 17, f"hidden {hidden}")
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -779,7 +797,8 @@ if __name__ == "__main__":
               test_hd95_reference, test_ablation_configs, test_rng_untouched, test_forward_default,
               test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
               test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names,
-              test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused):
+              test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused,
+              test_empty_modality_slots):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

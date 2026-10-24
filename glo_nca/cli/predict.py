@@ -154,9 +154,8 @@ def main(argv=None) -> int:
         if os.path.exists(out_path) and (prob_path is None or os.path.exists(prob_path)):
             continue   # resumable: finished cases are kept
         folder = os.path.join(args.input, case)
-        files = [ds._find_modality_file(folder, case, m) for m in modalities]
-        ref = nib.load(files[0])
-        raw = np.stack([nib.load(f).get_fdata() for f in files], axis=-1)
+        raw, first = ds.load_modalities(folder, case, modalities)
+        ref = nib.load(first)
         bbox = ds._foreground_bbox(raw) if ds.use_foreground_crop else None
         x0, x1, y0, y1, z0, z1 = bbox if bbox is not None else (0, raw.shape[0], 0, raw.shape[1], 0, raw.shape[2])
         crop = raw[x0:x1, y0:y1, z0:z1, :]

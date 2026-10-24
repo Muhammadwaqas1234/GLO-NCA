@@ -174,9 +174,8 @@ def _case_input(ds, folder, case):
         raise ValueError(f"{len(ds.MODALITIES)} modalities given, the model expects "
                          f"{ds.exp.get_from_config('input_channels')}")
     import nibabel as nib
-    files = [ds._find_modality_file(folder, case, m) for m in ds.MODALITIES]
-    raw = np.stack([ds.load_item(f) for f in files], axis=-1)
-    zooms = np.array(nib.load(files[0]).header.get_zooms()[:3], float)
+    raw, first = ds.load_modalities(folder, case)
+    zooms = np.array(nib.load(first).header.get_zooms()[:3], float)
     bbox = ds._foreground_bbox(raw) if ds.use_foreground_crop else None
     x0, x1, y0, y1, z0, z1 = bbox if bbox is not None else (0, raw.shape[0], 0, raw.shape[1], 0, raw.shape[2])
     img = ds.normalize(ds.resize_image(raw[x0:x1, y0:y1, z0:z1]))
@@ -425,15 +424,17 @@ def modalities(args) -> int:
     th = _parse_regions(args.thresholds, 0.5, float)
     mc = _parse_regions(args.min_component, 0, int)
     keys = list(ds.images_list)[:args.limit]
-    variants = ["all"] + [f"without {m}" for m in cfg.MODALITIES]
+    # (name, channel to empty); placeholder slots are already empty and are not varied.
+    channels = [("all", None)] + [(f"without {m}", i) for i, m in enumerate(cfg.MODALITIES) if m != "none"]
+    variants = [name for name, _ in channels]
     dice = {v: {r: [] for r in REGIONS} for v in variants}
     with torch.no_grad():
         for n, key in enumerate(keys, 1):
             sample = ds[list(ds.images_list).index(key)]
-            for j, v in enumerate(variants):
+            for v, channel in channels:
                 img = sample[1].copy()
-                if j:
-                    img[..., j - 1] = 0.0          # this modality missing
+                if channel is not None:
+                    img[..., channel] = 0.0        # this modality missing
                 data = torch.utils.data.default_collate([(sample[0], img, sample[2])])
                 case, prob, _ = predict_case(agent, data, args.ensemble_n, not args.no_tta)
                 full, gt = to_full_resolution(ds, case, prob)
@@ -537,7 +538,7 @@ def preflight(args) -> int:
     for n, case in enumerate(cases, 1):
         folder = os.path.join(data_root, case)
         problems, shapes, affines = [], set(), []
-        for m in mods + ["seg"]:
+        for m in [m for m in mods if m != "none"] + ["seg"]:
             try:
                 img = nib.load(ds._find_modality_file(folder, case, m))
             except FileNotFoundError:
