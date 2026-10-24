@@ -20,16 +20,17 @@ are contributions of this work:
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
-| Analysis | Ablation design (without global context, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Analysis | Ablation design (without SE and spatial gating, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
-1. **Accuracy at a small size.** Can a two-level NCA cascade with about 30,000 parameters segment adult
-   glioma (WT, TC, ET) on multi-parametric MRI close to the accuracy of much larger models? Internal
-   test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases), compared with
-   published results on that set.
-2. **Global context.** Do the context blocks (SE and the spatial gate) improve segmentation over the
+1. **Accuracy at a small size.** How close does a two-level NCA cascade with about 30,000 parameters
+   come to much larger models in adult glioma segmentation (WT, TC, ET) on multi-parametric MRI,
+   measured as the gap in mean Dice to published results on the same official validation set? Internal
+   test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases); the published
+   results are context, not a controlled comparison.
+2. **Context blocks.** Do the context blocks (SE and the spatial gate) improve segmentation over the
    same multiscale NCA without them, trained with the same recipe? `brats2021_res96_fixed_plain.yaml`.
 3. **Multi-modal fusion.** Do the four MRI modalities help compared with contrast-enhanced T1 alone?
    `brats2021_res96_fixed_single.yaml` and `glo-analyze modalities`.
@@ -272,7 +273,7 @@ one respect each.
 | Run | Config (`configs/experiments/`) | Change | Parameters | Question |
 |---|---|---|---|---|
 | GLO-NCA | `brats2021_res96_fixed.yaml` | — | 30,138 | reference |
-| Without global context | `brats2021_res96_fixed_plain.yaml` | no SE, no spatial gate | 28,128 | RQ2 |
+| Without SE and spatial gating | `brats2021_res96_fixed_plain.yaml` | no SE, no spatial gate | 28,128 | RQ2 |
 | Without multi-modal fusion | `brats2021_res96_fixed_single.yaml` | contrast-enhanced T1 only | 30,138 | RQ3 |
 
 ```bash
@@ -294,12 +295,15 @@ python evaluate.py --run experiments/<run-a> --run experiments/<run-b> --run exp
     --data-root /path/to/BraTS2021 --tune-thresholds --full-resolution
 ```
 
-Scoring options default to the run's own `evaluation:` section; flags override them and `--legacy`
-gives the original scoring (working grid, v7 empty rule, independent masks, voxel HD95). The output
-records the full evaluation specification. Without tuning, cases are scored one at a time into a
+Scoring options, including threshold tuning and clean-up, default to the run's own `evaluation:`
+section; flags override them and `--legacy` gives the original scoring (working grid, v7 empty rule,
+independent masks, voxel HD95). The settings after all overrides form one specification that drives
+the run and is written to the progress file and the output. Final scores report, per region, the
+number of cases, the cases with a defined HD95 (the HD95 mean is conditional on them) and the missed
+and false-positive cases; the per-case CSV has each case's HD95 and its status. Without tuning, cases are scored one at a time into a
 progress file, so an interrupted evaluation resumes where it stopped; the file is tied to the
-checkpoint, config, split and data, the metric version, the code (including uncommitted changes) and
-the options, and a resume with any of them changed is refused. Ensemble members must share
+checkpoint, config, split, the data files (names, sizes, modification times), the metric version, the
+code (including uncommitted changes) and the options, and a resume with any of them changed is refused. Ensemble members must share
 `split.json` and every input setting; their predictions are aligned by case ID. `predict.py` keeps an
 equivalent identity for its output folder.
 
@@ -307,7 +311,8 @@ equivalent identity for its output folder.
 of a patient are averaged first). It reports a 95% bootstrap interval over patients, a Wilcoxon test
 and Holm correction for WT/TC/ET; several seeds per arm are given as comma-separated lists, and
 `--contrast NAME=A::B` (repeatable) adds Holm correction across a family of contrasts. Inputs scored
-under different rules are refused. Inference cost is measured with
+under different rules, or without a recorded scoring specification, are refused unless
+`--allow-mixed-specs` is given. Inference cost is measured with
 `python benchmark.py --run experiments/<run-id> [--device cpu]`.
 
 `analyze.py` adds the analyses of a trained run:
@@ -359,7 +364,7 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 |---|---|
 | Reported model (BraTS 2021, internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
 | Code corrections from two external reviews and an independent audit | done; tested (`tests/`) and identical to the original recipe by default |
-| The three runs: GLO-NCA, without global context, without multi-modal fusion | configured; not yet trained |
+| The three runs: GLO-NCA, without SE and spatial gating, without multi-modal fusion | configured; not yet trained |
 | Analyses on BraTS 2021 (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; to run with the ablation |
 | Overlap of the BraTS 2023 validation cases with the training split | tool ready; needs the official BraTS 2023 glioma ID mapping |
 

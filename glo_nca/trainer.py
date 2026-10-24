@@ -242,8 +242,22 @@ class EMA:
                     e[k].mul_(self.decay).add_(v.detach(), alpha=1 - self.decay)
 
     def load(self, states) -> None:
-        r"""Restore saved averages onto the devices of the current ones."""
-        self.states = [{k: v.to(e[k].device) for k, v in se.items()} for se, e in zip(states, self.states)]
+        r"""Restore saved averages (old layer names translated) onto the devices of the current ones.
+
+        Keys and shapes must match the current model exactly, so an architecture change fails clearly.
+        """
+        from .model import migrate_state_dict
+        loaded = []
+        for saved, current in zip(states, self.states):
+            saved = migrate_state_dict(dict(saved))
+            if set(saved) != set(current):
+                raise ValueError(f"EMA state does not match the model: missing "
+                                 f"{sorted(set(current) - set(saved))}, unexpected {sorted(set(saved) - set(current))}")
+            bad = [k for k in saved if saved[k].shape != current[k].shape]
+            if bad:
+                raise ValueError(f"EMA state shapes differ from the model: {bad}")
+            loaded.append({k: saved[k].to(current[k].device) for k in current})
+        self.states = loaded
 
 
 def _load_split(cfg: GLONCAConfig, data_root: str, out_dir: str, resume: bool) -> Tuple[list, list, list]:

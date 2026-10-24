@@ -51,10 +51,11 @@ def main(argv=None) -> int:
                     help="run folder with config.yaml, split.json and best.pth (repeatable)")
     ap.add_argument("--data-root", required=True, help="folder that holds the BraTS case folders")
     ap.add_argument("--output", default=None, help="result JSON (default: <first run>/evaluation.json)")
-    ap.add_argument("--tune-thresholds", action="store_true",
-                    help="choose per-region threshold and clean-up size on validation")
+    ap.add_argument("--tune-thresholds", action=argparse.BooleanOptionalAction, default=None,
+                    help="choose per-region threshold and clean-up size on validation (default: the run's setting)")
     ap.add_argument("--min-component", default="", metavar="WT=0,TC=50,ET=50",
-                    help="fixed clean-up: drop predicted components below this size (ignored when tuning)")
+                    help="fixed clean-up: drop predicted components below this size (default: the run's "
+                         "setting; ignored when tuning)")
     ap.add_argument("--full-resolution", action=argparse.BooleanOptionalAction, default=None,
                     help="score in the original scan space (default: the run's evaluation.full_resolution)")
     ap.add_argument("--ensemble-n", type=int, default=None,
@@ -130,29 +131,36 @@ def main(argv=None) -> int:
         if args.case_seed is not None:
             agent.case_seed = args.case_seed
         models.append((agent, n, tta))
+    # One effective protocol: the run's config with every command-line override applied. It drives the
+    # inference, the progress identity and the evaluation_spec written with the results.
+    pick = lambda flag, run_value: (False if args.legacy else run_value) if flag is None else flag
+    C0.ENSEMBLE_N, C0.USE_TTA, C0.CASE_SEED = models[0][1], models[0][2], models[0][0].case_seed
+    C0.TUNE_THRESHOLDS = pick(args.tune_thresholds, C0.TUNE_THRESHOLDS)
+    if args.min_component or args.legacy:
+        C0.MIN_COMPONENT = _parse_min_component(args.min_component)
+    C0.FULL_RESOLUTION_EVAL = pick(args.full_resolution, C0.FULL_RESOLUTION_EVAL)
+    C0.BRATS_EMPTY = pick(args.brats_empty, C0.BRATS_EMPTY)
+    C0.NESTED_REGIONS = pick(args.nested_regions, C0.NESTED_REGIONS)
+    C0.SURFACE_HD95 = pick(args.hd95_surface, C0.SURFACE_HD95)
+    C0.HD95_CONVENTION = args.hd95_convention or C0.HD95_CONVENTION
+    args.tune_thresholds, args.full_resolution, args.brats_empty = (C0.TUNE_THRESHOLDS, C0.FULL_RESOLUTION_EVAL,
+                                                                     C0.BRATS_EMPTY)
+    args.nested_regions, args.hd95_surface, args.hd95_convention = (C0.NESTED_REGIONS, C0.SURFACE_HD95,
+                                                                     C0.HD95_CONVENTION)
+    print(f"scoring: tuned {C0.TUNE_THRESHOLDS}, full resolution {C0.FULL_RESOLUTION_EVAL}, BraTS empty rule "
+          f"{C0.BRATS_EMPTY}, nested {C0.NESTED_REGIONS}, surface HD95 {C0.SURFACE_HD95} ({C0.HD95_CONVENTION}), "
+          f"ensemble {C0.ENSEMBLE_N}, tta {C0.USE_TTA}, case seed {C0.CASE_SEED}", flush=True)
+    from glo_nca.cli.predict import folder_fingerprint
+    from glo_nca.evaluation import evaluation_spec
     # Identity of everything that determines the scores, so a resumed or repeated evaluation can be checked.
     identity = {"runs": [{"run": r, "best_pth_sha256": file_sha256(os.path.join(r, "best.pth")),
                           "config_sha256": file_sha256(os.path.join(r, "config.yaml")),
                           "split_sha256": file_sha256(os.path.join(r, "split.json"))} for r in runs],
-                "data_root": os.path.abspath(data_root), "metric_version": METRIC_VERSION,
+                "data_root": os.path.abspath(data_root),
+                "data_fingerprint": folder_fingerprint(data_root, (".nii", ".nii.gz")),
+                "metric_version": METRIC_VERSION,
                 "code": code_identity(), "case_seeds": [a.case_seed for a, _, _ in models]}
 
-    C0.TUNE_THRESHOLDS = args.tune_thresholds
-    C0.MIN_COMPONENT = _parse_min_component(args.min_component)
-    # Scoring follows the run's own evaluation section unless a flag (or --legacy) says otherwise.
-    pick = lambda flag, run_value: (False if args.legacy else run_value) if flag is None else flag
-    args.full_resolution = pick(args.full_resolution, C0.FULL_RESOLUTION_EVAL)
-    args.brats_empty = pick(args.brats_empty, C0.BRATS_EMPTY)
-    args.nested_regions = pick(args.nested_regions, C0.NESTED_REGIONS)
-    args.hd95_surface = pick(args.hd95_surface, C0.SURFACE_HD95)
-    args.hd95_convention = args.hd95_convention or C0.HD95_CONVENTION
-    C0.FULL_RESOLUTION_EVAL = args.full_resolution
-    C0.BRATS_EMPTY = args.brats_empty
-    C0.NESTED_REGIONS = args.nested_regions
-    C0.SURFACE_HD95 = args.hd95_surface
-    C0.HD95_CONVENTION = args.hd95_convention
-    print(f"scoring: full resolution {args.full_resolution}, BraTS empty rule {args.brats_empty}, "
-          f"nested {args.nested_regions}, surface HD95 {args.hd95_surface} ({args.hd95_convention})", flush=True)
     out = args.output or os.path.join(runs[0], "evaluation.json")
     if args.tune_thresholds:
         # Tuning needs every validation probability map at once.
@@ -174,7 +182,8 @@ def main(argv=None) -> int:
         thresholds = _parse_thresholds(args.thresholds)
         splits = [s.strip() for s in args.splits.split(",") if s.strip()]
         progress = out + ".progress.jsonl"
-        settings = {**identity, "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
+        settings = {**identity, "evaluation_spec": evaluation_spec(C0, thresholds, C0.MIN_COMPONENT),
+                    "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
                     "brats_empty": args.brats_empty, "hd95_surface": args.hd95_surface,
                     "hd95_convention": args.hd95_convention, "nested_regions": args.nested_regions,
                     "thresholds": thresholds, "min_component": C0.MIN_COMPONENT,
@@ -206,9 +215,8 @@ def main(argv=None) -> int:
 
     out = args.output or os.path.join(runs[0], "evaluation.json")
     with open(out, "w", encoding="utf-8") as fh:
-        if "evaluation_spec" not in tuned:
-            from glo_nca.evaluation import evaluation_spec
-            tuned["evaluation_spec"] = evaluation_spec(C0, tuned.get("thresholds"), tuned.get("min_component_voxels"))
+        # The spec of what was executed (after every override), with the thresholds actually used.
+        tuned["evaluation_spec"] = evaluation_spec(C0, tuned.get("thresholds"), tuned.get("min_component_voxels"))
         json.dump({"runs": runs, "identity": identity, **tuned, "val_mean_dice": val_mean,
                    "test_mean_dice": mean}, fh, indent=2, default=str)
     print("Saved to", out)

@@ -41,6 +41,24 @@ def main() -> int:
             check(f"train {name}: completes and tests", rc == 0 and status["state"] == "completed",
                   status["state"])
         fixed = os.path.join(runs, "fixed")
+        # A full training checkpoint with the old layer names (models and EMA) resumes and completes.
+        import torch
+        old_run = os.path.join(runs, "old_names")
+        rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", "brats2021_res96_fixed.yaml"),
+                         "--data-root", data, "--output", runs, "--experiment-id", "old_names", "--stop-after-epoch", "1",
+                         *SMALL])
+        from glo_nca.model import LEGACY_LAYER_NAMES
+        reverse = {v: k for k, v in LEGACY_LAYER_NAMES.items()}
+        old = lambda k: next((o + k[len(n):] for n, o in reverse.items() if k.startswith(n)), k)
+        ck = torch.load(os.path.join(old_run, "last.pth"), weights_only=False)
+        ck["models"] = [{old(k): v for k, v in sd.items()} for sd in ck["models"]]
+        ck["ema"] = [{old(k): v for k, v in sd.items()} for sd in ck["ema"]]
+        torch.save(ck, os.path.join(old_run, "last.pth"))
+        rc2 = train.main(["--resume", old_run, "--data-root", data])
+        state = json.load(open(os.path.join(old_run, "status.json")))["state"]
+        check("resume: old-name checkpoint (models and EMA) trains, saves and completes",
+              rc == 0 and rc2 == 0 and state == "completed")
+
         with open(os.path.join(fixed, "test_per_case.csv"), newline="") as fh:
             n_test = len(list(csv.DictReader(fh)))
         check("per-case test scores written", n_test > 0, f"{n_test} cases")
@@ -57,7 +75,8 @@ def main() -> int:
               and spec.get("nested_regions") and "medpy" in spec.get("hd95", ""), spec.get("hd95", ""))
 
         # Stale results: a changed config makes a resumed evaluation refuse.
-        ev = ["--run", fixed, "--data-root", data, "--splits", "test", "--full-resolution", "--brats-empty",
+        ev = ["--run", fixed, "--data-root", data, "--splits", "test", "--no-tune-thresholds",
+              "--full-resolution", "--brats-empty",
               "--hd95-surface", "--nested-regions", "--output", os.path.join(work, "resume.json")]
         rc1, rc2 = evaluate.main(ev), evaluate.main(ev)
         cfg = os.path.join(fixed, "config.yaml")
@@ -66,6 +85,24 @@ def main() -> int:
         rc3 = evaluate.main(ev)
         open(cfg, "w", encoding="utf-8").write(original)
         check("evaluate: resumes unchanged inputs, refuses a changed config", (rc1, rc2, rc3) == (0, 0, 2))
+
+        # Data identity: an edited scan under the same path invalidates the progress file.
+        seg = next(os.path.join(data, c, f) for c in sorted(os.listdir(data)) if os.path.isdir(os.path.join(data, c))
+                   for f in os.listdir(os.path.join(data, c)) if f.endswith("seg.nii.gz"))
+        st = os.stat(seg)
+        os.utime(seg, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        rc4 = evaluate.main(ev)
+        check("evaluate: refuses resumed scores after a scan changed", rc4 == 2)
+
+        # One effective protocol: overrides are executed and recorded identically.
+        ov = ["--run", fixed, "--data-root", data, "--splits", "test", "--no-tune-thresholds", "--ensemble-n", "1",
+              "--no-tta", "--case-seed", "7", "--output", os.path.join(work, "ov.json")]
+        rc = evaluate.main(ov)
+        out_spec = json.load(open(os.path.join(work, "ov.json")))["evaluation_spec"]
+        head_spec = json.loads(open(os.path.join(work, "ov.json.progress.jsonl")).readline())["settings"]["evaluation_spec"]
+        check("evaluate: executed overrides, progress header and saved spec agree",
+              rc == 0 and all(spec["ensemble_n"] == 1 and spec["tta"] is False and spec["case_seed"] == 7
+                              and spec["tuned"] is False for spec in (out_spec, head_spec)))
 
         # Ensemble of two runs with threshold tuning: predictions aligned by case ID.
         rc = evaluate.main(["--run", fixed, "--run", os.path.join(runs, "fixed_plain"), "--data-root", data,
@@ -97,7 +134,8 @@ def main() -> int:
                               "--thresholds", "WT=0.9"])
         check("predict: refuses another input folder and a mismatched --from-probs decode", (rc_in, rc_fp) == (2, 2))
 
-        rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--nested-regions",
+        rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--no-tune-thresholds",
+                            "--nested-regions",
                             "--hd95-surface", "--full-resolution", "--brats-empty",
                             "--output", os.path.join(work, "eval.json")])
         res = json.load(open(os.path.join(work, "eval.json")))

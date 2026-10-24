@@ -18,10 +18,10 @@ done
 (cd "$RUN" && sha256sum -c SHA256SUMS) || { echo "FAILED: the files do not match SHA256SUMS"; exit 2; }
 echo "best.pth sha256: $(sha256sum "$RUN/best.pth" | cut -d' ' -f1)"
 
-# The reported setting, stated explicitly: ensemble x4 + flips, thresholds and clean-up chosen on
-# validation, full resolution, BraTS empty-region scoring, independent (non-nested) region masks as
+# The reported setting, stated explicitly: ensemble x4 + flips, the thresholds and clean-up chosen on
+# validation (fixed here, not re-tuned), full resolution, BraTS empty-region scoring, independent (non-nested) region masks as
 # originally scored, surface HD95 in mm (medpy convention), test split.
-python evaluate.py --run "$RUN" --data-root "$DATA" --splits test --ensemble-n 4 \
+python evaluate.py --run "$RUN" --data-root "$DATA" --splits test --ensemble-n 4 --no-tune-thresholds \
   --thresholds WT=0.65,TC=0.65,ET=0.6 --min-component WT=400,TC=25,ET=400 \
   --full-resolution --brats-empty --no-nested-regions --hd95-surface --hd95-convention medpy --output "$RUN/reproduce.json"
 

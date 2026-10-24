@@ -71,13 +71,15 @@ def final_report(cfg, out_dir, ck_ep, test_plain, test, hist, n_params, train_ti
 
 
 def save_per_case(rows, out_dir, name="test_per_case.csv"):
-    r"""Write per-case Dice (one row per case) as CSV."""
+    r"""Write per-case Dice (one row per case) as CSV, with HD95 and its status when they were scored."""
+    extra = [f"{r}_{k}" for r in REGIONS for k in ("hd95", "hd95_status")] if rows and "WT_hd95" in rows[0] else []
     with open(os.path.join(out_dir, name), "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["case"] + REGIONS + ["mean"])
+        w.writerow(["case"] + REGIONS + ["mean"] + extra)
         for row in rows:
             w.writerow([row["case"]] + [f"{row[r]:.6f}" for r in REGIONS]
-                       + [f"{np.mean([row[r] for r in REGIONS]):.6f}"])
+                       + [f"{np.mean([row[r] for r in REGIONS]):.6f}"]
+                       + [f"{row[k]:.4f}" if isinstance(row[k], float) else row[k] for k in extra])
 
 
 def load_per_case(out_dir, name="test_per_case.csv"):

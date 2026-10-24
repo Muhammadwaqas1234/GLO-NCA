@@ -36,8 +36,12 @@ def load_spec(path):
 
 
 def check_specs(paths, allow_mixed=False):
-    r"""Fail unless every input was scored under the same rules (or mixing is explicitly allowed)."""
+    r"""Fail unless every input has a scoring spec and all specs agree (or mixing is explicitly allowed)."""
     specs = {p: load_spec(p) for p in paths}
+    missing = [p for p, s in specs.items() if s is None]
+    if missing and not allow_mixed:
+        raise ValueError("no scoring specification for " + ", ".join(missing)
+                         + " (scored by older code?); use --allow-mixed-specs for an exploratory comparison")
     known = {p: s for p, s in specs.items() if s is not None}
     if len({json.dumps(s, sort_keys=True) for s in known.values()}) > 1 and not allow_mixed:
         raise ValueError("the inputs were scored under different rules: "
@@ -132,7 +136,7 @@ def main(argv=None) -> int:
                                          ".jsonl; several seeds as a comma-separated list")
     ap.add_argument("b", nargs="?", help="proposed: same formats as a, with the same number of seeds")
     ap.add_argument("--allow-mixed-specs", action="store_true",
-                    help="compare inputs scored under different rules (resolution, empty rule, nesting, HD95)")
+                    help="compare inputs scored under different or unknown rules (exploratory; recorded)")
     ap.add_argument("--contrast", action="append", default=[], metavar="NAME=A::B",
                     help="one contrast of a family (repeatable); A and B as above, separated by ::. The primary mean-Dice "
                          "p-values are Holm-corrected across all contrasts")

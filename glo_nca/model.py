@@ -79,6 +79,17 @@ LEGACY_LAYER_NAMES = {"se.fc1.": "se.fc_reduce.", "se.fc2.": "se.fc_expand.", "p
                       "ln.": "layer_norm.", "gc.": "spatial_gate.", "glob.": "global_context."}
 
 
+def migrate_state_dict(state_dict, prefix=""):
+    r"""Rename layer keys written before the renaming (under ``prefix``) to the current names, in place."""
+    for key in [k for k in state_dict if k.startswith(prefix)]:
+        rest = key[len(prefix):]
+        for old, new in LEGACY_LAYER_NAMES.items():
+            if rest.startswith(old):
+                state_dict[prefix + new + rest[len(old):]] = state_dict.pop(key)
+                break
+    return state_dict
+
+
 class GLONCACell(nn.Module):
     r"""GLO-NCA cell: perception, SE and global-context blocks, and a stochastic update."""
     def __init__(self, channel_n, skip_prob, device, hidden_size=128, input_channels=1, init_method="standard", kernel_size=7, groups=False, use_se=False, se_reduction=4, use_spatial=False, dropout=0.0, use_global=False, norm="batch"):
@@ -124,12 +135,7 @@ class GLONCACell(nn.Module):
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         r"""Load a state dict, translating layer names of checkpoints written before the renaming."""
-        for key in [k for k in state_dict if k.startswith(prefix)]:
-            rest = key[len(prefix):]
-            for old, new in LEGACY_LAYER_NAMES.items():
-                if rest.startswith(old):
-                    state_dict[prefix + new + rest[len(old):]] = state_dict.pop(key)
-                    break
+        migrate_state_dict(state_dict, prefix)
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def perceive(self, x):

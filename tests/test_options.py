@@ -653,7 +653,7 @@ def test_contrast_family():
                     w.writerow([f"BraTS2021_{i:05d}", *v, sum(v) / 3])
         write("a.csv", 0.0); write("b.csv", 0.05); write("c.csv", 0.0)
         rc = compare_runs.main(["--contrast", f"big={d}/a.csv::{d}/b.csv", "--contrast", f"none={d}/a.csv::{d}/c.csv",
-                                "--boot", "200", "--output", f"{d}/fam.json"])
+                                "--boot", "200", "--allow-mixed-specs", "--output", f"{d}/fam.json"])
         fam = _json.load(open(f"{d}/fam.json"))["contrasts"]
     check("contrast family: Holm across contrasts", rc == 0 and fam["big"]["p_holm_family"] >= fam["big"]["results"]["mean"]["p_wilcoxon"]
           and fam["big"]["p_holm_family"] < 0.05)
@@ -697,6 +697,79 @@ def test_legacy_checkpoint_names():
           any(k != old_name(k) for k in new) and all(torch.equal(cell.state_dict()[k], v) for k, v in new.items()))
 
 
+def test_ema_legacy_states():
+    r"""EMA states with old layer names load, update, save and reload; a wrong architecture fails clearly."""
+    import torch
+    from glo_nca.model import LEGACY_LAYER_NAMES, GLONCACell
+    from glo_nca.trainer import EMA
+    cells = [GLONCACell(24, 0.6, "cpu", 32, kernel_size=k, input_channels=4, use_se=True, use_spatial=True)
+             for k in (7, 3)]
+    reverse = {v: k for k, v in LEGACY_LAYER_NAMES.items()}
+    old = lambda k: next((o + k[len(n):] for n, o in reverse.items() if k.startswith(n)), k)
+    legacy = [{old(k): torch.randn_like(v) for k, v in c.state_dict().items()} for c in cells]
+    ema = EMA(cells, 0.999)
+    ema.load([dict(s) for s in legacy])
+    ema.update()
+    with tempfile.TemporaryDirectory() as d:
+        torch.save(ema.states, os.path.join(d, "ema.pth"))
+        again = EMA(cells, 0.999)
+        again.load(torch.load(os.path.join(d, "ema.pth"), weights_only=False))
+    same = all(torch.equal(a[k], b[k]) for a, b in zip(ema.states, again.states) for k in a)
+    try:
+        EMA([GLONCACell(24, 0.6, "cpu", 16, kernel_size=3, input_channels=4)], 0.999).load([legacy[1]])
+        mismatch = False
+    except ValueError:
+        mismatch = True
+    check("EMA: old names load, update, save, reload; wrong model refused",
+          same and set(ema.states[0]) == set(cells[0].state_dict()) and mismatch)
+
+
+def test_hd95_denominators():
+    r"""Final scoring reports HD95 denominators and failure counts, also per case."""
+    from glo_nca.evaluation import score
+    gt = np.zeros((12, 12, 12, 3), np.uint8)
+    gt[3:9, 3:9, 3:9, :] = 1
+    def case(name, pred_et, gt_et):
+        g = gt.copy(); g[..., 2] = gt_et
+        p = np.zeros(g.shape, np.float32); p[..., :2] = g[..., :2]; p[..., 2] = pred_et
+        return name, p, g
+    full = gt[..., 2].astype(np.float32)
+    part = np.zeros_like(full); part[4:8, 4:8, 4:8] = 1
+    empty = np.zeros_like(full)
+    cases = [case("perfect", full, gt[..., 2]), case("partial", part, gt[..., 2]),
+             case("missed", empty, gt[..., 2]), case("false_positive", full, empty.astype(np.uint8)),
+             case("both_empty", empty, empty.astype(np.uint8))]
+    rows = []
+    th, mc = {r: 0.5 for r in ("WT", "TC", "ET")}, {r: 0 for r in ("WT", "TC", "ET")}
+    et = score(cases, th, mc, empty_one=True, surface_hd95="medpy", per_case=rows)["ET"]
+    status = {r["case"]: r["ET_hd95_status"] for r in rows}
+    check("HD95: denominators and failure counts in summary and per case",
+          et["cases"] == 5 and et["hd95_cases"] == 3 and et["hd95_missed"] == 1 and et["hd95_false_positive"] == 1
+          and et["both_empty"] == 1 and status == {"perfect": "defined", "partial": "defined", "missed": "missed",
+                                                   "false_positive": "false_positive", "both_empty": "both_empty"},
+          f"defined {et['hd95_cases']} of {et['cases']}")
+
+
+def test_missing_spec_refused():
+    r"""compare_runs refuses inputs without a scoring specification unless explicitly allowed."""
+    import csv as _csv, json as _json
+    from glo_nca.cli.compare_runs import check_specs
+    spec = {"metric_version": 2, "full_resolution": True, "empty_region": "brats (x)", "nested_regions": True,
+            "hd95": "surface, medpy convention, mm from scan spacing"}
+    with tempfile.TemporaryDirectory() as d:
+        for name, with_spec in (("a", True), ("b", True), ("c", False)):
+            os.makedirs(os.path.join(d, name))
+            with open(os.path.join(d, name, "test_per_case.csv"), "w", newline="") as fh:
+                _csv.writer(fh).writerow(["case", "WT", "TC", "ET", "mean"])
+            if with_spec:
+                _json.dump(spec, open(os.path.join(d, name, "test_per_case_spec.json"), "w"))
+        p = lambda n: os.path.join(d, n)
+        ok_known = bool(check_specs([p("a"), p("b")]))
+        refused = _raises(lambda: check_specs([p("a"), p("c")]))
+        allowed = bool(check_specs([p("a"), p("c")], allow_mixed=True))
+    check("compare_runs: missing spec refused unless allowed", ok_known and refused and allowed)
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -705,7 +778,8 @@ if __name__ == "__main__":
               test_cache_fingerprint, test_grad_checkpoint, test_bf16_and_case_seed, test_run_info,
               test_hd95_reference, test_ablation_configs, test_rng_untouched, test_forward_default,
               test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
-              test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names):
+              test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names,
+              test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

@@ -374,7 +374,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
     surface_hd95 is False (legacy voxel HD95), True (surface, medpy convention) or a convention name;
     per_case, when given, receives one row per case with the same values.
     """
-    acc = {r: {"dice": [], "iou": [], "hd95": []} for r in REGIONS}
+    acc = {r: {"dice": [], "iou": [], "hd95": [], "status": []} for r in REGIONS}
     for case, prob, gt, spacing in _pairs(cases, dataset, full_resolution):
         masks = decode_regions(prob, thresholds, min_component, nested=nested)
         for i, r in enumerate(REGIONS):
@@ -386,15 +386,33 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
             acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0),
                                                convention=_conv(surface_hd95))
                                   if surface_hd95 else hd95_voxel_legacy(pf, tf))
+            acc[r]["status"].append(hd95_status(p, t))
         if per_case is not None:
             per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS},
-                             **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS}})
+                             **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS},
+                             **{f"{r}_hd95_status": acc[r]["status"][-1] for r in REGIONS}})
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
+        status = acc[r]["status"]
         out[r] = {"dice": float(np.mean(acc[r]["dice"])), "iou": float(np.mean(acc[r]["iou"])),
-                  "hd95": float(np.mean(hd)) if hd else float("nan")}
+                  # Conditional on the cases where HD95 is defined; the failures are counted separately.
+                  "hd95": float(np.mean(hd)) if hd else float("nan"),
+                  "hd95_median": float(np.median(hd)) if hd else float("nan"),
+                  "cases": len(status), "hd95_cases": len(hd),
+                  "hd95_missed": status.count("missed"), "hd95_false_positive": status.count("false_positive"),
+                  "both_empty": status.count("both_empty")}
     return out
+
+
+def hd95_status(pred, target):
+    r"""Why HD95 is or is not defined: 'defined', 'both_empty', 'missed' or 'false_positive'."""
+    p, t = bool(np.any(pred)), bool(np.any(target))
+    if p and t:
+        return "defined"
+    if not p and not t:
+        return "both_empty"
+    return "missed" if t else "false_positive"
 
 
 def final_evaluation(cfg, dataset, val_cases, test_cases):
@@ -427,8 +445,8 @@ def evaluation_spec(cfg, thresholds=None, min_component=None):
             "nested_regions": cfg.NESTED_REGIONS,
             "hd95": (f"surface, {cfg.HD95_CONVENTION} convention, "
                      + ("mm from scan spacing" if cfg.FULL_RESOLUTION_EVAL else "working-grid voxels"))
-            if cfg.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined, excluded and counted",
-            "thresholds": thresholds, "min_component_voxels": min_component,
+            if cfg.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined: excluded from the conditional mean, counted as missed or false_positive",
+            "tuned": cfg.TUNE_THRESHOLDS, "thresholds": thresholds, "min_component_voxels": min_component,
             "ensemble_n": cfg.ENSEMBLE_N, "tta": cfg.USE_TTA, "case_seed": cfg.CASE_SEED,
             "rows": "single pass and ensemble at threshold 0.5, then tuned post-processing, all with this spec",
             "validation_selection": "working grid, threshold 0.5"

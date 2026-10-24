@@ -7,13 +7,14 @@ Text for the thesis chapters, matching the final implementation (repository `mai
 
 **Research questions.**
 
-- **RQ1.** Can a compact two-level neural cellular automata (NCA) cascade with about 30,000 parameters
-  segment adult glioma sub-regions (WT, TC, ET) on multi-parametric MRI at an accuracy close to that of
-  much larger models? *(Internal test, 189 patients; official BraTS 2023 validation on Synapse, 219
-  cases, compared with published results on the same set.)*
-- **RQ2.** Do the global-context blocks of the cell (channel recalibration, SE, and the spatial gate)
+- **RQ1.** How close does a compact two-level neural cellular automata (NCA) cascade with about
+  30,000 parameters come to much larger models in adult glioma segmentation (WT, TC, ET), measured as
+  the gap in mean Dice to published results on the same official validation set? *(Internal test, 189
+  patients; official BraTS 2023 validation on Synapse, 219 cases. The published results were obtained
+  with other training budgets and are reported as context, not as a controlled comparison.)*
+- **RQ2.** Do the context blocks of the cell (channel recalibration, SE, and the spatial gate)
   improve segmentation over the same multiscale NCA without them, trained with the same recipe?
-  *(GLO-NCA against the run without global context; paired per-patient statistics.)*
+  *(GLO-NCA against the run without SE and spatial gating; paired per-patient statistics.)*
 - **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
   alone? *(Single-modality variant and leave-one-modality-out at inference.)*
 - **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
@@ -47,7 +48,7 @@ of this thesis are:
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
-| Analysis | Ablation design (without global context, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Analysis | Ablation design (without SE and spatial gating, without multi-modal fusion), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## 2. Corrections to the proposal
@@ -248,10 +249,12 @@ with the same final decoder at full resolution. The study has three runs; the se
 | Run | Config | Difference | Parameters | Question |
 |---|---|---|---|---|
 | GLO-NCA | `fixed` | — | 30,138 | reference |
-| Without global context | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2: do the context blocks help? |
+| Without SE and spatial gating | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2: do the context blocks help? |
 | Without multi-modal fusion | `fixed_single` | contrast-enhanced T1 only | 30,138* | RQ3: does fusing the four modalities help? |
 
-Removing the context blocks also removes 2,010 parameters (7%). A difference between the first two runs
+The second run is named after what it removes: batch normalisation still uses statistics of the whole
+volume, so it is not free of all global information. Removing the context blocks also removes 2,010
+parameters (7%). A difference between the first two runs
 therefore reflects the blocks together with this capacity difference; a capacity-matched control
 (`fixed_plain_wide`, 30,078 parameters) is available but not part of this study.
 
@@ -268,7 +271,7 @@ split and frozen protocol. The confidence intervals therefore cover patient vari
 training-seed variation; the smallest effect of interest is fixed in advance at 0.01 mean Dice, and
 differences are reported as exploratory evidence about each mechanism, not as established superiority.
 
-**Baselines.** The run without global context (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
+**Baselines.** The run without SE and spatial gating (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
 or global block, trained with the same recipe) is the multiscale-NCA baseline in the style of M3D-NCA,
 so the NCA lineage is compared under identical data, training and evaluation. Larger segmentation
 models (for example nnU-Net and Swin UNETR) are not retrained; they are compared through their published
