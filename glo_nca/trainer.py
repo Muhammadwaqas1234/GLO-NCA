@@ -148,6 +148,9 @@ def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
     DATA_ROOT = data_root
     # The configured GPU when one is present, otherwise the CPU.
     dev = torch.device("cuda:0" if torch.cuda.is_available() and torch.cuda.device_count() else "cpu")
+    # Cloud runs set GLO_REQUIRE_GPU, so a GPU that fails to initialise stops the run instead of training on the CPU.
+    if os.environ.get("GLO_REQUIRE_GPU") == "1" and dev.type != "cuda":
+        raise RuntimeError("GLO_REQUIRE_GPU is set but no CUDA device is available")
     device = cfg.DEVICE if dev.type == "cuda" else "cpu"
     config = [{
         "img_path": DATA_ROOT, "label_path": DATA_ROOT, "model_path": os.path.join(out_dir, "m"),

@@ -25,7 +25,7 @@ trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' glo-nca-cascade:latest 2>/dev/null || true)"
 GIT_COMMIT="$(git -C "${GLO_WORKSPACE:-/opt/glo-nca-cascade}" rev-parse HEAD 2>/dev/null || true)"
 COMMON=(--rm --gpus all --shm-size=8g -v "${GLO_DATA}:${GLO_DATA}:ro" -v "${OUT}:/out"
-        -e MPLBACKEND=Agg -e GLO_IMAGE_DIGEST="${IMAGE_ID}" -e GLO_GIT_COMMIT="${GIT_COMMIT}"
+        -e MPLBACKEND=Agg -e GLO_REQUIRE_GPU=1 -e GLO_IMAGE_DIGEST="${IMAGE_ID}" -e GLO_GIT_COMMIT="${GIT_COMMIT}"
         glo-nca-cascade:latest)
 set +e
 if [[ "${GLO_MODE}" == "resume" ]]; then

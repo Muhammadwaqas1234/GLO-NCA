@@ -6,6 +6,8 @@ load_config
 log "GLO-NCA cascade VM setup (idempotent)"
 command -v docker >/dev/null 2>&1 || die "docker missing (Deep Learning VM images ship it)."
 pass "docker present"
+# Persistence mode keeps the driver initialised, so concurrent containers do not race on GPU start-up.
+command -v nvidia-smi >/dev/null 2>&1 && sudo nvidia-smi -pm 1 >/dev/null && pass "GPU persistence mode on"
 
 REMOTE="$(git -C "${REPO_DIR}" remote get-url origin 2>/dev/null || echo https://github.com/Muhammadwaqas1234/GLO-NCA.git)"
 if [[ -d "${GLO_WORKSPACE}/.git" ]]; then
