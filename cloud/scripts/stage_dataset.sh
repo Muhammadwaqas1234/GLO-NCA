@@ -21,6 +21,8 @@ DEST="gs://${GCS_BUCKET}/${DATA_PREFIX}"
 KAGGLE_KEY="${KAGGLE_CONFIG_DIR:-${HOME}/.kaggle}/kaggle.json"
 [[ -f "${KAGGLE_KEY}" ]] || die "Kaggle API key not found at ${KAGGLE_KEY}"
 need gcloud
+# SSH through Identity-Aware Proxy (port 443), so it works where outbound port 22 is blocked.
+SSH=(--project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" --tunnel-through-iap --strict-host-key-checking=no)
 
 if gcs_exists "${DEST}/MANIFEST.txt"; then
   pass "already staged: ${DEST} ($(gcs cat "${DEST}/MANIFEST.txt" | grep -m1 '^cases='))"
@@ -40,18 +42,18 @@ trap cleanup EXIT
 gcloud compute instances create "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" \
   --machine-type e2-standard-4 --boot-disk-size 100GB --boot-disk-type pd-balanced \
   --image-family ubuntu-2204-lts --image-project ubuntu-os-cloud --scopes storage-rw >/dev/null
+ready=0
 for _ in $(seq 30); do
-  gcloud compute ssh "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" --command true \
-    >/dev/null 2>&1 && break
+  gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" --command true >/dev/null 2>&1 && { ready=1; break; }
   sleep 10
 done
+[[ "${ready}" == 1 ]] || die "no SSH to ${STAGE_VM} after 5 minutes"
 
-# The key travels by scp into a private directory and is shredded on the VM after the download.
-gcloud compute ssh "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" \
-  --command 'mkdir -p -m 700 ~/.kaggle' >/dev/null
-gcloud compute scp "${KAGGLE_KEY}" "${STAGE_VM}:~/.kaggle/kaggle.json" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" >/dev/null
+# The key travels over SSH stdin into a private file and is shredded on the VM after the download.
+gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" \
+  --command 'umask 077 && mkdir -p ~/.kaggle && cat > ~/.kaggle/kaggle.json' < "${KAGGLE_KEY}" >/dev/null
 
-gcloud compute ssh "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" --command "bash -s" <<REMOTE
+gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" --command "bash -s" <<REMOTE
 set -euo pipefail
 chmod 600 ~/.kaggle/kaggle.json
 trap 'shred -u ~/.kaggle/kaggle.json 2>/dev/null || rm -f ~/.kaggle/kaggle.json' EXIT

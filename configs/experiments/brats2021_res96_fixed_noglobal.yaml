@@ -1,0 +1,12 @@
+# Ablation "without global context": every source of context beyond the local neighbourhood is
+# removed -- no SE block, no spatial gate and no coarse level. The fine 96^3 level runs alone, trained
+# on the same 48^3 patches and scored on the whole volume with the same frozen protocol.
+base: brats2021_res96_fixed.yaml
+
+experiment:
+  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-NOGLOBAL
+
+model:
+  levels: 1                       # the fine level alone, without the coarse level
+  use_se: false                   # no squeeze-and-excitation block
+  use_spatial: false              # no spatial gate

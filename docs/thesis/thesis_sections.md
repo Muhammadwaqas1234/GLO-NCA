@@ -12,10 +12,9 @@ Text for the thesis chapters, matching the final implementation (repository `mai
   the gap in mean Dice to published results on the same official validation set? *(Internal test, 189
   patients; official BraTS 2023 validation on Synapse, 219 cases. The published results were obtained
   with other training budgets and are reported as context, not as a controlled comparison.)*
-- **RQ2.** (a) Do the context blocks of the cell (channel recalibration, SE, and the spatial gate)
-  improve segmentation over the same multiscale NCA without them, and which block contributes?
-  (b) Does an explicit attention-pooled global-context block help further? *(2×2 factorial of SE and
-  the spatial gate, plus the global-context run; paired per-patient statistics.)*
+- **RQ2.** Do the model's sources of context beyond the local neighbourhood (channel recalibration,
+  SE, the spatial gate and the coarse cascade level) improve segmentation over the fine NCA level
+  alone? *(GLO-NCA against the run without global context; paired per-patient statistics.)*
 - **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
   alone? *(Single-modality variant and leave-one-modality-out at inference.)*
 - **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
@@ -49,7 +48,7 @@ of this thesis are:
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
-| Analysis | Ablation design (2×2 factorial of SE and spatial gating, global-context block, multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Analysis | Ablation design (global context: SE, spatial gate and coarse level removed together; multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## 2. Corrections to the proposal
@@ -223,9 +222,11 @@ normalisation, because a constant added before the per-volume batch normalisatio
 its centring. A full-cell test confirms that the branch changes the output and receives gradients. The thesis states this directly and turns it into the
 experimental question:
 
-> Do the context blocks of GLO-NCA (channel recalibration and spatial gating) improve patient-level
-> glioma segmentation over an otherwise identical multiscale NCA, which block contributes, and does
-> an explicit attention-pooled global context help further?
+> Do the sources of context in GLO-NCA beyond the local neighbourhood (channel recalibration, spatial
+> gating and the coarse cascade level) improve patient-level glioma segmentation over the fine NCA
+> level alone?
+
+The attention-pooled global block is implemented but not evaluated in this thesis.
 
 The model name GLO-NCA is kept for the family of models; the reported model is described as a
 multiscale NCA with channel recalibration (SE) and local spatial gating.
@@ -243,28 +244,24 @@ requires the per-voxel normalisation control (`model.norm: layer`) without SE.
 
 All variants are retrained with the corrected configuration (`brats2021_res96_fixed.yaml`: loss on
 every region, ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored
-with the same final decoder at full resolution. The study has six runs; each differs from GLO-NCA in one respect.
+with the same final decoder at full resolution. The study has three runs; each ablation removes one mechanism.
 
-| Run | Config | Difference | Parameters | Question |
+| Run | Config | Removed | Parameters | Question |
 |---|---|---|---|---|
 | GLO-NCA | `fixed` | — | 30,138 | reference |
-| Without SE and spatial gating | `fixed_plain` | no SE, no spatial gate | 28,128 | RQ2a: do the context blocks help? |
-| SE only | `fixed_se` | no spatial gate | 28,764 | RQ2a: contribution of SE |
-| Spatial gate only | `fixed_spatial` | no SE | 29,502 | RQ2a: contribution of the spatial gate |
-| With global context | `fixed_global` | plus attention-pooled global context after normalisation | 32,304 | RQ2b: does explicit global aggregation help? |
-| Without multi-modal fusion | `fixed_single` | T1ce only; the other three input slots stay empty | 30,138 | RQ3: does fusing the four modalities help? |
+| Without global context | `fixed_noglobal` | SE, spatial gate and the coarse 48³ level; the fine level runs alone | 10,272 | RQ2: does context beyond the local neighbourhood help? |
+| Without multi-modal fusion | `fixed_single` | FLAIR, T1 and T2; T1ce only, the other three input slots stay empty | 30,138 | RQ3: does fusing the four modalities help? |
 
-The first four runs form a 2×2 factorial design (SE on or off × spatial gate on or off), so the
-contribution of each block and their interaction can be estimated. The single-modality run keeps the
-four input slots of the full model and leaves three of them empty, so the cell keeps its 4 input,
-3 output and 17 hidden channels and differs from GLO-NCA only in the information it receives.
-
-The second run is named after what it removes: batch normalisation still uses statistics of the whole
-volume, so it is not free of all global information. Removing both context blocks also removes 2,010
-parameters (7%), so a difference between GLO-NCA and the run without them reflects the blocks together
-with this capacity difference; a capacity-matched control (`fixed_plain_wide`, 30,078 parameters) is
-available but not part of this study.
-
+The run without global context removes every route by which the model sees beyond a cell's
+neighbourhood: SE pools over the whole volume, the spatial gate aggregates a 7³ window, and the
+coarse level carries a low-resolution view of the whole brain into the fine level. The fine level
+alone is trained on the same 48³ patches and scored on the whole 96³ volume with the same protocol.
+Batch normalisation still uses statistics of the whole volume, so the run is not free of all global
+information. The coarse level is a cell of its own, so this run also has a third of the parameters
+(10,272 against 30,138); matching them would need a hidden layer of about 420 units, which would be a
+different model, so the difference is reported as part of what is removed. The single-modality run
+keeps the four input slots of the full model and leaves three of them empty, so the cell keeps its
+4 input, 3 output and 17 hidden channels and differs from GLO-NCA only in the information it receives.
 
 The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
 patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);
@@ -275,9 +272,9 @@ split and frozen protocol. The confidence intervals therefore cover patient vari
 training-seed variation; the smallest effect of interest is fixed in advance at 0.01 mean Dice, and
 differences are reported as exploratory evidence about each mechanism, not as established superiority.
 
-**Baselines.** The run without SE and spatial gating (`fixed_plain`: the same two-level NCA cascade without SE, spatial gate
-or global block, trained with the same recipe) is the multiscale-NCA baseline in the style of M3D-NCA,
-so the NCA lineage is compared under identical data, training and evaluation. Larger segmentation
+**Baselines.** The run without global context (`fixed_noglobal`: a single NCA level without SE,
+spatial gate or coarse level, trained with the same recipe) is the local-only NCA baseline, so the
+NCA lineage is compared under identical data, training and evaluation. Larger segmentation
 models (for example nnU-Net and Swin UNETR) are not retrained; they are compared through their published
 results on the BraTS 2023 adult glioma validation set, which is scored by the challenge organisers with
 the same official evaluation as the submissions of this thesis. Results from other datasets, splits or

@@ -59,6 +59,7 @@ class GLONCAConfig:
     CACHE: str = "memory"
     # Review fixes; off by default so earlier runs stay reproducible.
     USE_GLOBAL: bool = False
+    LEVELS: int = 2                  # 2: coarse-to-fine cascade; 1: the fine level alone
     ALL_REGION_LOSS: bool = False
     VALIDATE_EMA: bool = False
     CROP_ET_PROB: float = 0.0
@@ -117,6 +118,13 @@ def _set(raw: Dict[str, Any], dotted: str, value: str) -> None:
     raw[section][key] = yaml.safe_load(value)
 
 
+def _levels(value):
+    r"""Number of cascade levels: 2 (coarse to fine) or 1 (the fine level alone)."""
+    if int(value) not in (1, 2):
+        raise ValueError(f"model.levels must be 1 or 2, got {value}")
+    return int(value)
+
+
 def load_config(path: str, overrides: Optional[List[str]] = None) -> GLONCAConfig:
     r"""Load a YAML config, resolve its base file and apply overrides."""
     raw = _read(path)
@@ -160,6 +168,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLONCAConfi
         CACHE=str(d.get("cache", "memory")),
         CACHE_DIR=d.get("cache_dir"),
         USE_GLOBAL=bool(m.get("use_global", False)),
+        LEVELS=_levels(m.get("levels", 2)),
         ALL_REGION_LOSS=bool(l.get("all_regions", False)),
         VALIDATE_EMA=bool(t.get("validate_ema", False)),
         CROP_ET_PROB=float(d.get("crop_et_prob", 0.0)),

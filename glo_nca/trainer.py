@@ -143,7 +143,7 @@ def with_weights(models, states, fn):
 
 
 def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
-    r"""Dataset, the two NCA levels and the agent, wired to the given (train, val, test) split."""
+    r"""Dataset, the NCA levels (two, or the fine level alone) and the agent, wired to the given split."""
     tr, va, te = splits
     DATA_ROOT = data_root
     # The configured GPU when one is present, otherwise the CPU.
@@ -156,9 +156,9 @@ def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
         "betas": (0.9, 0.99), "weight_decay": 1e-4,
         "save_interval": 10**9, "evaluate_interval": 10**9, "n_epoch": cfg.EPOCHS,
         "batch_size": cfg.BATCH_SIZE, "batch_duplication": 1,
-        "channel_n": cfg.CHANNEL_N, "inference_steps": cfg.STEPS, "cell_skip_prob": cfg.SKIP_PROB,
+        "channel_n": cfg.CHANNEL_N, "inference_steps": cfg.STEPS[-cfg.LEVELS:], "cell_skip_prob": cfg.SKIP_PROB,
         "input_channels": len(cfg.MODALITIES), "output_channels": 3, "hidden_size": cfg.HIDDEN,
-        "train_model": 1,
+        "train_model": cfg.LEVELS - 1,
         "input_size": cfg.INPUT_SIZE, "scale_factor": 2,
         "data_split": [0.7, 0.15, 0.15], "keep_original_scale": True, "rescale": True,
         "patchify": True, "prioritize_masks": 0.7, "prioritize_region": cfg.PRIORITIZE_REGION,
@@ -175,7 +175,7 @@ def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
                      use_global=cfg.USE_GLOBAL, norm=cfg.NORM),
           GLONCACell(cfg.CHANNEL_N, cfg.SKIP_PROB, dev, cfg.HIDDEN, kernel_size=3, input_channels=len(cfg.MODALITIES),
                      use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, dropout=cfg.DROPOUT,
-                     use_global=cfg.USE_GLOBAL, norm=cfg.NORM)]
+                     use_global=cfg.USE_GLOBAL, norm=cfg.NORM)][-cfg.LEVELS:]
     agent = CascadeAgent(cells)
     exp = Experiment(config, ds, cells, agent); ds.set_experiment(exp)
     agent.amp, agent.case_seed = cfg.AMP, cfg.CASE_SEED

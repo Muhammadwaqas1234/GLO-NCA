@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-r"""End-to-end check on synthetic data: train the fixed and plain configs, predict, re-score, compare, benchmark."""
+r"""End-to-end check on synthetic data: train the fixed, ablation and single-level configs, predict, re-score, compare, benchmark."""
 import csv
 import json
 import os
@@ -33,7 +33,7 @@ def main() -> int:
         data, runs = os.path.join(work, "syn"), os.path.join(work, "runs")
         subprocess.run([sys.executable, os.path.join(REPO, "tests", "make_synthetic_data.py"), data,
                         "--cases", "12"], check=True, capture_output=True)
-        for name in ("fixed", "fixed_plain", "fixed_single"):
+        for name in ("fixed", "fixed_plain", "fixed_single", "fixed_noglobal"):
             rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", f"brats2021_res96_{name}.yaml"),
                              "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL,
                              *(["--override", "data.modalities=[none,t1c,none,none]"] if name == "fixed_single" else [])])

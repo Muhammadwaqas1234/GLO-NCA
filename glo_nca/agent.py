@@ -156,6 +156,9 @@ class CascadeAgent:
 
         # Whole-volume inference runs without gradients unless keep_grad is set (receptive-field analysis).
         no_grad = full_img and not kwargs.get("keep_grad", False)
+        # The fine level alone trains on a patch of the full-resolution volume, as in the cascade.
+        if last == 0 and not full_img:
+            inputs_loc, targets_loc = self._single_level_patch(inputs, targets)
         with torch.no_grad() if no_grad else contextlib.nullcontext():
             for m in range(last + 1):
                 stp = steps[m] if isinstance(steps, list) else steps
@@ -183,6 +186,23 @@ class CascadeAgent:
             return None
         c = et[random.randrange(len(et))].tolist()
         return tuple(min(max(c[d] - size[d] // 2, 0), target.shape[d] - size[d]) for d in range(3))
+
+    def _single_level_patch(self, inputs, targets):
+        r"""One training patch per batch element for the fine level alone (ET-biased like the cascade)."""
+        size = self.exp.get_from_config('input_size')[0]
+        et_prob = self.exp.get_from_config('crop_et_prob') or 0.0
+        ins, tgs = [], []
+        for b in range(inputs.shape[0]):
+            pos = self._et_crop(targets[b], size) if et_prob > 0 and random.random() < et_prob else None
+            if pos is None:
+                pos = tuple(random.randint(0, inputs.shape[d + 1] - size[d]) for d in range(3))
+            x, y, z = pos
+            if et_prob > 0:
+                self.crop_stats[0] += int(targets[b, x:x+size[0], y:y+size[1], z:z+size[2], -1].any())
+                self.crop_stats[1] += 1
+            ins.append(inputs[b, x:x+size[0], y:y+size[1], z:z+size[2], :])
+            tgs.append(targets[b, x:x+size[0], y:y+size[1], z:z+size[2], :])
+        return torch.stack(ins), torch.stack(tgs)
 
     def _random_patch(self, inputs_full, targets_full, full_res, full_res_gt, m, scale_fac):
         r"""Crop one patch per batch element for the next level, consistently at every resolution."""
