@@ -2,7 +2,8 @@
 # systemd entrypoint: runs training in Docker with GCS sync, then a final sync and optional VM stop.
 set -euo pipefail
 # shellcheck disable=SC1091
-source /etc/glo-nca-cascade.env
+# The unit loads its own environment file (one per slot); fall back to the single-run file.
+[[ -n "${GLO_RUN_ID:-}" ]] || source /etc/glo-nca-cascade.env
 
 OUT="${GLO_OUT}"; RUN_ID="${GLO_RUN_ID}"; RUN_DIR="${OUT}/${RUN_ID}"
 GCS_DEST="gs://${GLO_BUCKET}/${GLO_EXP_PREFIX}/${RUN_ID}"
