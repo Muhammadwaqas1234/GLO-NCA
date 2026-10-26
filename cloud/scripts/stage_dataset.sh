@@ -58,13 +58,26 @@ mkdir -p -m 700 /root/.kaggle
 gcloud storage cp -q "${WORK}/kaggle.json" /root/.kaggle/kaggle.json || fail "key not readable"
 gcloud storage rm -q "${WORK}/kaggle.json" || true
 chmod 600 /root/.kaggle/kaggle.json
-apt-get -qq update >/dev/null && apt-get -qq install -y python3-pip >/dev/null || fail "apt"
-python3 -m pip install -q kaggle || fail "pip kaggle"
 mkdir -p /stage/raw /stage/brats2021 && cd /stage/raw
+# Credentials go to a private curl config file (not the command line); the download streams to disk.
+python3 -c 'import json; k = json.load(open("/root/.kaggle/kaggle.json")); print("user = \"%s:%s\"" % (k["username"], k["key"]))' \
+  > /root/.kaggle/curl.cfg || fail "key format"
+chmod 600 /root/.kaggle/curl.cfg; shred -u /root/.kaggle/kaggle.json
 echo "[\$(date -u +%T)] downloading"; push_log
-kaggle datasets download -d ${KAGGLE_DATASET} -f ${KAGGLE_FILE} -p . --quiet
-rc=\$?; shred -u /root/.kaggle/kaggle.json; [[ \$rc == 0 ]] || fail "kaggle download"
-for z in *.zip; do [[ -e "\$z" ]] && { python3 -m zipfile -e "\$z" . && rm -f "\$z" || fail "unzip"; }; done
+curl -sfL --retry 5 --retry-delay 10 -K /root/.kaggle/curl.cfg -o download.bin \
+  "https://www.kaggle.com/api/v1/datasets/download/${KAGGLE_DATASET}/${KAGGLE_FILE}" &
+pid=\$!
+while kill -0 \$pid 2>/dev/null; do
+  sleep 60; echo "[\$(date -u +%T)] downloading: \$(du -sh download.bin 2>/dev/null | cut -f1)"; push_log
+done
+wait \$pid; rc=\$?; shred -u /root/.kaggle/curl.cfg; [[ \$rc == 0 ]] || fail "download (curl exit \$rc)"
+# Kaggle may serve the file zipped.
+if python3 -c 'import sys, zipfile; sys.exit(0 if zipfile.is_zipfile("download.bin") else 1)'; then
+  python3 -m zipfile -e download.bin . && rm -f download.bin || fail "unzip"
+else
+  mv download.bin ${KAGGLE_FILE}
+fi
+[[ -s ${KAGGLE_FILE} ]] || fail "${KAGGLE_FILE} not in the download"
 echo "[\$(date -u +%T)] extracting"; push_log
 tar -xf ${KAGGLE_FILE} -C /stage/brats2021 && rm -f ${KAGGLE_FILE} || fail "tar"
 cd /stage/brats2021
