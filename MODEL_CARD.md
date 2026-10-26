@@ -3,6 +3,8 @@
 ## Model
 
 - Two-level neural cellular automata cascade (48³ → 96³), 30,138 parameters, checkpoint 0.13 MB.
+  These published weights are the first version, without the attention-pooled global-context block of
+  the final GLO-NCA (`brats2021_res96_glonca.yaml`, 32,304 parameters).
 - Each cell: learned depthwise perception, squeeze-and-excitation over channels, a local 7×7×7
   spatial gate, BatchNorm, and a stochastic update (update probability 0.4).
 - Input: T1, T1ce, T2 and FLAIR, foreground-cropped, resized to 96³ and z-normalised per scan.

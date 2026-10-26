@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .lesion import lesion_wise, penalised_hd95
 from .metrics import hd95_voxel_legacy, hd95_surface, iou_score
 
 from .config import REGIONS
@@ -166,7 +167,7 @@ def masks_to_label(masks, et_label=3):
 
 
 def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one=False,
-                  surface_hd95=False, nested=False, spacing=None):
+                  surface_hd95=False, nested=False, spacing=None, lesion=False):
     r"""Per-region Dice, IoU and (optionally) HD95 for one case; surface_hd95 uses the BraTS definition."""
     out = {}
     masks = decode_regions(prob, thresholds, min_component, nested=nested)
@@ -179,6 +180,10 @@ def _case_metrics(prob, gt, thresholds, min_component, with_hd95=True, empty_one
                   else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0), convention=_conv(surface_hd95))
                   if surface_hd95
                   else float(hd95_voxel_legacy(pf, tf))}
+        out[r]["status"] = hd95_status(p, t)
+        if lesion:
+            out[r]["lesion"] = lesion_wise(p, t, spacing=spacing or (1.0, 1.0, 1.0),
+                                           convention=_conv(surface_hd95) or "medpy")
     return out
 
 
@@ -192,12 +197,35 @@ def _mean_metrics(rows):
                   "hd95": float(np.mean(hd)) if hd else float("nan"),
                   "hd95_median": float(np.median(hd)) if hd else float("nan"),
                   "hd95_cases": len(hd), "cases": len(rows)}
+        if all("status" in x[r] for x in rows):
+            out[r].update(_hd95_summary([x[r]["hd95"] for x in rows], [x[r]["status"] for x in rows]))
+        if rows and all("lesion" in x[r] for x in rows):
+            out[r].update(_lesion_summary([x[r]["lesion"] for x in rows]))
     return out
+
+
+def _hd95_summary(values, status):
+    r"""HD95 over all cases with the BraTS rule for empty masks (penalty 374 mm), as mean, median and IQR."""
+    pen = [penalised_hd95(v, s) for v, s in zip(values, status)]
+    if not pen or any(math.isnan(v) for v in pen):
+        return {}                     # HD95 was not computed
+    q1, med, q3 = (float(x) for x in np.percentile(pen, [25, 50, 75]))
+    return {"hd95_penalised": float(np.mean(pen)), "hd95_penalised_median": med,
+            "hd95_penalised_q1": q1, "hd95_penalised_q3": q3}
+
+
+def _lesion_summary(rows):
+    r"""Mean lesion-wise Dice and HD95 over cases, with the lesion counts summed over cases."""
+    return {"lesion_dice": float(np.mean([x["dice"] for x in rows])),
+            "lesion_hd95": float(np.mean([x["hd95"] for x in rows])),
+            "lesion_hd95_median": float(np.median([x["hd95"] for x in rows])),
+            "lesions": int(sum(x["lesions"] for x in rows)),
+            **{f"lesions_{k}": int(sum(x[k] for x in rows)) for k in ("detected", "missed", "false_positive")}}
 
 
 def score_streaming(models, dataset, state, progress_path, thresholds, min_component,
                     full_resolution=False, with_hd95=True, empty_one=False, surface_hd95=False,
-                    nested=False):
+                    nested=False, lesion=False):
     r"""Score one split case by case into a resumable progress file, averaging ``models``."""
     done = {}
     if os.path.exists(progress_path):
@@ -225,7 +253,7 @@ def score_streaming(models, dataset, state, progress_path, thresholds, min_compo
                 prob, gt = to_full_resolution(dataset, case, prob)
                 spacing = scan_spacing(dataset, case)
             metrics = _case_metrics(prob, gt, thresholds, min_component, with_hd95, empty_one,
-                                    surface_hd95, nested, spacing)
+                                    surface_hd95, nested, spacing, lesion)
             row = {"split": state, "case": case, "metrics": metrics}
             if getattr(models[0][0], "last_seed", None) is not None:
                 row["seed"] = models[0][0].last_seed
@@ -367,13 +395,13 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
 
 
 def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False,
-          nested=False, surface_hd95=False, per_case=None):
+          nested=False, surface_hd95=False, per_case=None, lesion=False):
     r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up.
 
     surface_hd95 is False (legacy voxel HD95), True (surface, medpy convention) or a convention name;
     per_case, when given, receives one row per case with the same values.
     """
-    acc = {r: {"dice": [], "iou": [], "hd95": [], "status": []} for r in REGIONS}
+    acc = {r: {"dice": [], "iou": [], "hd95": [], "status": [], "lesion": []} for r in REGIONS}
     for case, prob, gt, spacing in _pairs(cases, dataset, full_resolution):
         masks = decode_regions(prob, thresholds, min_component, nested=nested)
         for i, r in enumerate(REGIONS):
@@ -386,10 +414,20 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
                                                convention=_conv(surface_hd95))
                                   if surface_hd95 else hd95_voxel_legacy(pf, tf))
             acc[r]["status"].append(hd95_status(p, t))
+            if lesion:
+                acc[r]["lesion"].append(lesion_wise(p, t, spacing=spacing or (1.0, 1.0, 1.0),
+                                                    convention=_conv(surface_hd95) or "medpy"))
         if per_case is not None:
-            per_case.append({"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS},
-                             **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS},
-                             **{f"{r}_hd95_status": acc[r]["status"][-1] for r in REGIONS}})
+            row = {"case": case, **{r: float(acc[r]["dice"][-1]) for r in REGIONS},
+                   **{f"{r}_hd95": float(acc[r]["hd95"][-1]) for r in REGIONS},
+                   **{f"{r}_hd95_status": acc[r]["status"][-1] for r in REGIONS}}
+            if lesion:
+                for r in REGIONS:
+                    lw = acc[r]["lesion"][-1]
+                    row.update({f"{r}_lesion_dice": lw["dice"], f"{r}_lesion_hd95": lw["hd95"],
+                                f"{r}_lesions": lw["lesions"], f"{r}_lesions_missed": lw["missed"],
+                                f"{r}_lesions_false_positive": lw["false_positive"]})
+            per_case.append(row)
     out = {}
     for r in REGIONS:
         hd = [v for v in acc[r]["hd95"] if not math.isnan(v)]
@@ -401,6 +439,10 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
                   "cases": len(status), "hd95_cases": len(hd),
                   "hd95_missed": status.count("missed"), "hd95_false_positive": status.count("false_positive"),
                   "both_empty": status.count("both_empty")}
+        if surface_hd95:
+            out[r].update(_hd95_summary(acc[r]["hd95"], status))
+        if lesion:
+            out[r].update(_lesion_summary(acc[r]["lesion"]))
     return out
 
 
@@ -427,7 +469,7 @@ def final_evaluation(cfg, dataset, val_cases, test_cases):
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
     test_rows = []
     test = score(test_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
-                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows)
+                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows, lesion=cfg.LESION_WISE)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
             "evaluation_spec": evaluation_spec(cfg, thresholds, min_component),
             "full_resolution": cfg.FULL_RESOLUTION_EVAL, "brats_empty": cfg.BRATS_EMPTY,
@@ -438,6 +480,7 @@ def final_evaluation(cfg, dataset, val_cases, test_cases):
 def evaluation_spec(cfg, thresholds=None, min_component=None):
     r"""The complete scoring specification, written next to every result."""
     from .metrics import METRIC_VERSION
+    from . import lesion as lesion_mod
     return {"metric_version": METRIC_VERSION, "full_resolution": cfg.FULL_RESOLUTION_EVAL,
             "empty_region": "brats (empty prediction of an absent region scores 1)" if cfg.BRATS_EMPTY
             else "v7 (absent region scores 0)",
@@ -445,6 +488,11 @@ def evaluation_spec(cfg, thresholds=None, min_component=None):
             "hd95": (f"surface, {cfg.HD95_CONVENTION} convention, "
                      + ("mm from scan spacing" if cfg.FULL_RESOLUTION_EVAL else "working-grid voxels"))
             if cfg.SURFACE_HD95 else "legacy voxel-based", "hd95_one_empty": "undefined: excluded from the conditional mean, counted as missed or false_positive",
+            "hd95_penalised": "all cases; 0 if both masks are empty, 374 mm if one is (BraTS rule)"
+            if cfg.SURFACE_HD95 else None,
+            "lesion_wise": (f"BraTS 2023 form: 26-connected lesions, matched within {lesion_mod.DILATION} voxels, "
+                            f"lesions under {lesion_mod.MIN_VOLUME} voxels not scored, misses and false positives "
+                            f"Dice 0 and HD95 {lesion_mod.PENALTY:g} mm") if cfg.LESION_WISE else False,
             "tuned": cfg.TUNE_THRESHOLDS, "thresholds": thresholds, "min_component_voxels": min_component,
             "ensemble_n": cfg.ENSEMBLE_N, "tta": cfg.USE_TTA, "case_seed": cfg.CASE_SEED,
             "rows": "single pass and ensemble at threshold 0.5, then tuned post-processing, all with this spec",

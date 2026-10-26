@@ -76,6 +76,7 @@ class GLONCAConfig:
     LOG_LIVE_AND_EMA: bool = False
     PERSISTENT_WORKERS: bool = False
     HD95_CONVENTION: str = "medpy"
+    LESION_WISE: bool = False        # also score lesion-wise Dice and HD95 (BraTS 2023 form)
     SPLIT_BY_PATIENT: bool = False
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -185,6 +186,7 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLONCAConfi
         LOG_LIVE_AND_EMA=bool(t.get("log_live_and_ema", False)),
         PERSISTENT_WORKERS=bool(t.get("persistent_workers", False)),
         HD95_CONVENTION=str(v.get("hd95_convention", "medpy")),
+        LESION_WISE=bool(v.get("lesion_wise", False)),
         SPLIT_BY_PATIENT=bool(d.get("split_by_patient", False)),
         raw=raw,
     )

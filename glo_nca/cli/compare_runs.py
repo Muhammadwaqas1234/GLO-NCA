@@ -7,11 +7,13 @@ import sys
 
 import numpy as np
 
+from glo_nca.lesion import penalised_hd95
+
 REGIONS = ["WT", "TC", "ET"]
 
 
 # Spec fields that define what a per-case score means; thresholds and seeds may differ between runs.
-SPEC_KEYS = ("metric_version", "full_resolution", "empty_region", "nested_regions", "hd95")
+SPEC_KEYS = ("metric_version", "full_resolution", "empty_region", "nested_regions", "hd95", "lesion_wise")
 
 
 def load_spec(path):
@@ -24,13 +26,14 @@ def load_spec(path):
         return {"full_resolution": s.get("full_resolution"), "nested_regions": s.get("nested_regions"),
                 "empty_region": "brats" if s.get("brats_empty") else "v7",
                 "hd95": (s.get("hd95_convention") if s.get("hd95_surface") else "legacy"),
-                "metric_version": s.get("metric_version")}
-    side = os.path.join(os.path.dirname(path), "test_per_case_spec.json")
+                "metric_version": s.get("metric_version"), "lesion_wise": bool(s.get("lesion_wise"))}
+    side = path[:-len(".csv")] + "_spec.json"        # test_per_case.csv -> test_per_case_spec.json
     if not os.path.exists(side):
         return None
     spec = json.load(open(side, encoding="utf-8"))
     out = {k: spec.get(k) for k in SPEC_KEYS}
     out["empty_region"] = "brats" if str(out["empty_region"]).startswith("brats") else "v7"
+    out["lesion_wise"] = bool(out["lesion_wise"])
     out["hd95"] = "legacy" if "legacy" in str(out["hd95"]) else str(out["hd95"]).split(",")[1].strip().split()[0]
     return out
 
@@ -49,7 +52,7 @@ def check_specs(paths, allow_mixed=False):
     return specs
 
 
-def load_scores(path):
+def load_scores(path, metric="dice"):
     r"""Per-case Dice from a run folder, a test_per_case.csv or an evaluate.py progress file (.jsonl)."""
     if os.path.isdir(path):
         path = os.path.join(path, "test_per_case.csv")
@@ -59,12 +62,30 @@ def load_scores(path):
             for line in fh:
                 row = json.loads(line)
                 if "case" in row and row.get("split", "test") == "test":
-                    out[row["case"]] = {r: float(row["metrics"][r]["dice"]) for r in REGIONS}
+                    out[row["case"]] = {r: _jsonl_value(row["metrics"][r], metric) for r in REGIONS}
     else:
         with open(path, newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                out[row["case"]] = {r: float(row[r]) for r in REGIONS}
+                out[row["case"]] = {r: _csv_value(row, r, metric) for r in REGIONS}
     return out
+
+
+def _jsonl_value(m, metric):
+    r"""One per-case value from an evaluate.py progress row."""
+    if metric == "dice":
+        return float(m["dice"])
+    if metric.startswith("lesion_"):
+        return float(m["lesion"][metric[len("lesion_"):]])
+    return penalised_hd95(float(m["hd95"]), m.get("status", "defined"))
+
+
+def _csv_value(row, region, metric):
+    r"""One per-case value from a per-case CSV; HD95 uses the BraTS rule for empty masks."""
+    if metric == "dice":
+        return float(row[region])
+    if metric == "hd95":
+        return penalised_hd95(float(row[f"{region}_hd95"]), row.get(f"{region}_hd95_status", "defined"))
+    return float(row[f"{region}_{metric}"])
 
 
 def patient_of(case):
@@ -140,6 +161,9 @@ def main(argv=None) -> int:
     ap.add_argument("--contrast", action="append", default=[], metavar="NAME=A::B",
                     help="one contrast of a family (repeatable); A and B as above, separated by ::. The primary mean-Dice "
                          "p-values are Holm-corrected across all contrasts")
+    ap.add_argument("--metric", default="dice", choices=["dice", "lesion_dice", "hd95", "lesion_hd95"],
+                    help="per-case metric to compare (default dice); HD95 (lower is better) uses 374 mm for a missed "
+                         "or false region")
     ap.add_argument("--boot", type=int, default=10000, help="bootstrap resamples (default 10000)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--output", help="write the results as JSON")
@@ -154,8 +178,8 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"FAILED: {exc}")
         return 2
-    a = [load_scores(x) for x in args.a.split(",")]
-    b = [load_scores(x) for x in args.b.split(",")]
+    a = [load_scores(x, args.metric) for x in args.a.split(",")]
+    b = [load_scores(x, args.metric) for x in args.b.split(",")]
     if len(a) != len(b):
         print(f"FAILED: A has {len(a)} seed(s), B has {len(b)}; pair them by position.")
         return 2
@@ -194,8 +218,8 @@ def _family(args) -> int:
         except ValueError as exc:
             print(f"FAILED: {exc}")
             return 2
-        a = [load_scores(x) for x in a_spec.split(",")]
-        b = [load_scores(x) for x in b_spec.split(",")]
+        a = [load_scores(x, args.metric) for x in a_spec.split(",")]
+        b = [load_scores(x, args.metric) for x in b_spec.split(",")]
         if len(a) != len(b) or not a_spec or not b_spec:
             print(f"FAILED: contrast {name} needs A::B with the same number of seeds.")
             return 2

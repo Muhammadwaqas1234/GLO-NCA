@@ -1,5 +1,6 @@
 r"""Re-evaluate one run or an ensemble of runs; resumable, with optional tuned post-processing."""
 import argparse
+import csv
 import json
 import os
 import sys
@@ -72,6 +73,8 @@ def main(argv=None) -> int:
     ap.add_argument("--hd95-convention", default=None, choices=["medpy", "max_directed"],
                     help="medpy: one percentile over both directions; max_directed: larger directed "
                          "percentile (default: the run's setting)")
+    ap.add_argument("--lesion-wise", action=argparse.BooleanOptionalAction, default=None,
+                    help="also score lesion-wise Dice and HD95 in the BraTS 2023 form (default: the run's setting)")
     ap.add_argument("--nested-regions", action=argparse.BooleanOptionalAction, default=None,
                     help="score the final nested masks, as predict.py writes them (default: the run's setting)")
     ap.add_argument("--legacy", action="store_true",
@@ -143,13 +146,15 @@ def main(argv=None) -> int:
     C0.NESTED_REGIONS = pick(args.nested_regions, C0.NESTED_REGIONS)
     C0.SURFACE_HD95 = pick(args.hd95_surface, C0.SURFACE_HD95)
     C0.HD95_CONVENTION = args.hd95_convention or C0.HD95_CONVENTION
+    C0.LESION_WISE = pick(args.lesion_wise, C0.LESION_WISE)
     args.tune_thresholds, args.full_resolution, args.brats_empty = (C0.TUNE_THRESHOLDS, C0.FULL_RESOLUTION_EVAL,
                                                                      C0.BRATS_EMPTY)
     args.nested_regions, args.hd95_surface, args.hd95_convention = (C0.NESTED_REGIONS, C0.SURFACE_HD95,
                                                                      C0.HD95_CONVENTION)
     print(f"scoring: tuned {C0.TUNE_THRESHOLDS}, full resolution {C0.FULL_RESOLUTION_EVAL}, BraTS empty rule "
           f"{C0.BRATS_EMPTY}, nested {C0.NESTED_REGIONS}, surface HD95 {C0.SURFACE_HD95} ({C0.HD95_CONVENTION}), "
-          f"ensemble {C0.ENSEMBLE_N}, tta {C0.USE_TTA}, case seed {C0.CASE_SEED}", flush=True)
+          f"ensemble {C0.ENSEMBLE_N}, tta {C0.USE_TTA}, case seed {C0.CASE_SEED}, "
+          f"lesion-wise {C0.LESION_WISE}", flush=True)
     from glo_nca.cli.predict import folder_fingerprint
     from glo_nca.evaluation import evaluation_spec
     # Identity of everything that determines the scores, so a resumed or repeated evaluation can be checked.
@@ -186,7 +191,7 @@ def main(argv=None) -> int:
                     "full_resolution": args.full_resolution, "hd95": not args.no_hd95,
                     "brats_empty": args.brats_empty, "hd95_surface": args.hd95_surface,
                     "hd95_convention": args.hd95_convention, "nested_regions": args.nested_regions,
-                    "thresholds": thresholds, "min_component": C0.MIN_COMPONENT,
+                    "thresholds": thresholds, "min_component": C0.MIN_COMPONENT, "lesion_wise": C0.LESION_WISE,
                     "models": [(n, t) for _, n, t in models]}
         if os.path.exists(progress):
             with open(progress, encoding="utf-8") as fh:
@@ -200,7 +205,8 @@ def main(argv=None) -> int:
                 fh.write(json.dumps({"settings": settings}) + "\n")
         res = {state: score_streaming(models, ds, state, progress, thresholds, C0.MIN_COMPONENT,
                                       args.full_resolution, not args.no_hd95, args.brats_empty,
-                                      args.hd95_surface and args.hd95_convention, args.nested_regions)
+                                      args.hd95_surface and args.hd95_convention, args.nested_regions,
+                                      C0.LESION_WISE)
                for state in splits}
         tuned = {"thresholds": thresholds, "min_component_voxels": C0.MIN_COMPONENT,
                  "full_resolution": args.full_resolution, "brats_empty": args.brats_empty,
@@ -217,8 +223,18 @@ def main(argv=None) -> int:
     with open(out, "w", encoding="utf-8") as fh:
         # The spec of what was executed (after every override), with the thresholds actually used.
         tuned["evaluation_spec"] = evaluation_spec(C0, tuned.get("thresholds"), tuned.get("min_component_voxels"))
+        per_case = tuned.pop("test_per_case", None)
         json.dump({"runs": runs, "identity": identity, **tuned, "val_mean_dice": val_mean,
                    "test_mean_dice": mean}, fh, indent=2, default=str)
+    if per_case:
+        # Per-case test scores with their spec, the input format of compare_runs.
+        stem = os.path.splitext(out)[0]
+        with open(stem + "_per_case.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(per_case[0]))
+            w.writeheader(); w.writerows(per_case)
+        with open(stem + "_per_case_spec.json", "w", encoding="utf-8") as fh:
+            json.dump(tuned["evaluation_spec"], fh, indent=2)
+        print("Per-case scores:", stem + "_per_case.csv")
     print("Saved to", out)
     return 0
 

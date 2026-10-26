@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-r"""End-to-end check on synthetic data: train the fixed, ablation and single-level configs, predict, re-score, compare, benchmark."""
+r"""End-to-end check on synthetic data: train GLO-NCA, the ablations and the single-level config, predict, re-score, compare, benchmark."""
 import csv
 import json
 import os
@@ -33,7 +33,7 @@ def main() -> int:
         data, runs = os.path.join(work, "syn"), os.path.join(work, "runs")
         subprocess.run([sys.executable, os.path.join(REPO, "tests", "make_synthetic_data.py"), data,
                         "--cases", "12"], check=True, capture_output=True)
-        for name in ("fixed", "fixed_plain", "fixed_single", "fixed_noglobal"):
+        for name in ("fixed", "fixed_plain", "fixed_single", "fixed_noglobal", "glonca"):
             rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", f"brats2021_res96_{name}.yaml"),
                              "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL,
                              *(["--override", "data.modalities=[none,t1c,none,none]"] if name == "fixed_single" else [])])
@@ -146,6 +146,15 @@ def main() -> int:
         spec = json.load(open(os.path.join(work, "default.json")))["evaluation_spec"]
         check("evaluate: without flags follows the run's evaluation spec",
               rc == 0 and spec["full_resolution"] and spec["nested_regions"] and "medpy" in spec["hd95"])
+        # Lesion-wise scoring (tuned path): summary, per-case CSV with spec, and a paired lesion-wise comparison.
+        rc = evaluate.main(["--run", fixed, "--data-root", data, "--lesion-wise",
+                            "--output", os.path.join(work, "lesion.json")])
+        lres = json.load(open(os.path.join(work, "lesion.json")))
+        lcsv = os.path.join(work, "lesion_per_case.csv")
+        cmp_rc = compare_runs.main([lcsv, lcsv, "--metric", "lesion_dice", "--boot", "50"])
+        check("evaluate --lesion-wise: summary, per-case CSV, compare_runs --metric lesion_dice",
+              rc == 0 and "lesion_dice" in lres["test"]["ET"] and lres["evaluation_spec"]["lesion_wise"]
+              and os.path.exists(lcsv) and cmp_rc == 0)
         rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--legacy",
                             "--output", os.path.join(work, "legacy.json")])
         mixed = compare_runs.main([fixed, os.path.join(work, "legacy.json.progress.jsonl"), "--boot", "50"])

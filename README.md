@@ -1,13 +1,15 @@
 # GLO-NCA Cascade
 
 **GLO-NCA** (Global Context-Aware Neural Cellular Automata) for brain-tumour segmentation
-on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks and
-multi-modal MRI fusion, in about **30,000 parameters**. This repository is the training
+on BraTS: a two-level NCA cascade with channel (SE) and spatial gating blocks, an attention-pooled
+global-context block and multi-modal MRI fusion, in about **32,000 parameters**. This repository is the training
 package (configs, resumable training, evaluation, figures, CI) and its GCP tooling.
 
-The model's context blocks are channel recalibration (SE, pooled over the whole volume) and a local
-7×7×7 spatial gate in every cell. An explicit attention-pooled global-context block is implemented as
-an optional variant (`model.use_global`); it is not part of the reported model or of this study.
+GLO-NCA combines four sources of context beyond a cell's neighbourhood: channel recalibration (SE,
+pooled over the whole volume), a local 7×7×7 spatial gate in every cell, the coarse 48³ level of the
+cascade, and an attention-pooled global-context block (`brats2021_res96_glonca.yaml`, 32,304
+parameters). The results reported below and the published weights (v1.1.0) are an earlier version
+without the global-context block (30,138 parameters).
 
 ## Contributions of this work
 
@@ -16,12 +18,12 @@ are contributions of this work:
 
 | Area | This work |
 |---|---|
-| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an optional attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
+| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
 | Analysis | Ablation design (global context: SE, spatial gate and coarse level removed together; multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
-| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 45 unit and 22 pipeline checks, an equivalence test against the original script, and the published weights |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 51 unit and 28 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
@@ -134,7 +136,7 @@ volumes: `docs/results/brats2023_validation_per_case.csv`.
 |---|---|
 | Cascade | 2 NCA levels, coarse then fine (48³ → 96³ for the results above; 32×32×24 → 64×64×48 in v7) |
 | NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (config `fire_rate`/`skip_prob` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
-| Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell; optional attention-pooled global-context block (`model.use_global`), added to the hidden layer after normalisation |
+| Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell + attention-pooled global-context block (`model.use_global`, on in GLO-NCA), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
 | Data | foreground crop, cubic resize, nonzero z-norm, random 48³ training crops (ET-centred in the corrected recipe), augmentation |
 | Loss | focal Tversky + BCE (β 0.75, γ 1.33, CE weight 0.5), optional per-region weights |
@@ -269,23 +271,32 @@ block is a local 7×7×7 gate rather than a global operator.
 ## Ablation
 
 Three runs of the corrected recipe, each trained once (seed 42, same patient split) with the frozen
-evaluation protocol, so the comparisons are exploratory. Each ablation removes one mechanism: all
-context beyond the local neighbourhood, or the multi-modal input. The run without global context also
-has a third of the parameters, because the coarse level is a cell of its own; its result reflects the
-missing context together with this capacity difference.
+evaluation protocol, so the comparisons are exploratory. The ablations were configured on the shared
+recipe before the global-context block was added to GLO-NCA, and are kept as trained:
+
+- **Without global context** removes all four context sources. It also has a third of the parameters,
+  because the coarse level is a cell of its own; its result reflects the missing context together with
+  this capacity difference.
+- **Without multi-modal fusion** removes FLAIR, T1 and T2. It keeps SE, the spatial gate and the coarse
+  level but has no global-context block, so it differs from GLO-NCA in the input and in that block;
+  leave-one-modality-out at inference (`glo-analyze modalities`) isolates the effect of the input.
 
 | Run | Config (`configs/experiments/`) | Removed | Parameters | Question |
 |---|---|---|---|---|
-| GLO-NCA | `brats2021_res96_fixed.yaml` | — | 30,138 | reference |
-| Without global context | `brats2021_res96_fixed_noglobal.yaml` | SE, spatial gate and the coarse 48³ level (the fine level alone) | 10,272 | RQ2 |
-| Without multi-modal fusion | `brats2021_res96_fixed_single.yaml` | FLAIR, T1 and T2 (T1ce only; the other three input slots stay empty) | 30,138 | RQ3 |
+| GLO-NCA | `brats2021_res96_glonca.yaml` | — | 32,304 | reference |
+| Without global context | `brats2021_res96_fixed_noglobal.yaml` | SE, spatial gate, coarse 48³ level and global-context block (the fine level alone) | 10,272 | RQ2 |
+| Without multi-modal fusion | `brats2021_res96_fixed_single.yaml` | FLAIR, T1 and T2 (T1ce only; the other three input slots stay empty); no global-context block | 30,138 | RQ3 |
 
 ```bash
-python train.py --config configs/experiments/brats2021_res96_fixed.yaml --data-root /path/to/BraTS2021
+python train.py --config configs/experiments/brats2021_res96_glonca.yaml --data-root /path/to/BraTS2021
 python train.py --config configs/experiments/brats2021_res96_fixed_noglobal.yaml --data-root /path/to/BraTS2021
 python train.py --config configs/experiments/brats2021_res96_fixed_single.yaml --data-root /path/to/BraTS2021
 python compare_runs.py --contrast context=experiments/<no-global>::experiments/<glo-nca> \
                        --contrast fusion=experiments/<t1ce-only>::experiments/<glo-nca> --output ablation.json
+# All three runs are re-scored with one protocol, including lesion-wise Dice and HD95 (BraTS 2023 form):
+python evaluate.py --run experiments/<run-id> --data-root /path/to/BraTS2021 --lesion-wise
+python compare_runs.py --metric lesion_dice experiments/<no-global>/evaluation_per_case.csv \
+                       experiments/<glo-nca>/evaluation_per_case.csv
 ```
 
 ## Evaluate and ensemble

@@ -788,6 +788,58 @@ def test_empty_modality_slots():
           and first.endswith("t1ce.nii.gz") and hidden == 17, f"hidden {hidden}")
 
 
+def test_lesion_wise():
+    r"""Lesion-wise scores on hand-made cases: hits, misses, false positives, dilation and small lesions."""
+    from glo_nca.lesion import PENALTY, lesion_wise, penalised_hd95
+    z = lambda: np.zeros((40, 40, 40), bool)
+    gt = z(); gt[5:10, 5:10, 5:10] = True; gt[25:30, 25:30, 25:30] = True       # two lesions, 125 voxels each
+    pred = z(); pred[5:10, 5:10, 5:10] = True                                     # first found, second missed
+    pred[30:35, 2:7, 2:7] = True                                                   # one false positive
+    r = lesion_wise(pred, gt)
+    ok_counts = (r["lesions"], r["detected"], r["missed"], r["false_positive"]) == (2, 1, 1, 1)
+    ok_scores = abs(r["dice"] - 1.0 / 3) < 1e-9 and abs(r["hd95"] - 2 * PENALTY / 3) < 1e-9
+    # A prediction shifted by 2 voxels still matches its lesion (dilation 3); a lesion under 50 voxels is
+    # not scored and its matching prediction is not a false positive.
+    gt2 = z(); gt2[5:10, 5:10, 5:10] = True; gt2[30:33, 30:33, 30:33] = True        # 27-voxel lesion
+    pred2 = z(); pred2[7:12, 5:10, 5:10] = True; pred2[30:33, 30:33, 30:33] = True
+    r2 = lesion_wise(pred2, gt2)
+    ok_match = (r2["lesions"], r2["detected"], r2["false_positive"]) == (1, 1, 0) and 0 < r2["dice"] < 1
+    empty = lesion_wise(z(), z())
+    fp_only = lesion_wise(pred, z())
+    ok_empty = (empty["dice"], empty["hd95"]) == (1.0, 0.0) and (fp_only["dice"], fp_only["hd95"]) == (0.0, PENALTY)
+    ok_pen = (penalised_hd95(float("nan"), "missed"), penalised_hd95(float("nan"), "both_empty"),
+              penalised_hd95(3.5, "defined")) == (PENALTY, 0.0, 3.5)
+    check("lesion-wise: hits, misses, false positives, dilation, small lesions, empty cases",
+          ok_counts and ok_scores and ok_match and ok_empty and ok_pen,
+          f"dice {r['dice']:.3f} hd95 {r['hd95']:.1f}")
+
+
+def test_lesion_in_score():
+    r"""score() reports lesion-wise and penalised HD95 summaries and per-case columns; compare_runs reads them."""
+    import csv as _csv
+    from glo_nca.cli.compare_runs import load_scores
+    from glo_nca.evaluation import score
+    gt = np.zeros((12, 12, 12, 3), np.uint8); gt[3:9, 3:9, 3:9, :] = 1
+    p = gt.astype(np.float32)
+    miss = p.copy(); miss[..., 2] = 0
+    cases = [("BraTS2021_00001", p, gt), ("BraTS2021_00002", miss, gt)]
+    th, mc = {r: 0.5 for r in ("WT", "TC", "ET")}, {r: 0 for r in ("WT", "TC", "ET")}
+    rows = []
+    out = score(cases, th, mc, empty_one=True, surface_hd95="medpy", per_case=rows, lesion=True)
+    et = out["ET"]
+    ok_summary = (abs(et["lesion_dice"] - 0.5) < 1e-9 and et["lesions"] == 2 and et["lesions_missed"] == 1
+                  and et["hd95_penalised_median"] == (0.0 + 374.0) / 2 and et["hd95_cases"] == 1)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "test_per_case.csv")
+        with open(path, "w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+        lw = load_scores(path, "lesion_dice")
+        hd = load_scores(path, "hd95")
+    ok_cols = lw["BraTS2021_00002"]["ET"] == 0.0 and hd["BraTS2021_00002"]["ET"] == 374.0
+    check("score: lesion-wise and penalised HD95 summaries; compare_runs --metric reads them",
+          ok_summary and ok_cols)
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -798,7 +850,7 @@ if __name__ == "__main__":
               test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
               test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names,
               test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused,
-              test_empty_modality_slots):
+              test_empty_modality_slots, test_lesion_wise, test_lesion_in_score):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

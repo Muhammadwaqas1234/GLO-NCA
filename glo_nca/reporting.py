@@ -32,6 +32,16 @@ def report_tuned(tuned):
     for r in REGIONS:
         t = tuned["test"][r]
         print(f"{r:<8}{t['dice']:<12.4f}{t['iou']:<12.4f}{t['hd95']:<12.3f}")
+    test = tuned["test"]
+    if all("hd95_penalised" in test[r] for r in REGIONS):
+        print("HD95 over all cases (374 mm for a missed or false region): "
+              + " | ".join(f"{r} median {test[r]['hd95_penalised_median']:.2f} "
+                           f"(IQR {test[r]['hd95_penalised_q1']:.2f}-{test[r]['hd95_penalised_q3']:.2f})" for r in REGIONS))
+    if all("lesion_dice" in test[r] for r in REGIONS):
+        print("Lesion-wise (BraTS 2023 form): " + " | ".join(
+            f"{r} Dice {test[r]['lesion_dice']:.4f} HD95 {test[r]['lesion_hd95']:.2f} "
+            f"(lesions {test[r]['lesions']}, missed {test[r]['lesions_missed']}, "
+            f"false {test[r]['lesions_false_positive']})" for r in REGIONS))
 
 
 def final_report(cfg, out_dir, ck_ep, test_plain, test, hist, n_params, train_time, peak, tuned=None,

@@ -13,8 +13,8 @@ Text for the thesis chapters, matching the final implementation (repository `mai
   patients; official BraTS 2023 validation on Synapse, 219 cases. The published results were obtained
   with other training budgets and are reported as context, not as a controlled comparison.)*
 - **RQ2.** Do the model's sources of context beyond the local neighbourhood (channel recalibration,
-  SE, the spatial gate and the coarse cascade level) improve segmentation over the fine NCA level
-  alone? *(GLO-NCA against the run without global context; paired per-patient statistics.)*
+  SE, the spatial gate, the coarse cascade level and the attention-pooled global-context block)
+  improve segmentation over the fine NCA level alone? *(GLO-NCA against the run without global context; paired per-patient statistics.)*
 - **RQ3.** Does fusing the four MRI modalities improve segmentation compared with contrast-enhanced T1
   alone? *(Single-modality variant and leave-one-modality-out at inference.)*
 - **RQ4.** How far does information travel in the model, and how do accuracy and run time depend on the
@@ -44,7 +44,7 @@ of this thesis are:
 
 | Area | This work |
 |---|---|
-| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an optional attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
+| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
@@ -62,9 +62,9 @@ experiment is a separate, earlier version and its scores are not compared with t
 | Split | 140 / 30 / 30 | 875 / 187 / 189 (70 / 15 / 15 %), random by patient, seed 42 |
 | External evaluation | not planned | BraTS 2023 adult glioma validation set, 219 cases, official Synapse scoring |
 | Working resolution | 64 × 64 × 48 | 96 × 96 × 96 (coarse level 48³) |
-| Parameters | about 24,000 | 30,138 |
+| Parameters | about 24,000 | 32,304 |
 | Loss | Dice + cross-entropy | focal Tversky + binary cross-entropy per region |
-| Spatial block | attention-pooled global vector | local 7 × 7 × 7 spatial gate (CBAM-style); an attention-pooled global block is implemented as an optional variant |
+| Spatial block | attention-pooled global vector | attention-pooled global-context block (GCNet form) together with a local 7 × 7 × 7 spatial gate (CBAM-style) |
 | Fusion | region-specific modality weighting | the four modalities are input channels; SE recalibrates the 24 perceived state channels |
 | Evaluation | Dice and HD95 | Dice, surface HD95 in mm at full resolution, BraTS empty-region convention, lesion-wise scores on the leaderboard |
 
@@ -117,7 +117,8 @@ the four input channels are reset to the image.
 **Cascade.** The coarse cell runs 20 steps on the image max-pooled to 48³. Its state is upsampled to
 96³ (nearest neighbour), its hidden and output channels are combined with the full-resolution image,
 and the fine cell runs 20 more steps. During training the fine level runs on a random 48³ crop of the
-96³ volume; at inference both levels run on the whole volume. The model has 30,138 parameters.
+96³ volume; at inference both levels run on the whole volume. The model has 32,304 parameters
+(30,138 without the global-context block).
 
 **Loss.** For each region r with sigmoid probability *p* and target *y*,
 
@@ -215,21 +216,19 @@ segmentation, at a fixed parameter budget, with its cost.
 
 ## 8. Contribution and the global-context question
 
-The proposal described an attention-pooled global context operator. The reported model instead uses
-SE (global over channels) and a local spatial gate. The attention-pooled block (GCNet form) is
-implemented as an optional variant; its context vector is added to every voxel's hidden layer after
-normalisation, because a constant added before the per-volume batch normalisation would be removed by
-its centring. A full-cell test confirms that the branch changes the output and receives gradients. The thesis states this directly and turns it into the
+The proposal described an attention-pooled global context operator. The first reported version of
+the model used SE (global over channels) and a local spatial gate only. The final GLO-NCA adds the
+attention-pooled block (GCNet form) as proposed, decided before any of the final runs was evaluated;
+its context vector is added to every voxel's hidden layer after normalisation, because a constant added
+before the per-volume batch normalisation would be removed by its centring. A full-cell test confirms that the branch changes the output and receives gradients. The thesis states this directly and turns it into the
 experimental question:
 
 > Do the sources of context in GLO-NCA beyond the local neighbourhood (channel recalibration, spatial
-> gating and the coarse cascade level) improve patient-level glioma segmentation over the fine NCA
-> level alone?
+> gating, the coarse cascade level and attention-pooled global context) improve patient-level glioma
+> segmentation over the fine NCA level alone?
 
-The attention-pooled global block is implemented but not evaluated in this thesis.
-
-The model name GLO-NCA is kept for the family of models; the reported model is described as a
-multiscale NCA with channel recalibration (SE) and local spatial gating.
+The results of the first version (without the global-context block; internal test and Synapse) are
+reported as an earlier version of the model.
 
 **Measured reach (preliminary).** An input-gradient analysis on one scan (exploratory, n = 1) found
 about 70% of the gradient sensitivity of a tumour voxel more than 30 mm away, with a similar reach for
@@ -242,15 +241,17 @@ requires the per-voxel normalisation control (`model.norm: layer`) without SE.
 
 ## 9. Ablation design
 
-All variants are retrained with the corrected configuration (`brats2021_res96_fixed.yaml`: loss on
-every region, ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored
-with the same final decoder at full resolution. The study has three runs; each ablation removes one mechanism.
+All runs are trained with the corrected recipe (`brats2021_res96_fixed.yaml`: loss on every region,
+ET-centred crops, EMA-based selection), on the same split, seed and schedule, and scored with the same
+final decoder at full resolution; GLO-NCA adds the global-context block (`brats2021_res96_glonca.yaml`).
+The study has three runs. The two ablations were configured and started on the shared recipe before
+the global-context block was added to GLO-NCA, and are kept as trained.
 
 | Run | Config | Removed | Parameters | Question |
 |---|---|---|---|---|
-| GLO-NCA | `fixed` | — | 30,138 | reference |
-| Without global context | `fixed_noglobal` | SE, spatial gate and the coarse 48³ level; the fine level runs alone | 10,272 | RQ2: does context beyond the local neighbourhood help? |
-| Without multi-modal fusion | `fixed_single` | FLAIR, T1 and T2; T1ce only, the other three input slots stay empty | 30,138 | RQ3: does fusing the four modalities help? |
+| GLO-NCA | `glonca` | — | 32,304 | reference |
+| Without global context | `fixed_noglobal` | SE, spatial gate, coarse 48³ level and global-context block; the fine level runs alone | 10,272 | RQ2: does context beyond the local neighbourhood help? |
+| Without multi-modal fusion | `fixed_single` | FLAIR, T1 and T2 (T1ce only, the other three input slots stay empty); no global-context block | 30,138 | RQ3: does fusing the four modalities help? |
 
 The run without global context removes every route by which the model sees beyond a cell's
 neighbourhood: SE pools over the whole volume, the spatial gate aggregates a 7³ window, and the
@@ -258,10 +259,13 @@ coarse level carries a low-resolution view of the whole brain into the fine leve
 alone is trained on the same 48³ patches and scored on the whole 96³ volume with the same protocol.
 Batch normalisation still uses statistics of the whole volume, so the run is not free of all global
 information. The coarse level is a cell of its own, so this run also has a third of the parameters
-(10,272 against 30,138); matching them would need a hidden layer of about 420 units, which would be a
+(10,272 against 32,304); matching them would need a hidden layer of about 420 units, which would be a
 different model, so the difference is reported as part of what is removed. The single-modality run
 keeps the four input slots of the full model and leaves three of them empty, so the cell keeps its
-4 input, 3 output and 17 hidden channels and differs from GLO-NCA only in the information it receives.
+4 input, 3 output and 17 hidden channels. It has no global-context block, so it differs from GLO-NCA in
+the input and in that block (2,166 parameters); the comparison is therefore read together with
+leave-one-modality-out at inference (`glo-analyze modalities`), which changes only the input of the
+trained GLO-NCA.
 
 The primary endpoint is the paired per-patient difference in mean Dice against the full model, with a
 patient-level bootstrap 95% confidence interval and a Wilcoxon signed-rank test (`glo-compare`);

@@ -14,6 +14,7 @@ data:
 
 model:
   update_prob: 0.4                # a cell updates with probability 0.4 (same as fire_rate 0.6)
+  use_global: false               # shared recipe of the ablations; GLO-NCA adds it (brats2021_res96_glonca.yaml)
 
 training:
   validate_ema: true              # select the best epoch on the EMA weights that best.pth saves
