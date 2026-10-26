@@ -37,7 +37,7 @@ fi
 RC=$?
 set -e
 # Exit code for the keep-alive boot hook; a preemption never reaches this line.
-[[ -d /var/lib/glo-nca-cascade ]] && echo "${RC}" > /var/lib/glo-nca-cascade/last_rc
+[[ -d /var/lib/glo-nca-cascade ]] && echo "${RC}" > "${GLO_RC_FILE:-/var/lib/glo-nca-cascade/last_rc}"
 kill "${SYNC_PID}" 2>/dev/null || true
 
 # --- final sync, attempted on every exit path --------------------------------
@@ -45,12 +45,19 @@ if [[ -d "${RUN_DIR}" ]]; then
   sync_now && echo "[entrypoint] final GCS sync ok -> ${GCS_DEST}" \
     || echo "[entrypoint] WARNING: final GCS sync failed; data kept at ${RUN_DIR}"
 fi
-rm -f /tmp/glo-nca-cascade-training.lock
+rm -f "${GLO_LOCK:-/tmp/glo-nca-cascade-training.lock}"
 echo "[entrypoint] training finished rc=${RC}"
 
 # Stop the VM when the run ends (completed, paused or failed) to halt GPU billing.
 if [[ "${GLO_AUTO_STOP:-0}" == "1" ]]; then
-  echo "[entrypoint] auto-stop: shutting the VM down"
-  shutdown -h +1 || true
+  # Another run on this VM (another slot) keeps it on; the last run to finish powers it off.
+  OTHERS=$(systemctl list-units --type=service --state=active --no-legend 'glo-nca-cascade-training*' \
+           | awk '{print $1}' | grep -v "^${GLO_UNIT:-glo-nca-cascade-training}.service$" || true)
+  if [[ -n "${OTHERS}" ]]; then
+    echo "[entrypoint] auto-stop deferred: still running ${OTHERS//$'\n'/ }"
+  else
+    echo "[entrypoint] auto-stop: shutting the VM down"
+    shutdown -h +1 || true
+  fi
 fi
 exit "${RC}"

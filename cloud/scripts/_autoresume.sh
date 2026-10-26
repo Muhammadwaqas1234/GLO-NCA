@@ -2,6 +2,7 @@
 # Boot hook: resume the keep-alive run after a restart (e.g. a Spot preemption); no-op otherwise.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
+use_slot "${1:-}"
 [[ -f "${KEEPALIVE_FILE}" ]] || { log "keep-alive off; nothing to resume"; exit 0; }
 # shellcheck disable=SC1090
 source "${KEEPALIVE_FILE}"
@@ -17,7 +18,6 @@ if [[ "${STATE}" == "completed" ]] \
 fi
 
 # Only failures count (a preemption leaves no exit code); three at one epoch end the keep-alive.
-RC_FILE="$(dirname "${KEEPALIVE_FILE}")/last_rc"
 LAST_RC=$(cat "${RC_FILE}" 2>/dev/null || echo none); rm -f "${RC_FILE}"
 read -r PREV_EPOCH FAILS <<< "$(cat "${TRIES_FILE}" 2>/dev/null || echo "-1 0")"
 [[ "${PREV_EPOCH}" == "${EPOCH}" ]] || FAILS=0
@@ -37,12 +37,12 @@ cd "${GLO_WORKSPACE}" || die "no checkout at ${GLO_WORKSPACE}"
 if [[ -f "${RUN_DIR}/last.pth" ]]; then
   log "resuming ${KEEP_RUN_ID} after epoch ${EPOCH} (failures so far ${FAILS})"
   bash cloud/scripts/resume_training.sh "${KEEP_RUN_ID}" --data-root "${KEEP_DATA_ROOT}" \
-    "${STOP[@]}" --auto-stop --keep-alive
+    "${STOP[@]}" --auto-stop --keep-alive ${SLOT:+--slot "${SLOT}"}
 else
   # Stopped before the first checkpoint: start the same config again.
   [[ -n "${KEEP_CONFIG}" ]] || die "no checkpoint and no config recorded for ${KEEP_RUN_ID}"
   log "restarting ${KEEP_CONFIG} (no checkpoint yet)"
   rm -rf "${RUN_DIR}"
   bash cloud/scripts/run_training.sh --config "${KEEP_CONFIG}" --data-root "${KEEP_DATA_ROOT}" \
-    "${STOP[@]}" --auto-stop --keep-alive
+    "${STOP[@]}" --auto-stop --keep-alive ${SLOT:+--slot "${SLOT}"}
 fi

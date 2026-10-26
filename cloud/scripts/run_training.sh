@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start a run under systemd: run_training.sh [--config PATH] [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive]
+# Start a run under systemd: run_training.sh [--config PATH] [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive] [--slot NAME]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
@@ -10,12 +10,14 @@ while [[ $# -gt 0 ]]; do
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
     --keep-alive) KEEP_ALIVE=1; shift ;;
+    --slot) SLOT_ARG="${2:?--slot needs a name}"; shift 2 ;;
     --config) CONFIG="${2:?--config needs a path}"; shift 2 ;;
     --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
+use_slot "${SLOT_ARG:-}"
 assert_no_training_running
 command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1 || die "NVIDIA GPU not visible."
 pass "GPU visible: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
@@ -26,21 +28,8 @@ mkdir -p "${VM_OUT_DIR}"
 
 RUN_PREFIX="$(basename "${CONFIG}" .yaml | tr "a-z_" "A-Z-")"
 RUN_ID="${RUN_PREFIX}-$(date -u +%Y%m%d-%H%M%S)"
-sudo cp "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-training.service" "/etc/systemd/system/${TRAIN_UNIT}.service"
-sudo systemctl daemon-reload
-sudo tee /etc/glo-nca-cascade.env >/dev/null <<EOF
-GLO_REPO=${GLO_WORKSPACE}
-GLO_DATA=${GLO_DATA_ROOT}
-GLO_OUT=${VM_OUT_DIR}
-GLO_RUN_ID=${RUN_ID}
-GLO_CONFIG=${CONFIG}
-GLO_MODE=new
-GLO_EXTRA_ARGS="${EXTRA_ARGS}"
-GLO_AUTO_STOP=${AUTO_STOP}
-GLO_BUCKET=${GCS_BUCKET}
-GLO_EXP_PREFIX=${EXPERIMENT_PREFIX}
-GLO_SYNC_INTERVAL=${SYNC_INTERVAL_SECONDS}
-EOF
+install_train_unit
+write_train_env "${RUN_ID}" new "${CONFIG}" "${EXTRA_ARGS}" "${AUTO_STOP}"
 
 confirm "Start GLO-NCA cascade run ${RUN_ID} ${EXTRA_ARGS:-(full planned budget)} (billing continues while running)?"
 write_training_lock "${RUN_ID}"

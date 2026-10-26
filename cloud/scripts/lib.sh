@@ -13,6 +13,51 @@ TRAIN_UNIT="glo-nca-cascade-training"
 TRAIN_LOCK="/tmp/glo-nca-cascade-training.lock"
 KEEPALIVE_FILE="/var/lib/glo-nca-cascade/keepalive.env"
 AUTORESUME_UNIT="glo-nca-cascade-autoresume"
+ENV_FILE="/etc/glo-nca-cascade.env"
+RC_FILE="/var/lib/glo-nca-cascade/last_rc"
+SLOT=""
+
+# A slot gives a run its own systemd unit, environment, lock, exit code and keep-alive state, so two
+# runs can share one GPU VM. Without a slot the single-run names above are used.
+use_slot() {  # use_slot <name or empty>
+  [[ -z "${1:-}" ]] && return 0
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--slot must use lowercase letters, digits and hyphens: $1"
+  SLOT="$1"
+  TRAIN_UNIT="glo-nca-cascade-training-$1"
+  TRAIN_LOCK="/tmp/glo-nca-cascade-training-$1.lock"
+  KEEPALIVE_FILE="/var/lib/glo-nca-cascade/keepalive-$1.env"
+  AUTORESUME_UNIT="glo-nca-cascade-autoresume-$1"
+  ENV_FILE="/etc/glo-nca-cascade-$1.env"
+  RC_FILE="/var/lib/glo-nca-cascade/last_rc-$1"
+}
+
+# Install this slot's training unit (the shared template, pointed at the slot's environment file).
+install_train_unit() {
+  sed "s#/etc/glo-nca-cascade.env#${ENV_FILE}#" "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-training.service" \
+    | sudo tee "/etc/systemd/system/${TRAIN_UNIT}.service" >/dev/null
+  sudo systemctl daemon-reload
+}
+
+# Environment of the training unit; the entrypoint reads it.
+write_train_env() {  # write_train_env <run-id> <mode new|resume> <config> <extra-args> <auto-stop>
+  sudo mkdir -p /var/lib/glo-nca-cascade
+  sudo tee "${ENV_FILE}" >/dev/null <<EOF
+GLO_REPO=${GLO_WORKSPACE}
+GLO_DATA=${GLO_DATA_ROOT}
+GLO_OUT=${VM_OUT_DIR}
+GLO_RUN_ID=$1
+GLO_MODE=$2
+GLO_CONFIG=$3
+GLO_EXTRA_ARGS="$4"
+GLO_AUTO_STOP=$5
+GLO_BUCKET=${GCS_BUCKET}
+GLO_EXP_PREFIX=${EXPERIMENT_PREFIX}
+GLO_SYNC_INTERVAL=${SYNC_INTERVAL_SECONDS}
+GLO_UNIT=${TRAIN_UNIT}
+GLO_LOCK=${TRAIN_LOCK}
+GLO_RC_FILE=${RC_FILE}
+EOF
+}
 
 # --- logging -----------------------------------------------------------------
 if [[ -t 1 ]]; then _G=$'\033[32m'; _Y=$'\033[33m'; _R=$'\033[31m'; _N=$'\033[0m'
@@ -100,10 +145,15 @@ enable_keep_alive() {  # enable_keep_alive <run-id> <config> <data-root> <stop-a
 KEEP_CONFIG=%s
 KEEP_DATA_ROOT=%s
 KEEP_STOP_AFTER=%s
-'     "$1" "$2" "$3" "${4:-}" | sudo tee "${KEEPALIVE_FILE}" >/dev/null
-  sudo cp "${GLO_WORKSPACE}/cloud/systemd/${AUTORESUME_UNIT}.service" /etc/systemd/system/
+KEEP_SLOT=%s
+'     "$1" "$2" "$3" "${4:-}" "${SLOT}" | sudo tee "${KEEPALIVE_FILE}" >/dev/null
+  # The shared unit file, pointed at this slot's keep-alive file and passing the slot to the hook.
+  sed -e "s#/var/lib/glo-nca-cascade/keepalive.env#${KEEPALIVE_FILE}#" \
+      -e "s#_autoresume.sh\$#_autoresume.sh ${SLOT}#" \
+      "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-autoresume.service" \
+    | sudo tee "/etc/systemd/system/${AUTORESUME_UNIT}.service" >/dev/null
   sudo systemctl daemon-reload && sudo systemctl enable --quiet "${AUTORESUME_UNIT}"
-  pass "keep-alive on: after a restart this VM resumes run $1 on its own."
+  pass "keep-alive on: after a restart this VM resumes run $1${SLOT:+ (slot ${SLOT})} on its own."
 }
 
 write_training_lock() {

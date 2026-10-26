@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive]
+# Resume a run from last.pth (restored from GCS if missing): resume_training.sh <run-id> [--data-root DIR] [--stop-after-epoch N] [--auto-stop] [--keep-alive] [--slot NAME]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
@@ -12,11 +12,13 @@ while [[ $# -gt 0 ]]; do
                         EXTRA_ARGS="--stop-after-epoch $2"; shift 2 ;;
     --auto-stop) AUTO_STOP=1; shift ;;
     --keep-alive) KEEP_ALIVE=1; shift ;;
+    --slot) SLOT_ARG="${2:?--slot needs a name}"; shift 2 ;;
     --data-root) GLO_DATA_ROOT="${2:?--data-root needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
+use_slot "${SLOT_ARG:-}"
 require_gcloud_auth
 assert_no_training_running
 assert_image_matches_repo "${GLO_WORKSPACE}"
@@ -31,20 +33,8 @@ fi
   || die "${RUN_DIR} lacks last.pth or config.yaml; cannot resume."
 pass "resuming from ${RUN_DIR} ($(grep -o '"epoch": [0-9]*' "${RUN_DIR}/status.json" 2>/dev/null || echo 'epoch ?'))"
 
-sudo cp "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-training.service" "/etc/systemd/system/${TRAIN_UNIT}.service"
-sudo systemctl daemon-reload
-sudo tee /etc/glo-nca-cascade.env >/dev/null <<EOF
-GLO_REPO=${GLO_WORKSPACE}
-GLO_DATA=${GLO_DATA_ROOT}
-GLO_OUT=${VM_OUT_DIR}
-GLO_RUN_ID=${RUN_ID}
-GLO_MODE=resume
-GLO_EXTRA_ARGS="${EXTRA_ARGS}"
-GLO_AUTO_STOP=${AUTO_STOP}
-GLO_BUCKET=${GCS_BUCKET}
-GLO_EXP_PREFIX=${EXPERIMENT_PREFIX}
-GLO_SYNC_INTERVAL=${SYNC_INTERVAL_SECONDS}
-EOF
+install_train_unit
+write_train_env "${RUN_ID}" resume "" "${EXTRA_ARGS}" "${AUTO_STOP}"
 
 confirm "Resume cascade run ${RUN_ID} ${EXTRA_ARGS:-(to the end)} (billing continues while running)?"
 write_training_lock "${RUN_ID}"
