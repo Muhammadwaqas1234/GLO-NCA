@@ -62,7 +62,7 @@ apt-get -qq update >/dev/null && apt-get -qq install -y python3-pip >/dev/null |
 python3 -m pip install -q kaggle || fail "pip kaggle"
 mkdir -p /stage/raw /stage/brats2021 && cd /stage/raw
 echo "[\$(date -u +%T)] downloading"; push_log
-python3 -m kaggle datasets download -d ${KAGGLE_DATASET} -f ${KAGGLE_FILE} -p . --quiet
+kaggle datasets download -d ${KAGGLE_DATASET} -f ${KAGGLE_FILE} -p . --quiet
 rc=\$?; shred -u /root/.kaggle/kaggle.json; [[ \$rc == 0 ]] || fail "kaggle download"
 for z in *.zip; do [[ -e "\$z" ]] && { python3 -m zipfile -e "\$z" . && rm -f "\$z" || fail "unzip"; }; done
 echo "[\$(date -u +%T)] extracting"; push_log
