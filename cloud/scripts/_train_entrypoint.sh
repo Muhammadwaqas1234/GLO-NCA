@@ -24,7 +24,11 @@ trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 # Training in Docker; --shm-size=8g because DataLoader workers pass volumes through /dev/shm.
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' glo-nca-cascade:latest 2>/dev/null || true)"
 GIT_COMMIT="$(git -C "${GLO_WORKSPACE:-/opt/glo-nca-cascade}" rev-parse HEAD 2>/dev/null || true)"
-COMMON=(--rm --gpus all --shm-size=8g -v "${GLO_DATA}:${GLO_DATA}:ro" -v "${OUT}:/out"
+# The container is named after the unit; stopping the unit stops the container (not only the docker client).
+CONTAINER="${GLO_UNIT:-glo-nca-cascade-training}"
+docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+trap 'docker stop -t 60 "${CONTAINER}" >/dev/null 2>&1 || true' TERM INT
+COMMON=(--rm --name "${CONTAINER}" --gpus all --shm-size=8g -v "${GLO_DATA}:${GLO_DATA}:ro" -v "${OUT}:/out"
         -e MPLBACKEND=Agg -e GLO_REQUIRE_GPU=1 -e GLO_IMAGE_DIGEST="${IMAGE_ID}" -e GLO_GIT_COMMIT="${GIT_COMMIT}"
         glo-nca-cascade:latest)
 set +e
