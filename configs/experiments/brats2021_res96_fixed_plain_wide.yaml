@@ -1,8 +1,0 @@
-# Capacity-matched control: plain multiscale NCA widened to the parameters of the full model.
-base: brats2021_res96_fixed_plain.yaml
-
-experiment:
-  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-PLAIN-WIDE
-
-model:
-  hidden: 141                     # 30,078 parameters, against 30,138 for the model with SE and spatial gate

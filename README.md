@@ -23,7 +23,7 @@ are contributions of this work:
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
 | Analysis | Ablation design (global context: SE, spatial gate and coarse level removed together; multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
-| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 51 unit and 28 pipeline checks, an equivalence test against the original script, and the published weights |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 51 unit and 27 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
@@ -167,11 +167,10 @@ train.py, evaluate.py     thin wrappers so the tools also run from a checkout wi
 predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark, analyze
 configs/                  base recipes; configs/experiments/ inherit and extend them
 reproduce.sh              reproduce the reported test table from the released weights
-MODEL_CARD.md             data, results, intended use and limitations of the released model
 legacy/kaggle/            the original Kaggle scripts (v4-v7); they run against tag kaggle-v7-reference
 tests/                    unit checks, pipeline test, v7 equivalence test, synthetic data generator
 docker/, cloud/           training image; GCP scripts and systemd units
-docs/                     figures, per-case results and analyses of the reported run; thesis text
+docs/                     figures, per-case results and analyses of the reported run
 .github/workflows/        CI: unit and pipeline tests on every push, v7 equivalence weekly
 ```
 
@@ -204,7 +203,7 @@ downloads the three files and `SHA256SUMS` from the release (or uses them if pre
 patients with the reported setting (ensemble x4 + flips, thresholds 0.65/0.65/0.60, clean-up
 400/25/400, full resolution, BraTS empty-region rule, independent region masks, surface HD95 in the
 medpy convention) and checks Dice within ±0.01 and HD95 within ±0.5 mm of the table above, with all
-189 cases scored; the historical ensemble passes were not seeded. See `MODEL_CARD.md` for the model's
+189 cases scored; the historical ensemble passes were not seeded. See the release notes of v1.1.0 for the model's
 data, intended use and limitations.
 
 ## Train locally

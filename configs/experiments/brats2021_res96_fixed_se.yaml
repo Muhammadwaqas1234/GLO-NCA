@@ -1,8 +1,0 @@
-# Factorial ablation: the corrected model with SE only (no spatial gate).
-base: brats2021_res96_fixed.yaml
-
-experiment:
-  name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-SE
-
-model:
-  use_spatial: false              # SE kept, spatial gate removed

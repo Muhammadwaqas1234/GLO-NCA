@@ -58,3 +58,7 @@ cloud/config/gcp.env
 
 # Weights downloaded by reproduce.sh
 release/
+
+# Kept locally, not published
+MODEL_CARD.md
+docs/thesis/

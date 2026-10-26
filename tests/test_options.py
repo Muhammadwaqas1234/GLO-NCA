@@ -29,11 +29,11 @@ def test_config():
     check("defaults reproduce the original recipe",
           base.SPLIT_SEED == base.SEED and not base.AUGMENT and base.REGION_WEIGHTS == [1, 1, 1]
           and not base.uses_final_scoring)
-    exp = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_improved.yaml"))
+    exp = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_long.yaml"))
     check("base: inheritance merges nested sections",
-          exp.MODALITIES == base.MODALITIES and exp.INPUT_SIZE[-1] == [96, 96, 96]
-          and exp.TVERSKY_BETA == 0.65 and exp.CHANNEL_N == base.CHANNEL_N)
-    ovr = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_improved.yaml"),
+          exp.MODALITIES == base.MODALITIES and exp.INPUT_SIZE[-1] == [96, 96, 96] and exp.EPOCHS == 150
+          and exp.TVERSKY_BETA == base.TVERSKY_BETA and exp.CHANNEL_N == base.CHANNEL_N)
+    ovr = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_long.yaml"),
                       ["experiment.seed=7"])
     check("model seed changes, split seed stays fixed", ovr.SEED == 7 and ovr.SPLIT_SEED == 42)
 
@@ -151,7 +151,7 @@ def test_review_options():
     r"""Review fixes are off by default, on in the fixed config; update_prob maps to the skip rate."""
     base = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_long.yaml"))
     fixed = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"))
-    plain = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed_plain.yaml"))
+    glonca = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_glonca.yaml"))
     check("review fixes off by default (reported run unchanged)",
           base.USE_SE and base.USE_SPATIAL and not (base.USE_GLOBAL or base.ALL_REGION_LOSS
           or base.VALIDATE_EMA or base.CROP_ET_PROB or base.NESTED_REGIONS or base.SURFACE_HD95))
@@ -160,10 +160,10 @@ def test_review_options():
           and fixed.NESTED_REGIONS and fixed.SURFACE_HD95 and abs(fixed.SKIP_PROB - 0.6) < 1e-9
           and fixed.EPOCHS == base.EPOCHS and fixed.INPUT_SIZE == base.INPUT_SIZE
           and fixed.SPLIT_SEED == base.SPLIT_SEED and fixed.SEED == base.SEED)
-    check("plain control differs only in SE and spatial gate",
-          not plain.USE_SE and not plain.USE_SPATIAL
-          and {k: v for k, v in vars(plain).items() if k not in ("NAME", "USE_SE", "USE_SPATIAL", "raw")}
-          == {k: v for k, v in vars(fixed).items() if k not in ("NAME", "USE_SE", "USE_SPATIAL", "raw")})
+    check("GLO-NCA differs from the shared recipe only in the global-context block",
+          glonca.USE_GLOBAL and not fixed.USE_GLOBAL
+          and {k: v for k, v in vars(glonca).items() if k not in ("NAME", "USE_GLOBAL", "raw")}
+          == {k: v for k, v in vars(fixed).items() if k not in ("NAME", "USE_GLOBAL", "raw")})
 
 
 def test_all_region_loss():
@@ -510,24 +510,26 @@ def test_hd95_reference():
 
 
 def test_ablation_configs():
-    r"""Ablation configs: matched recipe, intended differences and parameter counts."""
-    from glo_nca.model import GLONCACell
+    r"""The three runs: matched recipe, the intended differences and the parameter counts."""
+    from glo_nca.trainer import build
     load = lambda n: load_config(os.path.join(_ROOT, "configs", "experiments", f"brats2021_res96_{n}.yaml"))
-    full, plain, wide, single = load("fixed"), load("fixed_plain"), load("fixed_plain_wide"), load("fixed_single")
-    se, spatial = load("fixed_se"), load("fixed_spatial")
-    count = lambda cfg: sum(p.numel() for k in (7, 3) for p in GLONCACell(
-        cfg.CHANNEL_N, cfg.SKIP_PROB, "cpu", cfg.HIDDEN, kernel_size=k, input_channels=len(cfg.MODALITIES),
-        use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, use_global=cfg.USE_GLOBAL).parameters())
-    n = {k: count(cfg) for k, cfg in (("full", full), ("plain", plain), ("wide", wide), ("single", single))}
+    full, noglobal, single = load("glonca"), load("fixed_noglobal"), load("fixed_single")
+
+    def count(cfg):
+        with tempfile.TemporaryDirectory() as out:
+            _, cells, _, _ = build(cfg, out, out, ([], [], []))
+        return sum(p.numel() for c in cells for p in c.parameters())
+    n = {k: count(cfg) for k, cfg in (("full", full), ("noglobal", noglobal), ("single", single))}
     same = lambda a, b, skip: ({k: v for k, v in vars(a).items() if k not in skip | {"NAME", "raw"}}
                                == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
-    ok = (same(full, single, {"MODALITIES"}) and same(plain, wide, {"HIDDEN"})
-          and n["full"] == 30138 and n["plain"] == 28128 and abs(n["wide"] - n["full"]) < 100
-          and single.MODALITIES == ["none", "t1ce", "none", "none"] and not full.LEGACY_PATCHIFY
-          and same(full, se, {"USE_SPATIAL"}) and same(full, spatial, {"USE_SE"})
+    ok = (same(full, noglobal, {"USE_SE", "USE_SPATIAL", "USE_GLOBAL", "LEVELS"})
+          and same(full, single, {"MODALITIES", "USE_GLOBAL"})
+          and noglobal.LEVELS == 1 and not (noglobal.USE_SE or noglobal.USE_SPATIAL or noglobal.USE_GLOBAL)
+          and full.USE_GLOBAL and not single.USE_GLOBAL and single.MODALITIES == ["none", "t1ce", "none", "none"]
+          and (n["full"], n["noglobal"], n["single"]) == (32304, 10272, 30138) and not full.LEGACY_PATCHIFY
           and full.uses_final_scoring and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
-    check("ablation configs: one difference each, matched capacity", ok,
-          f"full {n['full']}, plain {n['plain']}, wide {n['wide']}, single {n['single']}")
+    check("study configs: intended differences, parameter counts", ok,
+          f"GLO-NCA {n['full']}, without global context {n['noglobal']}, T1ce only {n['single']}")
 
 
 def test_rng_untouched():

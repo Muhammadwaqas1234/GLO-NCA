@@ -33,7 +33,7 @@ def main() -> int:
         data, runs = os.path.join(work, "syn"), os.path.join(work, "runs")
         subprocess.run([sys.executable, os.path.join(REPO, "tests", "make_synthetic_data.py"), data,
                         "--cases", "12"], check=True, capture_output=True)
-        for name in ("fixed", "fixed_plain", "fixed_single", "fixed_noglobal", "glonca"):
+        for name in ("fixed", "fixed_single", "fixed_noglobal", "glonca"):
             rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", f"brats2021_res96_{name}.yaml"),
                              "--data-root", data, "--output", runs, "--experiment-id", name, *SMALL,
                              *(["--override", "data.modalities=[none,t1c,none,none]"] if name == "fixed_single" else [])])
@@ -105,7 +105,7 @@ def main() -> int:
                               and spec["tuned"] is False for spec in (out_spec, head_spec)))
 
         # Ensemble of two runs with threshold tuning: predictions aligned by case ID.
-        rc = evaluate.main(["--run", fixed, "--run", os.path.join(runs, "fixed_plain"), "--data-root", data,
+        rc = evaluate.main(["--run", fixed, "--run", os.path.join(runs, "glonca"), "--data-root", data,
                             "--tune-thresholds", "--ensemble-n", "1", "--no-tta", "--no-hd95",
                             "--output", os.path.join(work, "ens.json")])
         ens = json.load(open(os.path.join(work, "ens.json")))
@@ -196,7 +196,7 @@ def main() -> int:
         hist = open(os.path.join(fixed, "history.csv")).readline()
         check("history: live and EMA validation both recorded", "val_other_mean" in hist)
 
-        rc = compare_runs.main([os.path.join(runs, "fixed_plain"), fixed, "--boot", "200",
+        rc = compare_runs.main([os.path.join(runs, "fixed_noglobal"), os.path.join(runs, "glonca"), "--boot", "200",
                                 "--output", os.path.join(work, "cmp.json")])
         cmp = json.load(open(os.path.join(work, "cmp.json")))
         check("compare_runs: paired table for all regions", rc == 0 and set(cmp["results"]) ==
