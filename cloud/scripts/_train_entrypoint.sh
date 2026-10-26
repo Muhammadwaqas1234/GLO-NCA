@@ -23,7 +23,7 @@ trap 'kill "${SYNC_PID}" 2>/dev/null || true' EXIT
 
 # Training in Docker; --shm-size=8g because DataLoader workers pass volumes through /dev/shm.
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' glo-nca-cascade:latest 2>/dev/null || true)"
-GIT_COMMIT="$(git -C "${GLO_WORKSPACE:-/opt/glo-nca-cascade}" rev-parse HEAD 2>/dev/null || true)"
+GIT_COMMIT="$(git -c safe.directory="*" -C "${GLO_REPO:-/opt/glo-nca-cascade}" rev-parse HEAD 2>/dev/null || true)"
 # The container is named after the unit; stopping the unit stops the container (not only the docker client).
 CONTAINER="${GLO_UNIT:-glo-nca-cascade-training}"
 docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
