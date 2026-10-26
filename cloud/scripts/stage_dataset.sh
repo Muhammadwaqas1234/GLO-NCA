@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Stage BraTS 2021 glioma training data (Kaggle) to GCS through a temporary CPU VM: stage_dataset.sh [--keep-vm]
+# The VM runs the job as its startup script (no SSH); progress is written to <dataset>/_staging/log.txt.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
@@ -18,11 +19,10 @@ done
 : "${DATA_PREFIX:?set DATA_PREFIX in gcp.env}"
 [[ "${DATA_PREFIX}" == *brats2021* ]] || die "DATA_PREFIX must point to the BraTS 2021 glioma data: ${DATA_PREFIX}"
 DEST="gs://${GCS_BUCKET}/${DATA_PREFIX}"
+WORK="gs://${GCS_BUCKET}/_staging"
 KAGGLE_KEY="${KAGGLE_CONFIG_DIR:-${HOME}/.kaggle}/kaggle.json"
 [[ -f "${KAGGLE_KEY}" ]] || die "Kaggle API key not found at ${KAGGLE_KEY}"
 need gcloud
-# SSH through Identity-Aware Proxy (port 443), so it works where outbound port 22 is blocked.
-SSH=(--project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" --tunnel-through-iap --strict-host-key-checking=no)
 
 if gcs_exists "${DEST}/MANIFEST.txt"; then
   pass "already staged: ${DEST} ($(gcs cat "${DEST}/MANIFEST.txt" | grep -m1 '^cases='))"
@@ -33,57 +33,79 @@ log "staging ${KAGGLE_DATASET}/${KAGGLE_FILE} -> ${DEST} via temporary VM ${STAG
 confirm "Create temporary VM ${STAGE_VM} (e2-standard-4, 100 GB disk, about \$0.20/h; deleted afterwards)?"
 
 cleanup() {
+  gcs rm -q "${WORK}/kaggle.json" >/dev/null 2>&1 || true
   [[ "${KEEP_VM}" == "1" ]] && { warn "keeping ${STAGE_VM}; delete it yourself when done"; return; }
   gcloud compute instances delete "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" --quiet \
     >/dev/null 2>&1 && pass "temporary VM ${STAGE_VM} deleted" || warn "could not delete ${STAGE_VM}; check the console"
 }
 trap cleanup EXIT
 
-gcloud compute instances create "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" \
-  --machine-type e2-standard-4 --boot-disk-size 100GB --boot-disk-type pd-balanced \
-  --image-family ubuntu-2204-lts --image-project ubuntu-os-cloud --scopes storage-rw >/dev/null
-ready=0
-for _ in $(seq 30); do
-  gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" --command true >/dev/null 2>&1 && { ready=1; break; }
-  sleep 10
-done
-[[ "${ready}" == 1 ]] || die "no SSH to ${STAGE_VM} after 5 minutes"
+# The key waits in the private bucket only until the VM has read it; the VM deletes it at once.
+gcs rm -q "${WORK}/**" >/dev/null 2>&1 || true
+gcs cp -q "${KAGGLE_KEY}" "${WORK}/kaggle.json"
 
-# The key travels over SSH stdin into a private file and is shredded on the VM after the download.
-gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" \
-  --command 'umask 077 && mkdir -p ~/.kaggle && cat > ~/.kaggle/kaggle.json' < "${KAGGLE_KEY}" >/dev/null
-
-gcloud compute ssh "${STAGE_VM}" "${SSH[@]}" --command "bash -s" <<REMOTE
-set -euo pipefail
-chmod 600 ~/.kaggle/kaggle.json
-trap 'shred -u ~/.kaggle/kaggle.json 2>/dev/null || rm -f ~/.kaggle/kaggle.json' EXIT
-sudo apt-get -qq update >/dev/null && sudo apt-get -qq install -y python3-pip >/dev/null
-python3 -m pip install -q --user kaggle
-mkdir -p ~/stage/raw ~/stage/brats2021 && cd ~/stage/raw
+STARTUP="$(mktemp)"
+cat > "${STARTUP}" <<REMOTE
+#!/bin/bash
+set -uo pipefail
+LOG=/var/log/glo-stage.log
+exec > >(tee -a "\$LOG") 2>&1
+push_log() { gcloud storage cp -q "\$LOG" "${WORK}/log.txt" >/dev/null 2>&1 || true; }
+fail() { echo "FAILED: \$*"; echo "FAILED" > /tmp/state; gcloud storage cp -q /tmp/state "${WORK}/state.txt"; push_log; exit 1; }
+[[ -f /var/lib/glo-stage-done ]] && exit 0
+echo "[\$(date -u +%T)] start"
+mkdir -p -m 700 /root/.kaggle
+gcloud storage cp -q "${WORK}/kaggle.json" /root/.kaggle/kaggle.json || fail "key not readable"
+gcloud storage rm -q "${WORK}/kaggle.json" || true
+chmod 600 /root/.kaggle/kaggle.json
+apt-get -qq update >/dev/null && apt-get -qq install -y python3-pip >/dev/null || fail "apt"
+python3 -m pip install -q kaggle || fail "pip kaggle"
+mkdir -p /stage/raw /stage/brats2021 && cd /stage/raw
+echo "[\$(date -u +%T)] downloading"; push_log
 python3 -m kaggle datasets download -d ${KAGGLE_DATASET} -f ${KAGGLE_FILE} -p . --quiet
-shred -u ~/.kaggle/kaggle.json
-for z in *.zip; do [[ -e "\$z" ]] && python3 -m zipfile -e "\$z" . && rm -f "\$z"; done
-tar -xf ${KAGGLE_FILE} -C ~/stage/brats2021 && rm -f ${KAGGLE_FILE}
-cd ~/stage/brats2021
-# Case folders must sit directly under the dataset root.
+rc=\$?; shred -u /root/.kaggle/kaggle.json; [[ \$rc == 0 ]] || fail "kaggle download"
+for z in *.zip; do [[ -e "\$z" ]] && { python3 -m zipfile -e "\$z" . && rm -f "\$z" || fail "unzip"; }; done
+echo "[\$(date -u +%T)] extracting"; push_log
+tar -xf ${KAGGLE_FILE} -C /stage/brats2021 && rm -f ${KAGGLE_FILE} || fail "tar"
+cd /stage/brats2021
 n=\$(find . -mindepth 1 -maxdepth 1 -type d -name 'BraTS2021_*' | wc -l)
-[[ "\$n" == "${EXPECTED_CASES}" ]] || { echo "expected ${EXPECTED_CASES} cases, found \$n" >&2; exit 3; }
-bad=0
+[[ "\$n" == "${EXPECTED_CASES}" ]] || fail "expected ${EXPECTED_CASES} cases, found \$n"
 for d in BraTS2021_*; do
-  for m in flair t1 t1ce t2 seg; do [[ -s "\$d/\${d}_\${m}.nii.gz" ]] || { echo "missing \$d/\${d}_\${m}.nii.gz" >&2; bad=1; }; done
+  for m in flair t1 t1ce t2 seg; do [[ -s "\$d/\${d}_\${m}.nii.gz" ]] || fail "missing \$d/\${d}_\${m}.nii.gz"; done
 done
-[[ "\$bad" == 0 ]] || exit 4
+echo "[\$(date -u +%T)] checksums"; push_log
 find . -type f -name '*.nii.gz' | sort | xargs sha256sum > SHA256SUMS
 { echo "dataset=BraTS 2021 Task 1 (adult glioma) training data"
   echo "source=kaggle:${KAGGLE_DATASET}/${KAGGLE_FILE}"
   echo "cases=\$n"
   echo "files=\$(wc -l < SHA256SUMS)"
   echo "bytes=\$(du -sb . | cut -f1)"
-  echo "staged_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > MANIFEST.txt
-gcloud storage rsync -r . "${DEST}" --quiet
-gcloud storage cp MANIFEST.txt "${DEST}/MANIFEST.txt" --quiet
-cat MANIFEST.txt
+  echo "staged_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > /stage/MANIFEST.txt
+echo "[\$(date -u +%T)] uploading"; push_log
+gcloud storage rsync -r . "${DEST}" --quiet || fail "upload"
+gcloud storage cp -q /stage/MANIFEST.txt "${DEST}/MANIFEST.txt" || fail "manifest"
+touch /var/lib/glo-stage-done
+echo "DONE" > /tmp/state; gcloud storage cp -q /tmp/state "${WORK}/state.txt"
+echo "[\$(date -u +%T)] done"; push_log
 REMOTE
 
-gcs cat "${DEST}/MANIFEST.txt" | grep -q "^cases=${EXPECTED_CASES}$" || die "staging did not complete: ${DEST}"
+gcloud compute instances create "${STAGE_VM}" --project "${GCP_PROJECT_ID}" --zone "${GCP_ZONE}" \
+  --machine-type e2-standard-4 --boot-disk-size 100GB --boot-disk-type pd-balanced \
+  --image-family ubuntu-2204-lts --image-project ubuntu-os-cloud --scopes storage-rw \
+  --metadata-from-file startup-script="${STARTUP}" >/dev/null
+rm -f "${STARTUP}"
+pass "VM ${STAGE_VM} created; the job runs on it (log: ${WORK}/log.txt)"
+
+# Wait for the job (up to 3 hours), reporting its last step.
+state="" last=""
+for _ in $(seq 360); do
+  sleep 30
+  state="$(gcs cat "${WORK}/state.txt" 2>/dev/null || true)"
+  step="$(gcs cat "${WORK}/log.txt" 2>/dev/null | grep '^\[' | tail -1 || true)"
+  [[ -n "${step}" && "${step}" != "${last}" ]] && { log "VM: ${step}"; last="${step}"; }
+  [[ -n "${state}" ]] && break
+done
+[[ "${state}" == "DONE" ]] || { gcs cat "${WORK}/log.txt" 2>/dev/null | tail -20; die "staging failed (${state:-timeout})"; }
+gcs cat "${DEST}/MANIFEST.txt" | grep -q "^cases=${EXPECTED_CASES}$" || die "manifest missing or incomplete at ${DEST}"
+gcs rm -q "${WORK}/**" >/dev/null 2>&1 || true
 pass "staged ${EXPECTED_CASES} glioma cases at ${DEST}"
