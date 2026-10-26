@@ -27,7 +27,7 @@ are contributions of this work:
 
 ## Research questions
 
-1. **Accuracy at a small size.** How close does a two-level NCA cascade with about 30,000 parameters
+1. **Accuracy at a small size.** How close does a two-level NCA cascade with about 32,000 parameters
    come to much larger models in adult glioma segmentation (WT, TC, ET) on multi-parametric MRI,
    measured as the gap in mean Dice to published results on the same official validation set? Internal
    test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases); the published
@@ -377,9 +377,11 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 
 | Part | State |
 |---|---|
-| Reported model (BraTS 2021, internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
+| First model version (BraTS 2021, internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
 | Code corrections from two external reviews and an independent audit | done; tested (`tests/`) and identical to the original recipe by default |
-| The three runs (ablation table above) | configured; not yet trained |
+| Ablations: without global context, without multi-modal fusion | training (started 2026-10-26) |
+| GLO-NCA final model with the global-context block | configured and tested; to be trained after the ablations |
+| Lesion-wise Dice and HD95 (BraTS 2023 form) | done; applied to all three runs with `evaluate.py --lesion-wise` |
 | Analyses on BraTS 2021 (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; to run with the ablation |
 | Overlap of the BraTS 2023 validation cases with the training split | tool ready; needs the official BraTS 2023 glioma ID mapping |
 

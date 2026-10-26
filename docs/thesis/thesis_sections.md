@@ -8,7 +8,7 @@ Text for the thesis chapters, matching the final implementation (repository `mai
 **Research questions.**
 
 - **RQ1.** How close does a compact two-level neural cellular automata (NCA) cascade with about
-  30,000 parameters come to much larger models in adult glioma segmentation (WT, TC, ET), measured as
+  32,000 parameters come to much larger models in adult glioma segmentation (WT, TC, ET), measured as
   the gap in mean Dice to published results on the same official validation set? *(Internal test, 189
   patients; official BraTS 2023 validation on Synapse, 219 cases. The published results were obtained
   with other training budgets and are reported as context, not as a controlled comparison.)*
