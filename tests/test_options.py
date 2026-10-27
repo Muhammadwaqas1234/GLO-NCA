@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 r"""Unit checks for the optional improvements (no data or GPU needed)."""
+import json
+import math
 import os
 import random
 import sys
@@ -842,6 +844,60 @@ def test_lesion_in_score():
           ok_summary and ok_cols)
 
 
+def test_review4_split_and_device():
+    r"""Resume requires the saved split; split identity is stable; the configured device is the one used."""
+    import torch
+    from glo_nca.trainer import _load_split, resolve_device, split_identity
+    cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"))
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            _load_split(cfg, d, d, resume=True)
+            missing = False
+        except FileNotFoundError:
+            missing = True
+        with open(os.path.join(d, "split.json"), "w") as fh:
+            json.dump({"train": ["a"], "validation": ["b"], "test": ["c"]}, fh)
+        kept = _load_split(cfg, d, d, resume=True) == (["a"], ["b"], ["c"])
+    same = split_identity((["a"], ["b"], ["c"])) == split_identity([["a"], ["b"], ["c"]])
+    moved = split_identity((["a", "c"], ["b"], [])) != split_identity((["a"], ["b"], ["c"]))
+    cpu = resolve_device("cpu").type == "cpu"
+    fallback = torch.cuda.is_available() or resolve_device("cuda:1").type == "cpu"
+    check("resume: saved split required and identified; one configured device",
+          missing and kept and same and moved and cpu and fallback)
+
+
+def test_review4_reporting():
+    r"""Lesion-wise columns reach the training CSV; lesion-only scoring is final scoring; HD95 direction."""
+    import csv as _csv
+    from glo_nca.cli.compare_runs import compare, load_scores
+    from glo_nca.reporting import save_per_case
+    row = {"case": "BraTS2021_00001", "WT": 0.9, "TC": 0.8, "ET": 0.7,
+           **{f"{r}_hd95": 2.0 for r in ("WT", "TC", "ET")}, **{f"{r}_hd95_status": "defined" for r in ("WT", "TC", "ET")},
+           **{f"{r}_{k}": v for r in ("WT", "TC", "ET")
+              for k, v in (("lesion_dice", 0.5), ("lesion_hd95", 3.0), ("lesions", 2), ("lesions_missed", 1),
+                           ("lesions_false_positive", 0))}}
+    with tempfile.TemporaryDirectory() as d:
+        save_per_case([row], d)
+        header = next(_csv.reader(open(os.path.join(d, "test_per_case.csv"))))
+        lw = load_scores(d, "lesion_dice")["BraTS2021_00001"]["ET"]
+    cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"), ["evaluation.lesion_wise=true"])
+    a = {f"BraTS2021_{i:05d}": {r: 10.0 for r in ("WT", "TC", "ET")} for i in range(12)}
+    b = {c: {r: 5.0 for r in ("WT", "TC", "ET")} for c in a}           # HD95 halved: better
+    _, _, rows = compare(a, b, boot=50, lower_is_better=True)
+    check("CSV keeps lesion-wise scores; lesion-only switches to final scoring; HD95 lower is better",
+          "ET_lesion_dice" in header and lw == 0.5 and cfg.uses_final_scoring
+          and rows["mean"]["better"] == 12 and rows["mean"]["worse"] == 0 and rows["mean"]["mean_diff"] < 0)
+
+
+def test_review4_no_hd95():
+    r"""score() skips HD95 when asked, also in the tuned (final_evaluation) path."""
+    from glo_nca.evaluation import score
+    gt = np.zeros((10, 10, 10, 3), np.uint8); gt[3:7, 3:7, 3:7, :] = 1
+    th, mc = {r: 0.5 for r in ("WT", "TC", "ET")}, {r: 0 for r in ("WT", "TC", "ET")}
+    out = score([("c", gt.astype(np.float32), gt)], th, mc, surface_hd95="medpy", with_hd95=False)
+    check("--no-hd95: no HD95 computed in the tuned path", math.isnan(out["ET"]["hd95"]) and out["ET"]["hd95_cases"] == 0 and out["ET"]["dice"] > 0.999)
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -852,7 +908,8 @@ if __name__ == "__main__":
               test_overlap_coverage, test_patient_split, test_preflight, test_contrast_family,
               test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names,
               test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused,
-              test_empty_modality_slots, test_lesion_wise, test_lesion_in_score):
+              test_empty_modality_slots, test_lesion_wise, test_lesion_in_score,
+              test_review4_split_and_device, test_review4_reporting, test_review4_no_hd95):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

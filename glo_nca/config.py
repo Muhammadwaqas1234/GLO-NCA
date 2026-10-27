@@ -85,7 +85,8 @@ class GLONCAConfig:
     def uses_final_scoring(self) -> bool:
         r"""True when any evaluation improvement is enabled."""
         return (self.TUNE_THRESHOLDS or self.FULL_RESOLUTION_EVAL or self.BRATS_EMPTY
-                or any(self.MIN_COMPONENT.values()) or self.NESTED_REGIONS or self.SURFACE_HD95)
+                or any(self.MIN_COMPONENT.values()) or self.NESTED_REGIONS or self.SURFACE_HD95
+                or self.LESION_WISE)
 
     @property
     def hd95(self):

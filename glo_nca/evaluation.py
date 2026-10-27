@@ -395,7 +395,7 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
 
 
 def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False,
-          nested=False, surface_hd95=False, per_case=None, lesion=False):
+          nested=False, surface_hd95=False, per_case=None, lesion=False, with_hd95=True):
     r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up.
 
     surface_hd95 is False (legacy voxel HD95), True (surface, medpy convention) or a convention name;
@@ -410,8 +410,9 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
             pf, tf = p.astype(np.float32), t.astype(np.float32)
             acc[r]["dice"].append(_dice(p, t, empty_one))
             acc[r]["iou"].append(iou_score(pf, tf))
-            acc[r]["hd95"].append(hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0),
-                                               convention=_conv(surface_hd95))
+            acc[r]["hd95"].append(float("nan") if not with_hd95
+                                  else hd95_surface(p, t, spacing=spacing or (1.0, 1.0, 1.0),
+                                                    convention=_conv(surface_hd95))
                                   if surface_hd95 else hd95_voxel_legacy(pf, tf))
             acc[r]["status"].append(hd95_status(p, t))
             if lesion:
@@ -439,7 +440,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
                   "cases": len(status), "hd95_cases": len(hd),
                   "hd95_missed": status.count("missed"), "hd95_false_positive": status.count("false_positive"),
                   "both_empty": status.count("both_empty")}
-        if surface_hd95:
+        if surface_hd95 and with_hd95:
             out[r].update(_hd95_summary(acc[r]["hd95"], status))
         if lesion:
             out[r].update(_lesion_summary(acc[r]["lesion"]))
@@ -456,7 +457,7 @@ def hd95_status(pred, target):
     return "missed" if t else "false_positive"
 
 
-def final_evaluation(cfg, dataset, val_cases, test_cases):
+def final_evaluation(cfg, dataset, val_cases, test_cases, with_hd95=True):
     r"""Tune post-processing on validation (if enabled), then score the test cases once."""
     thresholds, min_component = {r: 0.5 for r in REGIONS}, dict(cfg.MIN_COMPONENT)
     val_tuned = None
@@ -465,11 +466,11 @@ def final_evaluation(cfg, dataset, val_cases, test_cases):
             val_cases, dataset, cfg.FULL_RESOLUTION_EVAL, empty_one=cfg.BRATS_EMPTY, nested=cfg.NESTED_REGIONS)
     else:
         val = score(val_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
-                    cfg.NESTED_REGIONS, cfg.hd95)
+                    cfg.NESTED_REGIONS, cfg.hd95, with_hd95=with_hd95)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
     test_rows = []
     test = score(test_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
-                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows, lesion=cfg.LESION_WISE)
+                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows, lesion=cfg.LESION_WISE, with_hd95=with_hd95)
     return {"thresholds": thresholds, "min_component_voxels": min_component,
             "evaluation_spec": evaluation_spec(cfg, thresholds, min_component),
             "full_resolution": cfg.FULL_RESOLUTION_EVAL, "brats_empty": cfg.BRATS_EMPTY,

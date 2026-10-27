@@ -104,7 +104,7 @@ def holm(pvalues):
     return adj
 
 
-def compare(a, b, boot=10000, seed=0):
+def compare(a, b, boot=10000, seed=0, lower_is_better=False):
     r"""Paired statistics of B minus A per region and for the mean over regions.
 
     ``a`` and ``b`` are per-case score dictionaries, or lists of them (one per training seed, paired by
@@ -112,6 +112,8 @@ def compare(a, b, boot=10000, seed=0):
     patient are averaged first, and the bootstrap interval and the Wilcoxon test both use these patient
     values. With several seeds, each seed's effect is reported and the interval resamples patients and
     seeds (two-level bootstrap); the Wilcoxon test uses each patient's difference averaged over seeds.
+    Differences stay B - A; ``better``/``worse`` count patients by the metric's direction (lower is better
+    for HD95).
     """
     from scipy.stats import wilcoxon
 
@@ -140,7 +142,8 @@ def compare(a, b, boot=10000, seed=0):
                    "mean_diff": float(D.mean()), "median_diff": float(np.median(per_patient)),
                    "ci95": [float(lo), float(hi)],
                    "p_wilcoxon": float(wilcoxon(nz).pvalue) if len(nz) >= 10 else float("nan"),
-                   "better": int((per_patient > 0).sum()), "worse": int((per_patient < 0).sum()),
+                   "better": int(((-per_patient if lower_is_better else per_patient) > 0).sum()),
+                   "worse": int(((-per_patient if lower_is_better else per_patient) < 0).sum()),
                    "seed_effects": [float(x) for x in D.mean(axis=1)]}
     # Mean Dice is the primary endpoint; WT/TC/ET are secondary and Holm-corrected among themselves.
     # Correction across several architectural contrasts is done over their primary p-values (holm()).
@@ -183,7 +186,7 @@ def main(argv=None) -> int:
     if len(a) != len(b):
         print(f"FAILED: A has {len(a)} seed(s), B has {len(b)}; pair them by position.")
         return 2
-    cases, patients, rows = compare(a, b, args.boot, args.seed)
+    cases, patients, rows = compare(a, b, args.boot, args.seed, lower_is_better="hd95" in args.metric)
     if not cases:
         print("FAILED: the runs share no cases.")
         return 2
@@ -223,7 +226,7 @@ def _family(args) -> int:
         if len(a) != len(b) or not a_spec or not b_spec:
             print(f"FAILED: contrast {name} needs A::B with the same number of seeds.")
             return 2
-        cases, patients, rows = compare(a, b, args.boot, args.seed)
+        cases, patients, rows = compare(a, b, args.boot, args.seed, lower_is_better="hd95" in args.metric)
         results[name] = {"cases": len(cases), "patients": len(patients), "seeds": len(a), "results": rows}
     adjusted = holm([results[n]["results"]["mean"]["p_wilcoxon"] for n in results])
     print(f"{'contrast':24}{'diff':>9}{'95% CI':>22}{'p':>9}{'p Holm (family)':>17}")

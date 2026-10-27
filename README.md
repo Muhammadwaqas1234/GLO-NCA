@@ -23,7 +23,7 @@ are contributions of this work:
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
 | Analysis | Ablation design (global context: SE, spatial gate and coarse level removed together; multi-modal fusion with kept input slots), paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
-| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 51 unit and 27 pipeline checks, an equivalence test against the original script, and the published weights |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 54 unit and 29 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
@@ -275,7 +275,9 @@ recipe before the global-context block was added to GLO-NCA, and are kept as tra
 
 - **Without global context** removes all four context sources. It also has a third of the parameters,
   because the coarse level is a cell of its own; its result reflects the missing context together with
-  this capacity difference.
+  this capacity difference. Batch normalisation still uses statistics of the whole volume at every
+  step, so the variant is not strictly local; it removes every explicit context mechanism, and
+  per-voxel normalisation (`model.norm: layer`) would be the strictly local control.
 - **Without multi-modal fusion** removes FLAIR, T1 and T2. It keeps SE, the spatial gate and the coarse
   level but has no global-context block, so it differs from GLO-NCA in the input and in that block;
   leave-one-modality-out at inference (`glo-analyze modalities`) isolates the effect of the input.

@@ -81,8 +81,10 @@ def final_report(cfg, out_dir, ck_ep, test_plain, test, hist, n_params, train_ti
 
 
 def save_per_case(rows, out_dir, name="test_per_case.csv"):
-    r"""Write per-case Dice (one row per case) as CSV, with HD95 and its status when they were scored."""
+    r"""Write per-case Dice (one row per case) as CSV, with HD95, its status and lesion-wise scores when scored."""
     extra = [f"{r}_{k}" for r in REGIONS for k in ("hd95", "hd95_status")] if rows and "WT_hd95" in rows[0] else []
+    lesion = ("lesion_dice", "lesion_hd95", "lesions", "lesions_missed", "lesions_false_positive")
+    extra += [f"{r}_{k}" for r in REGIONS for k in lesion] if rows and "WT_lesion_dice" in rows[0] else []
     with open(os.path.join(out_dir, name), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["case"] + REGIONS + ["mean"] + extra)
@@ -101,10 +103,11 @@ def load_per_case(out_dir, name="test_per_case.csv"):
         return [{"case": row["case"], **{r: float(row[r]) for r in REGIONS}} for row in csv.DictReader(fh)]
 
 
-def write_figures(out_dir, hist, best_epoch, settings, per_case=None, examples=None, title="GLO-NCA cascade"):
+def write_figures(out_dir, hist, best_epoch, settings, per_case=None, examples=None, title="GLO-NCA cascade",
+                  hd95_label="HD95 (voxels, lower is better)"):
     r"""Draw every available figure into out_dir/figures; a plotting error is reported, never raised."""
     jobs = [("training curves", lambda: plots.plot_training(hist, best_epoch, out_dir, title)),
-            ("test summary", lambda: plots.plot_test_summary(settings, out_dir))]
+            ("test summary", lambda: plots.plot_test_summary(settings, out_dir, hd95_label=hd95_label))]
     if per_case:
         jobs.append(("per-case Dice", lambda: plots.plot_per_case(per_case, out_dir)))
     if examples:

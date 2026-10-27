@@ -181,7 +181,7 @@ def main(argv=None) -> int:
                 return 2
             cases[state] = [(c, np.mean([b[c][0].astype(np.float32) for b in by_case], axis=0),
                              by_case[0][c][1]) for c in ids]
-        tuned = final_evaluation(C0, ds, cases["val"], cases["test"])
+        tuned = final_evaluation(C0, ds, cases["val"], cases["test"], with_hd95=not args.no_hd95)
     else:
         # Fixed post-processing: score case by case with a resumable progress file.
         thresholds = _parse_thresholds(args.thresholds)

@@ -41,6 +41,18 @@ def main() -> int:
             check(f"train {name}: completes and tests", rc == 0 and status["state"] == "completed",
                   status["state"])
         fixed = os.path.join(runs, "fixed")
+        # A planned pause wins over early stopping on the same epoch: paused, no final test.
+        rc = train.main(["--config", os.path.join(REPO, "configs", "experiments", "brats2021_res96_fixed.yaml"),
+                         "--data-root", data, "--output", runs, "--experiment-id", "pause_first",
+                         "--stop-after-epoch", "1", *SMALL, "--override", "training.early_stop_patience=1",
+                         "--override", "training.early_stop_min_delta=10"])
+        st = json.load(open(os.path.join(runs, "pause_first", "status.json")))
+        check("pause before early stop: paused without a final test",
+              rc == 0 and st["state"] == "paused" and not os.path.exists(os.path.join(runs, "pause_first", "results.json")))
+        os.remove(os.path.join(runs, "pause_first", "split.json"))
+        check("resume refuses a run without its split.json", train.main(["--resume", os.path.join(runs, "pause_first"),
+                                                                       "--data-root", data]) != 0)
+
         # A full training checkpoint with the old layer names (models and EMA) resumes and completes.
         import torch
         old_run = os.path.join(runs, "old_names")

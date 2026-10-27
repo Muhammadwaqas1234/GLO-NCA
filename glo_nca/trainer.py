@@ -2,6 +2,7 @@ r"""Training loop, best-model selection, final test, checkpointing and resume.""
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -142,16 +143,29 @@ def with_weights(models, states, fn):
             m.load_state_dict(s)
 
 
+def resolve_device(requested: str) -> torch.device:
+    r"""The configured device: ``cpu``, or a CUDA device (``cuda``/``cuda:N``) when CUDA is available.
+
+    A CUDA request on a host without CUDA falls back to the CPU; an index beyond the visible GPUs is an error.
+    """
+    want = torch.device(requested or "cpu")
+    if want.type != "cuda" or not torch.cuda.is_available():
+        return torch.device("cpu")
+    index = want.index or 0
+    if index >= torch.cuda.device_count():
+        raise ValueError(f"training.device {requested} requested, but only {torch.cuda.device_count()} GPU(s) visible")
+    return torch.device("cuda", index)
+
+
 def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
     r"""Dataset, the NCA levels (two, or the fine level alone) and the agent, wired to the given split."""
     tr, va, te = splits
     DATA_ROOT = data_root
-    # The configured GPU when one is present, otherwise the CPU.
-    dev = torch.device("cuda:0" if torch.cuda.is_available() and torch.cuda.device_count() else "cpu")
+    dev = resolve_device(cfg.DEVICE)
     # Cloud runs set GLO_REQUIRE_GPU, so a GPU that fails to initialise stops the run instead of training on the CPU.
     if os.environ.get("GLO_REQUIRE_GPU") == "1" and dev.type != "cuda":
         raise RuntimeError("GLO_REQUIRE_GPU is set but no CUDA device is available")
-    device = cfg.DEVICE if dev.type == "cuda" else "cpu"
+    device = str(dev)                  # the models, the data and the agent all use this one device
     config = [{
         "img_path": DATA_ROOT, "label_path": DATA_ROOT, "model_path": os.path.join(out_dir, "m"),
         "device": device, "unlock_CPU": True,
@@ -264,19 +278,25 @@ class EMA:
 
 
 def _load_split(cfg: GLONCAConfig, data_root: str, out_dir: str, resume: bool) -> Tuple[list, list, list]:
-    r"""The saved split when resuming, otherwise the seeded split of the case folders; saved as split.json."""
+    r"""The saved split when resuming (required), otherwise the seeded split of the case folders, saved as split.json."""
     split_path = os.path.join(out_dir, "split.json")
-    if resume and os.path.exists(split_path):
-        # Resume on the saved split, even if case folders were added or removed since.
+    if resume:
+        # Resume only on the saved split: a regenerated split could move held-out cases into training.
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(f"cannot resume: {split_path} not found (the run's split is required)")
         with open(split_path, encoding="utf-8") as fh:
             sp = json.load(fh)
-        tr, va, te = sp["train"], sp["validation"], sp["test"]
-    else:
-        tr, va, te = make_split(data_root, cfg.SPLIT_SEED, cfg.N_PATIENTS, by_patient=cfg.SPLIT_BY_PATIENT)
+        return sp["train"], sp["validation"], sp["test"]
+    tr, va, te = make_split(data_root, cfg.SPLIT_SEED, cfg.N_PATIENTS, by_patient=cfg.SPLIT_BY_PATIENT)
     with open(split_path, "w") as fh:
         json.dump({"train": tr, "validation": va, "test": te, "seed": cfg.SPLIT_SEED,
                    "by_patient": cfg.SPLIT_BY_PATIENT}, fh, indent=2)
     return tr, va, te
+
+
+def split_identity(splits) -> str:
+    r"""SHA-256 of the (train, validation, test) case lists, stored in every resume checkpoint."""
+    return hashlib.sha256(json.dumps([list(s) for s in splits]).encode()).hexdigest()
 
 
 def _print_settings(cfg: GLONCAConfig, splits) -> None:
@@ -406,8 +426,10 @@ def _final_test(cfg, out_dir, ds, cells, agent, dev, best_path, hist, n_params, 
         parts = ["tuned" if cfg.TUNE_THRESHOLDS else "", "full resolution" if cfg.FULL_RESOLUTION_EVAL else "",
                  "BraTS scoring" if cfg.BRATS_EMPTY else ""]
         settings["Post-processed (" + ", ".join(p for p in parts if p) + ")"] = tuned["test"]
+    hd95_label = ("HD95 (mm, lower is better)" if cfg.SURFACE_HD95 and cfg.FULL_RESOLUTION_EVAL
+                  else "HD95 (voxels, lower is better)")
     write_figures(out_dir, hist, ck["ep"], settings, per_case,
-                 _example_cases(agent, ds, per_case, cfg), title=cfg.NAME)
+                 _example_cases(agent, ds, per_case, cfg), title=cfg.NAME, hd95_label=hd95_label)
     _write_status(out_dir, state="completed", epoch=last_epoch, epochs=cfg.EPOCHS, best=best,
                   best_epoch=ck["ep"], stopped_early=stopped_early)
     return {"status": "completed", "best_epoch": ck["ep"]}
@@ -461,6 +483,11 @@ def run(cfg: GLONCAConfig, out_dir: str, data_root: Optional[str] = None, resume
     if resume:
         # Restore the exact state after the last saved epoch.
         ck = ckpt.load_last(last_path, cells, agent, dev)
+        # The saved split must be the one this checkpoint was trained on (checkpoints from before this
+        # check carry no split identity).
+        if ck.get("split_sha256") and ck["split_sha256"] != split_identity(splits):
+            raise ValueError(f"cannot resume: {os.path.join(out_dir, 'split.json')} differs from the split "
+                             f"the checkpoint was trained on")
         changes = config_changes(ck.get("config") or {}, cfg.raw)
         if changes:
             print(f"RESUME: config changed since the last epoch: {changes}", flush=True)
@@ -521,10 +548,19 @@ def run(cfg: GLONCAConfig, out_dir: str, data_root: Optional[str] = None, resume
 
         # Full checkpoint, monitoring files and planned pause.
         seconds = prior_seconds + (time.time() - t0)
-        ckpt.save_atomic(ckpt.build_last(ep + 1, cells, agent, ema.states if ema is not None else None,
-                                         best, hist, seconds, cfg.raw), last_path)
+        last = ckpt.build_last(ep + 1, cells, agent, ema.states if ema is not None else None,
+                               best, hist, seconds, cfg.raw)
+        ckpt.save_atomic({**last, "split_sha256": split_identity(splits)}, last_path)
         _write_history(out_dir, hist)
         _write_status(out_dir, state="training", epoch=ep + 1, epochs=cfg.EPOCHS, best=best)
+        # A planned pause comes first: it never runs the final test, even on an early-stopping epoch
+        # (a resumed run re-checks early stopping from its history).
+        if stop_after_epoch is not None and ep + 1 >= stop_after_epoch and ep + 1 < cfg.EPOCHS:
+            _write_status(out_dir, state="paused", epoch=ep + 1, epochs=cfg.EPOCHS, best=best,
+                          next_epoch=ep + 2, test_evaluated=False)
+            print(f"PAUSED after epoch {ep+1} of {cfg.EPOCHS}; resume with --resume {out_dir}",
+                  flush=True)
+            return {"status": "paused", "epoch": ep + 1}
         # Early stopping: no validation gain above min_delta for `patience` epochs.
         if validate and cfg.EARLY_STOP_PATIENCE > 0:
             since = ep + 1 - last_gain_epoch(hist, cfg.EARLY_STOP_MIN_DELTA)
@@ -533,12 +569,6 @@ def run(cfg: GLONCAConfig, out_dir: str, data_root: Optional[str] = None, resume
                 print(f"EARLY STOP after epoch {ep+1}: no validation gain above "
                       f"{cfg.EARLY_STOP_MIN_DELTA} for {since} epochs", flush=True)
                 break
-        if stop_after_epoch is not None and ep + 1 >= stop_after_epoch:
-            _write_status(out_dir, state="paused", epoch=ep + 1, epochs=cfg.EPOCHS, best=best,
-                          next_epoch=ep + 2, test_evaluated=False)
-            print(f"PAUSED after epoch {ep+1} of {cfg.EPOCHS}; resume with --resume {out_dir}",
-                  flush=True)
-            return {"status": "paused", "epoch": ep + 1}
 
     train_time = prior_seconds + (time.time() - t0)
     peak = torch.cuda.max_memory_allocated()/1e9 if dev.type == "cuda" else 0
