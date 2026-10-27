@@ -35,6 +35,10 @@ use_slot() {  # use_slot <name or empty>
 install_train_unit() {
   sed "s#/etc/glo-nca-cascade.env#${ENV_FILE}#" "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-training.service" \
     | sudo tee "/etc/systemd/system/${TRAIN_UNIT}.service" >/dev/null
+  # Wait for a usable GPU before the container starts (serialised across slots, see _wait_gpu.sh).
+  sudo mkdir -p "/etc/systemd/system/${TRAIN_UNIT}.service.d"
+  printf '[Service]\nExecStartPre=/bin/bash %s\nTimeoutStartSec=900\n' "${GLO_WORKSPACE}/cloud/scripts/_wait_gpu.sh" \
+    | sudo tee "/etc/systemd/system/${TRAIN_UNIT}.service.d/wait-gpu.conf" >/dev/null
   sudo systemctl daemon-reload
 }
 
