@@ -1,0 +1,12 @@
+# Powers the VM off at boot when no keep-alive run is left (used with cloud/scripts/restarter.sh).
+[Unit]
+Description=GLO-NCA cascade: power off an idle VM after a restart
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/glo-nca-cascade/cloud/scripts/_idle_guard.sh
+
+[Install]
+WantedBy=multi-user.target

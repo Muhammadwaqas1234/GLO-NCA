@@ -357,11 +357,13 @@ Copy `cloud/config/gcp.env.example` to `cloud/config/gcp.env` and fill it in, th
     --data-root /data/brats2021 --auto-stop --keep-alive
 ./cloud/scripts/status.sh                        # progress
 ./cloud/scripts/watchdog.sh                      # from your machine: restart after Spot preemptions
+./cloud/scripts/restarter.sh create              # or in the cloud: Cloud Scheduler starts a stopped VM every 10 min
 ```
 
 Runs are synced to `gs://<bucket>/experiments/<run-id>/` every 5 minutes. With
 `--keep-alive` a restarted VM resumes the run from its last epoch; `watchdog.sh` restarts
-the VM only after a preemption, and `--auto-stop` powers it off when the run ends.
+the VM only after a preemption, and `--auto-stop` powers it off when the run ends. The cloud
+restarter needs no local machine; a restarted VM with nothing left to resume pauses it and powers off.
 
 ## Verify
 

@@ -152,7 +152,9 @@ KEEP_SLOT=%s
       -e "s#_autoresume.sh\$#_autoresume.sh ${SLOT}#" \
       "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-autoresume.service" \
     | sudo tee "/etc/systemd/system/${AUTORESUME_UNIT}.service" >/dev/null
-  sudo systemctl daemon-reload && sudo systemctl enable --quiet "${AUTORESUME_UNIT}"
+  # Boot guard for restarter.sh: an idle VM pauses the restarter and powers off.
+  sudo cp "${GLO_WORKSPACE}/cloud/systemd/glo-nca-cascade-idle-guard.service" /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --quiet "${AUTORESUME_UNIT}" glo-nca-cascade-idle-guard
   pass "keep-alive on: after a restart this VM resumes run $1${SLOT:+ (slot ${SLOT})} on its own."
 }
 
