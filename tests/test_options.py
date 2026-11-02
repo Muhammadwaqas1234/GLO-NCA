@@ -946,6 +946,40 @@ def test_three_levels():
           and same and short, f"params {n}")
 
 
+def test_context_analysis():
+    r"""Knock-outs change and then fully restore the model; attention, false-positive and example-rule helpers."""
+    import torch
+    from glo_nca.context_analysis import (KNOCKOUTS, attention_on_tumour, false_positive_components, knocked_out,
+                                          knockout_variants, recording_attention, rule_cases)
+    from glo_nca.trainer import build
+    cfg = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_glonca.yaml"),
+                      ["model.input_size=[[8,8,8],[32,32,32]]"])
+    with tempfile.TemporaryDirectory() as out:
+        _, cells, _, _ = build(cfg, out, out, ([], [], []))
+    x = torch.randn(1, 8, 8, 8, 24)
+    before = [{a: getattr(c, a) for a in ("se", "spatial_gate", "global_context")} for c in cells]
+    with knocked_out(cells, KNOCKOUTS["all context"]):
+        removed = all(c.se is None and c.global_context is None for c in cells)
+        zero = bool((cells[0](x, steps=2) == 0).all()) and not bool((cells[-1](x, steps=2) == 0).all())
+    restored = all(getattr(c, a) is b[a] for c, b in zip(cells, before) for a in b) and \
+        all("forward" not in c.__dict__ for c in cells)
+    with recording_attention(cells) as rec:
+        cells[-1](x, steps=3)
+    recorded = len(rec[len(cells) - 1]) == 3 and rec[len(cells) - 1][0].shape == (1, 8, 8, 8)
+    attn = np.zeros((8, 8, 8)); attn[:2, :2, :2] = 1 / 8
+    wt = np.zeros((32, 32, 32), bool); wt[:8, :8, :8] = True
+    mass, enrich = attention_on_tumour(attn, wt)
+    gt = np.zeros((20, 20, 20), bool); gt[2:6, 2:6, 2:6] = True
+    pred = gt.copy(); pred[15:17, 15:17, 15:17] = True
+    fp = false_positive_components(pred, gt, (1.0, 1.0, 1.0))
+    picked = rule_cases({"a": 0.0, "b": 1.0, "c": 2.0, "d": 10.0, "e": float("nan")})
+    check("context analyses: knock-outs restore the model; attention on tumour; false spots; fixed-rule cases",
+          removed and zero and restored and recorded and knockout_variants(cfg)[0] == "intact"
+          and len(knockout_variants(cfg)) == 6 and abs(mass - 1.0) < 1e-6 and enrich == 64.0
+          and len(fp) == 1 and abs(fp[0]["distance_mm"] - 300 ** 0.5) < 1e-6 and picked == ["b", "d"],
+          f"false spot {fp[0]['distance_mm']:.1f} mm, cases {picked}")
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -958,7 +992,7 @@ if __name__ == "__main__":
               test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused,
               test_empty_modality_slots, test_lesion_wise, test_lesion_in_score,
               test_review4_split_and_device, test_review4_reporting, test_review4_no_hd95,
-              test_postprocess, test_three_levels):
+              test_postprocess, test_three_levels, test_context_analysis):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

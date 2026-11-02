@@ -1,4 +1,4 @@
-r"""Analyses of a trained run: inference decomposition, iteration budget and effective receptive field."""
+r"""Analyses of a trained run: inference decomposition, steps, receptive field and global-context use."""
 import argparse
 import csv
 import json
@@ -588,6 +588,217 @@ def preflight(args) -> int:
     return 2 if bad else 0
 
 
+
+def knockout(args) -> int:
+    r"""Switch off one context mechanism of the trained model at inference and score the cases."""
+    import torch
+
+    from glo_nca.config import REGIONS
+    from glo_nca.context_analysis import KNOCKOUTS, knocked_out, knockout_variants
+    from glo_nca.data import find_data_root
+    from glo_nca.evaluation import _parse_regions, decode_regions, predict_case, scan_spacing, to_full_resolution
+    from glo_nca.lesion import penalised_hd95
+    run = os.path.abspath(args.run)
+    data_root, _ = find_data_root(args.data_root)
+    cfg, ds, cells, agent, _ = _load(run, data_root, _test_split(run))
+    agent.case_seed = args.case_seed
+    agent.exp.set_model_state(args.split)
+    th, mc = _parse_regions(args.thresholds, 0.5, float), _parse_regions(args.min_component, 0, int)
+    variants = knockout_variants(cfg)
+    keys = list(ds.images_list)[:args.limit]
+    rows = []
+    with torch.no_grad():
+        for n, key in enumerate(keys, 1):
+            data = torch.utils.data.default_collate([ds[list(ds.images_list).index(key)]])
+            for v in variants:
+                with knocked_out(cells, KNOCKOUTS.get(v, set())):
+                    case, prob, _ = predict_case(agent, data, args.ensemble_n, not args.no_tta)
+                full, gt = to_full_resolution(ds, case, prob)
+                masks = decode_regions(full, th, mc)
+                m = _metrics(masks, gt, scan_spacing(ds, case))
+                rows.append({"case": case, "variant": v, **{r: m[r]["dice"] for r in REGIONS},
+                             **{f"{r}_hd95": penalised_hd95(m[r]["hd95"], _status(masks[r], gt[..., i] > 0))
+                                for i, r in enumerate(REGIONS)}})
+            if n % 10 == 0 or n == len(keys):
+                print(f"  {n}/{len(keys)} cases", flush=True)
+    results = {}
+    for v in variants:
+        vr = [r for r in rows if r["variant"] == v]
+        results[v] = {r: float(np.mean([x[r] for x in vr])) for r in REGIONS}
+        results[v]["mean_dice"] = float(np.mean([results[v][r] for r in REGIONS]))
+        results[v]["WT_hd95_median"] = float(np.median([x["WT_hd95"] for x in vr]))
+        results[v]["WT_hd95_over_20mm"] = int(sum(x["WT_hd95"] > 20 for x in vr))
+        print(f"{v:14s} | mean Dice {results[v]['mean_dice']:.4f} (drop {results['intact']['mean_dice'] - results[v]['mean_dice']:+.4f})"
+              f" | WT HD95 median {results[v]['WT_hd95_median']:.2f} mm, >20 mm in {results[v]['WT_hd95_over_20mm']} cases",
+              flush=True)
+    _save_rows(args.output, {"run": run, "split": args.split, "cases": len(keys), "ensemble_n": args.ensemble_n,
+                             "tta": not args.no_tta, "thresholds": th, "min_component": mc,
+                             "note": "knock-out at inference of a model trained with every mechanism",
+                             "results": results}, rows)
+    return 0
+
+
+def attention(args) -> int:
+    r"""Where the global-context blocks look: attention share on the tumour per level, and example maps."""
+    import torch
+
+    from glo_nca.context_analysis import attention_on_tumour, recording_attention
+    from glo_nca.data import find_data_root
+    run = os.path.abspath(args.run)
+    data_root, _ = find_data_root(args.data_root)
+    cfg, ds, cells, agent, _ = _load(run, data_root, _test_split(run))
+    if not cfg.USE_GLOBAL:
+        print("FAILED: this run has no global-context block (model.use_global).")
+        return 2
+    agent.case_seed = args.case_seed
+    agent.exp.set_model_state(args.split)
+    keys = list(ds.images_list)[:args.limit]
+    rows, maps = [], []
+    with torch.no_grad():
+        for n, key in enumerate(keys, 1):
+            sample = ds[list(ds.images_list).index(key)]
+            data = torch.utils.data.default_collate([sample])
+            with recording_attention(cells) as rec:
+                agent.get_outputs(agent.prepare_data(data, eval=True), full_img=True)
+            wt = np.asarray(sample[2])[..., 0] > 0
+            row = {"case": str(sample[0])}
+            for level, steps in rec.items():
+                attn = steps[-1][0].numpy()          # the last step of this level
+                row[f"level{level}_mass"], row[f"level{level}_enrichment"] = attention_on_tumour(attn, wt)
+            rows.append(row)
+            if len(maps) < args.figures:
+                maps.append((row["case"], np.asarray(sample[1])[..., -1], wt, {k: v[-1][0].numpy() for k, v in rec.items()}))
+            if n % 10 == 0 or n == len(keys):
+                print(f"  {n}/{len(keys)} cases", flush=True)
+    levels = sorted(k for k in rows[0] if k.endswith("_mass")) if rows else []
+    summary = {k: float(np.nanmedian([r[k] for r in rows])) for k in rows[0] if k != "case"} if rows else {}
+    for k in levels:
+        e = k.replace("_mass", "_enrichment")
+        print(f"{k.split('_')[0]}: median attention on the tumour {summary[k]:.3f} "
+              f"(x{summary[e]:.1f} its volume share)", flush=True)
+    if maps and args.output:
+        _attention_figure(maps, os.path.splitext(args.output)[0] + "_maps.png")
+    _save_rows(args.output, {"run": run, "split": args.split, "cases": len(keys), "median": summary,
+                             "note": "attention of the last step per level; enrichment = share on the tumour / "
+                                     "tumour volume share (1 = no preference)"}, rows)
+    return 0
+
+
+def _attention_figure(maps, path):
+    r"""Image, tumour outline and attention per level on the slice with most tumour."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import torch
+    levels = sorted(maps[0][3])
+    fig, axes = plt.subplots(len(maps), 1 + len(levels), figsize=(2.6 * (1 + len(levels)), 2.6 * len(maps)),
+                             squeeze=False)
+    for row, (case, img, wt, att) in enumerate(maps):
+        z = int(np.argmax(wt.sum(axis=(0, 1))))
+        axes[row, 0].imshow(np.rot90(img[..., z]), cmap="gray")
+        axes[row, 0].contour(np.rot90(wt[..., z]), levels=[0.5], colors="r", linewidths=0.8)
+        axes[row, 0].set_ylabel(case, fontsize=7)
+        for col, lv in enumerate(levels, 1):
+            a = torch.nn.functional.interpolate(torch.from_numpy(att[lv])[None, None], size=wt.shape,
+                                                mode="trilinear", align_corners=False)[0, 0].numpy()
+            axes[row, col].imshow(np.rot90(img[..., z]), cmap="gray")
+            axes[row, col].imshow(np.rot90(a[..., z]), cmap="magma", alpha=0.6)
+            axes[row, col].contour(np.rot90(wt[..., z]), levels=[0.5], colors="c", linewidths=0.6)
+            axes[row, col].set_title(f"level {lv} attention" if row == 0 else "", fontsize=8)
+        for ax in axes[row]:
+            ax.set_xticks([]); ax.set_yticks([])
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print("Saved", path)
+
+
+def fpdist(args) -> int:
+    r"""False-positive whole-tumour components of saved predictions and their distance to the tumour."""
+    import nibabel as nib
+
+    from glo_nca.context_analysis import false_positive_components, summarise_false_positives
+    cases = sorted(f[:-7] for f in os.listdir(args.pred) if f.endswith(".nii.gz"))
+    if args.run:
+        test = set(_test_split(os.path.abspath(args.run))[2])
+        cases = [c for c in cases if c in test]
+    rows = []
+    for n, case in enumerate(cases, 1):
+        pred_img = nib.load(os.path.join(args.pred, case + ".nii.gz"))
+        seg = next((os.path.join(args.data_root, case, f) for f in os.listdir(os.path.join(args.data_root, case))
+                    if f.endswith("seg.nii.gz")), None)
+        if seg is None:
+            print(f"FAILED: no ground truth for {case}")
+            return 2
+        pred = np.asarray(pred_img.dataobj) > 0
+        gt = np.asarray(nib.load(seg).dataobj) > 0
+        comps = false_positive_components(pred, gt, tuple(float(z) for z in pred_img.header.get_zooms()[:3]))
+        rows.append({"case": case, "components": comps})
+        if n % 20 == 0 or n == len(cases):
+            print(f"  {n}/{len(cases)} cases", flush=True)
+    summary = summarise_false_positives(rows, args.far_mm)
+    for k, v in summary.items():
+        print(f"{k:40s} {v}")
+    flat = [{"case": r["case"], "false_components": len(r["components"]),
+             "false_volume_ml": sum(c["volume_ml"] for c in r["components"]),
+             "nearest_mm": min((c["distance_mm"] for c in r["components"]), default=float("nan")),
+             "farthest_mm": max((c["distance_mm"] for c in r["components"]), default=float("nan"))} for r in rows]
+    _save_rows(args.output, {"pred": os.path.abspath(args.pred), "summary": summary}, flat)
+    return 0
+
+
+def figures(args) -> int:
+    r"""HD95 box plots of several runs and example cases chosen at fixed quantiles of the HD95 difference."""
+    import nibabel as nib
+
+    from glo_nca.context_analysis import plot_examples, plot_hd95, read_per_case, rule_cases
+    runs = dict(x.split("=", 1) for x in args.per_case)
+    vals = {k: read_per_case(v, "hd95") for k, v in runs.items()}
+    common_cases = sorted(set.intersection(*[set(v) for v in vals.values()]))
+    vals = {k: {c: v[c] for c in common_cases} for k, v in vals.items()}
+    os.makedirs(args.output, exist_ok=True)
+    plot_hd95(vals, os.path.join(args.output, "hd95_boxplot.png"))
+    print("Saved", os.path.join(args.output, "hd95_boxplot.png"), f"({len(common_cases)} cases)")
+    result = {"runs": runs, "cases": len(common_cases)}
+    if args.pred:
+        preds = dict(x.split("=", 1) for x in args.pred)
+        ref, other = args.reference, args.compare
+        diff = {c: vals[other][c]["WT"] - vals[ref][c]["WT"] for c in common_cases}
+        chosen = rule_cases(diff, tuple(float(q) for q in args.quantiles.split(",")))
+        find = lambda case, suffix: next(os.path.join(args.data_root, case, f) for f in
+                                         os.listdir(os.path.join(args.data_root, case)) if f.endswith(suffix))
+        load = lambda path: np.asarray(nib.load(path).dataobj)
+        plot_examples(chosen, lambda c: load(find(c, args.image_suffix)), lambda c: load(find(c, "seg.nii.gz")),
+                      {k: (lambda d: (lambda c: load(os.path.join(d, c + ".nii.gz"))))(d) for k, d in preds.items()},
+                      os.path.join(args.output, "examples.png"))
+        print("Saved", os.path.join(args.output, "examples.png"), "cases", chosen)
+        result.update({"example_rule": f"WT HD95 difference {other} - {ref} at quantiles {args.quantiles}",
+                       "examples": {c: diff[c] for c in chosen}})
+    with open(os.path.join(args.output, "figures.json"), "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2, default=_json_default)
+    return 0
+
+
+def _status(pred, target):
+    r"""HD95 status of one region (defined, missed, false_positive or both_empty)."""
+    from glo_nca.evaluation import hd95_status
+    return hd95_status(pred, target)
+
+
+def _save_rows(path, result, rows):
+    r"""Write the result JSON and the per-case rows as CSV next to it."""
+    if not path:
+        return
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2, default=_json_default)
+    if rows:
+        with open(os.path.splitext(path)[0] + "_per_case.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+    print("Saved to", path)
+
+
 def _json_default(o):
     r"""JSON for NumPy scalars and arrays."""
     return o.item() if hasattr(o, "item") else o.tolist() if hasattr(o, "tolist") else str(o)
@@ -669,6 +880,32 @@ def main(argv=None) -> int:
     pt.add_argument("--noise", type=float, default=1.0, help="noise standard deviation (z-score units)")
     pt.add_argument("--positions", type=int, default=4, help="cube positions per distance")
     pt.add_argument("--passes", type=int, default=2)
+    ko = sub.add_parser("knockout", parents=[common, scoring],
+                        help="switch off one context mechanism of the trained model at inference")
+    ko.add_argument("--no-tta", action="store_true")
+    at = sub.add_parser("attention", parents=[common],
+                        help="attention of the global-context blocks: share on the tumour, example maps")
+    at.add_argument("--data-root", required=True)
+    at.add_argument("--split", default="test", choices=["val", "test"])
+    at.add_argument("--limit", type=int, default=None)
+    at.add_argument("--figures", type=int, default=4, help="example cases drawn")
+    fp = sub.add_parser("fpdist", help="false-positive tumour components of saved predictions and their distance")
+    fp.add_argument("--pred", required=True, help="folder of <case>.nii.gz label maps (predict.py)")
+    fp.add_argument("--data-root", required=True, help="case folders with the ground truth")
+    fp.add_argument("--run", default="", help="restrict to this run's test split")
+    fp.add_argument("--far-mm", type=float, default=20.0)
+    fp.add_argument("--output", help="write the results as JSON (+ per-case CSV)")
+    fg = sub.add_parser("figures", help="HD95 box plots and example cases chosen by a fixed rule")
+    fg.add_argument("--per-case", action="append", required=True, metavar="LABEL=CSV",
+                    help="per-case CSV of one run (test_per_case.csv), repeatable")
+    fg.add_argument("--pred", action="append", default=[], metavar="LABEL=DIR",
+                    help="prediction folder of one run (predict.py), repeatable; enables the example figure")
+    fg.add_argument("--reference", default="", help="label of the reference run for the example rule")
+    fg.add_argument("--compare", default="", help="label of the compared run for the example rule")
+    fg.add_argument("--quantiles", default="0.5,0.9", help="quantiles of the WT HD95 difference")
+    fg.add_argument("--data-root", default="", help="case folders with the images and ground truth")
+    fg.add_argument("--image-suffix", default="flair.nii.gz", help="background image file suffix")
+    fg.add_argument("--output", required=True, help="output folder")
     o = sub.add_parser("overlap", help="evaluation cases that appear in the run's training or validation split")
     o.add_argument("--run", required=True, help="run folder with split.json")
     o.add_argument("--mapping", required=True, help="BraTS ID mapping table (.csv or .xlsx) linking releases")
@@ -678,7 +915,8 @@ def main(argv=None) -> int:
     global HD95_CONVENTION
     HD95_CONVENTION = getattr(args, "hd95_convention", HD95_CONVENTION)
     return {"decompose": decompose, "steps": steps, "erf": erf, "overlap": overlap, "modalities": modalities,
-            "manifest": manifest, "perturb": perturb, "preflight": preflight}[args.cmd](args)
+            "manifest": manifest, "perturb": perturb, "preflight": preflight, "knockout": knockout,
+            "attention": attention, "fpdist": fpdist, "figures": figures}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -216,6 +216,28 @@ def main() -> int:
         rc = analyze.main(["perturb", "--run", fixed, "--case", os.path.join(data, case), "--distances", "8,16",
                            "--positions", "1", "--passes", "1", "--output", os.path.join(work, "pert.json")])
         check("analyze perturb: effect per distance", rc in (0, 2))
+        # Global-context analyses on the trained GLO-NCA: knock-out, attention, false spots, figures.
+        g = os.path.join(runs, "glonca")
+        ko = analyze.main(["knockout", "--run", g, "--data-root", data, "--limit", "2", "--ensemble-n", "1",
+                           "--no-tta", "--output", os.path.join(work, "ko.json")])
+        kres = json.load(open(os.path.join(work, "ko.json")))["results"]
+        at = analyze.main(["attention", "--run", g, "--data-root", data, "--limit", "2", "--figures", "1",
+                           "--output", os.path.join(work, "att.json")])
+        rc_pred = predict.main(["--run", g, "--input", data, "--output", os.path.join(work, "pred_g"),
+                                "--ensemble-n", "1", "--et-label", "3"])
+        fd = analyze.main(["fpdist", "--pred", os.path.join(work, "pred_g"), "--data-root", data, "--run", g,
+                           "--output", os.path.join(work, "fp.json")])
+        fg = analyze.main(["figures", "--per-case", f"GLO-NCA={os.path.join(g, 'test_per_case.csv')}",
+                           "--per-case", f"fixed={os.path.join(fixed, 'test_per_case.csv')}",
+                           "--pred", f"GLO-NCA={os.path.join(work, 'pred_g')}", "--reference", "GLO-NCA",
+                           "--compare", "fixed", "--data-root", data, "--image-suffix", "t2f.nii.gz",
+                           "--output", os.path.join(work, "figs")])
+        check("analyze knockout, attention, fpdist, figures on the trained GLO-NCA",
+              (ko, at, rc_pred, fd, fg) == (0, 0, 0, 0, 0) and set(kres) >= {"intact", "global block", "coarse levels"}
+              and os.path.exists(os.path.join(work, "att_maps.png"))
+              and os.path.exists(os.path.join(work, "figs", "hd95_boxplot.png"))
+              and os.path.exists(os.path.join(work, "figs", "examples.png")))
+
         hist = open(os.path.join(fixed, "history.csv")).readline()
         check("history: live and EMA validation both recorded", "val_other_mean" in hist)
 

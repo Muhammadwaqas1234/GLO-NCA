@@ -23,7 +23,7 @@ are contributions of this work:
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
 | Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
 | Analysis | Paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
-| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 56 unit and 30 pipeline checks, an equivalence test against the original script, and the published weights |
+| Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 57 unit and 31 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
@@ -323,6 +323,10 @@ under different rules, or without a recorded scoring specification, are refused 
 | `steps` | accuracy and latency for other NCA step counts |
 | `erf` | effective receptive field from input gradients, at a fixed tumour voxel per case, over several cases |
 | `perturb` | effect of noise placed at a set distance from the predicted tumour boundary |
+| `knockout` | switches off one context mechanism of the trained model at inference (global block, SE, spatial gate, coarse levels, all) and scores the cases |
+| `attention` | share of the global-context attention on the tumour per level, against its volume share, with example maps |
+| `fpdist` | false-positive tumour components of saved predictions: count, volume and distance to the tumour |
+| `figures` | HD95 box plots of several runs and example cases chosen at fixed quantiles of the HD95 difference |
 | `modalities` | leave-one-modality-out at inference |
 | `manifest` | every case with its split, labels, region volumes and ET presence |
 | `preflight` | data checks before training: files, shapes, co-registration, spacing, finite values, labels, duplicates |

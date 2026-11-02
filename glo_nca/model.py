@@ -64,9 +64,14 @@ class GlobalContextBlock3D(nn.Module):
             self.transform[-1].weight.zero_(); self.transform[-1].bias.zero_()
 
     def context(self, x):
-        r"""Context vector per volume, (B, out_channels), from channels-first features (B, C, X, Y, Z)."""
+        r"""Context vector per volume, (B, out_channels), from channels-first features (B, C, X, Y, Z).
+
+        When ``record`` is a list (analysis only), each call appends its attention map (B, X, Y, Z).
+        """
         b, c = x.shape[0], x.shape[1]
         attn = torch.softmax(self.key(x).view(b, 1, -1), dim=-1)
+        if getattr(self, "record", None) is not None:
+            self.record.append(attn.detach().view(b, *x.shape[2:]).cpu())
         return self.transform((x.view(b, c, -1) * attn).sum(dim=-1))
 
     def forward(self, x):
