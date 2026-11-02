@@ -73,6 +73,11 @@ def main(argv=None) -> int:
     ap.add_argument("--hd95-convention", default=None, choices=["medpy", "max_directed"],
                     help="medpy: one percentile over both directions; max_directed: larger directed "
                          "percentile (default: the run's setting)")
+    ap.add_argument("--postprocess-search", action=argparse.BooleanOptionalAction, default=None,
+                    help="choose extra post-processing (main tumour, TC holes, ET rule) on validation; needs "
+                         "--tune-thresholds; test is reported with and without it")
+    ap.add_argument("--tta-flips", type=int, choices=[4, 8], default=None,
+                    help="flip combinations for test-time augmentation (default: the run's setting, 4)")
     ap.add_argument("--lesion-wise", action=argparse.BooleanOptionalAction, default=None,
                     help="also score lesion-wise Dice and HD95 in the BraTS 2023 form (default: the run's setting)")
     ap.add_argument("--nested-regions", action=argparse.BooleanOptionalAction, default=None,
@@ -128,7 +133,7 @@ def main(argv=None) -> int:
         for m, sd in zip(cells, ck["m"]):
             m.load_state_dict(sd)
         n = args.ensemble_n if args.ensemble_n is not None else cfg.ENSEMBLE_N
-        tta = cfg.USE_TTA and not args.no_tta
+        tta = (args.tta_flips or cfg.TTA_FLIPS) if cfg.USE_TTA and not args.no_tta else False
         print(f"{os.path.basename(r)}: best epoch {ck['ep']} (val {ck['val_mean']:.3f}), "
               f"ensemble {n}, tta {tta}", flush=True)
         if args.case_seed is not None:
@@ -137,7 +142,7 @@ def main(argv=None) -> int:
     # One effective protocol: the run's config with every command-line override applied. It drives the
     # inference, the progress identity and the evaluation_spec written with the results.
     pick = lambda flag, run_value: (False if args.legacy else run_value) if flag is None else flag
-    C0.ENSEMBLE_N, C0.USE_TTA, C0.CASE_SEED = models[0][1], models[0][2], models[0][0].case_seed
+    C0.ENSEMBLE_N, C0.CASE_SEED = models[0][1], models[0][0].case_seed
     C0.TUNE_THRESHOLDS = pick(args.tune_thresholds, C0.TUNE_THRESHOLDS)
     if args.min_component or args.legacy:
         C0.MIN_COMPONENT = _parse_min_component(args.min_component)
@@ -147,6 +152,11 @@ def main(argv=None) -> int:
     C0.SURFACE_HD95 = pick(args.hd95_surface, C0.SURFACE_HD95)
     C0.HD95_CONVENTION = args.hd95_convention or C0.HD95_CONVENTION
     C0.LESION_WISE = pick(args.lesion_wise, C0.LESION_WISE)
+    C0.POSTPROCESS_SEARCH = pick(args.postprocess_search, C0.POSTPROCESS_SEARCH)
+    C0.USE_TTA, C0.TTA_FLIPS = bool(models[0][2]), int(models[0][2] or C0.TTA_FLIPS)
+    if C0.POSTPROCESS_SEARCH and not C0.TUNE_THRESHOLDS:
+        print("FAILED: --postprocess-search needs --tune-thresholds (both are chosen on validation).")
+        return 2
     args.tune_thresholds, args.full_resolution, args.brats_empty = (C0.TUNE_THRESHOLDS, C0.FULL_RESOLUTION_EVAL,
                                                                      C0.BRATS_EMPTY)
     args.nested_regions, args.hd95_surface, args.hd95_convention = (C0.NESTED_REGIONS, C0.SURFACE_HD95,
@@ -222,7 +232,8 @@ def main(argv=None) -> int:
     out = args.output or os.path.join(runs[0], "evaluation.json")
     with open(out, "w", encoding="utf-8") as fh:
         # The spec of what was executed (after every override), with the thresholds actually used.
-        tuned["evaluation_spec"] = evaluation_spec(C0, tuned.get("thresholds"), tuned.get("min_component_voxels"))
+        tuned["evaluation_spec"] = evaluation_spec(C0, tuned.get("thresholds"), tuned.get("min_component_voxels"),
+                                                  tuned.get("postprocess"))
         per_case = tuned.pop("test_per_case", None)
         json.dump({"runs": runs, "identity": identity, **tuned, "val_mean_dice": val_mean,
                    "test_mean_dice": mean}, fh, indent=2, default=str)

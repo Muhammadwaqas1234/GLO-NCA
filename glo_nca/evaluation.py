@@ -11,10 +11,14 @@ import torch
 import torch.nn.functional as F
 
 from .lesion import lesion_wise, penalised_hd95
+from .postprocess import apply_postprocess, tune_postprocess
 from .metrics import hd95_voxel_legacy, hd95_surface, iou_score
 
 from .config import REGIONS
 
+
+# Every combination of flips of the three spatial axes (batch, X, Y, Z, C layout).
+ALL_FLIPS = [None, (1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)]
 
 def evaluate(agent, dataset, state, ensemble=1, tta=False, workers=0, per_case=None, surface_hd95=False,
              nested=False):
@@ -99,7 +103,8 @@ def predict_passes(agent, data, ensemble=1, tta=False):
     """
     data = agent.prepare_data(data, eval=True)
     idx, inp0, tgt = data
-    flips = [None, (1,), (2,), (3,)] if tta else [None]
+    # tta: True (or 4) = no flip and one flip per spatial axis; 8 = every combination of axis flips.
+    flips = (ALL_FLIPS if tta == 8 else [None, (1,), (2,), (3,)]) if tta else [None]
     seed = case_seed(agent.case_seed, case_id(idx[0])) if getattr(agent, "case_seed", None) is not None else None
     agent.last_seed = seed
     if seed is None:
@@ -144,8 +149,8 @@ def collect_probs(agent, dataset, state, ensemble=1, tta=False, dtype=np.float16
     return cases
 
 
-def decode_regions(prob, thresholds, min_component, et_rule=None, nested=True):
-    r"""Final masks: threshold, clean up, optional ET relabel, then nest ET in TC and TC in WT."""
+def decode_regions(prob, thresholds, min_component, et_rule=None, nested=True, post=None):
+    r"""Final masks: threshold, clean up, optional ET relabel, nest ET in TC and TC in WT, then ``post``."""
     masks = {r: remove_small_components(prob[..., i] >= thresholds[r], min_component[r])
              for i, r in enumerate(REGIONS)}
     if et_rule:
@@ -154,6 +159,8 @@ def decode_regions(prob, thresholds, min_component, et_rule=None, nested=True):
         # The BraTS label map stores nested regions: TC includes ET, WT includes TC.
         masks["TC"] = masks["TC"] | masks["ET"]
         masks["WT"] = masks["WT"] | masks["TC"]
+    if post:
+        masks = apply_postprocess(masks, post)
     return masks
 
 
@@ -395,7 +402,7 @@ def tune_thresholds(cases, dataset=None, full_resolution=False, grid=THRESHOLD_G
 
 
 def score(cases, thresholds, min_component, dataset=None, full_resolution=False, empty_one=False,
-          nested=False, surface_hd95=False, per_case=None, lesion=False, with_hd95=True):
+          nested=False, surface_hd95=False, per_case=None, lesion=False, with_hd95=True, post=None):
     r"""Dice, mIoU and HD95 per region with per-region thresholds and component clean-up.
 
     surface_hd95 is False (legacy voxel HD95), True (surface, medpy convention) or a convention name;
@@ -403,7 +410,7 @@ def score(cases, thresholds, min_component, dataset=None, full_resolution=False,
     """
     acc = {r: {"dice": [], "iou": [], "hd95": [], "status": [], "lesion": []} for r in REGIONS}
     for case, prob, gt, spacing in _pairs(cases, dataset, full_resolution):
-        masks = decode_regions(prob, thresholds, min_component, nested=nested)
+        masks = decode_regions(prob, thresholds, min_component, nested=nested, post=post)
         for i, r in enumerate(REGIONS):
             p = masks[r]
             t = gt[..., i] > 0
@@ -468,17 +475,32 @@ def final_evaluation(cfg, dataset, val_cases, test_cases, with_hd95=True):
         val = score(val_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
                     cfg.NESTED_REGIONS, cfg.hd95, with_hd95=with_hd95)
         val_tuned = {r: val[r]["dice"] for r in REGIONS}
+    post, trace = None, None
+    if cfg.POSTPROCESS_SEARCH:
+        # Chosen on the validation split only, after the thresholds; the test split is scored once.
+        decoded = [(decode_regions(prob, thresholds, min_component, nested=True), gt, spacing or (1.0, 1.0, 1.0))
+                   for _, prob, gt, spacing in _pairs(val_cases, dataset, cfg.FULL_RESOLUTION_EVAL)]
+        post, trace = tune_postprocess(decoded)
+        print(f"post-processing chosen on validation: {post}", flush=True)
     test_rows = []
     test = score(test_cases, thresholds, min_component, dataset, cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY,
-                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows, lesion=cfg.LESION_WISE, with_hd95=with_hd95)
-    return {"thresholds": thresholds, "min_component_voxels": min_component,
-            "evaluation_spec": evaluation_spec(cfg, thresholds, min_component),
+                 cfg.NESTED_REGIONS, cfg.hd95, per_case=test_rows, lesion=cfg.LESION_WISE, with_hd95=with_hd95,
+                 post=post)
+    out_post = {}
+    if post is not None:
+        # The same test cases without the extra post-processing, for the comparison with other models.
+        out_post = {"postprocess": post, "postprocess_search": trace,
+                    "test_without_postprocess": score(test_cases, thresholds, min_component, dataset,
+                                                      cfg.FULL_RESOLUTION_EVAL, cfg.BRATS_EMPTY, cfg.NESTED_REGIONS,
+                                                      cfg.hd95, lesion=cfg.LESION_WISE, with_hd95=with_hd95)}
+    return {"thresholds": thresholds, "min_component_voxels": min_component, **out_post,
+            "evaluation_spec": evaluation_spec(cfg, thresholds, min_component, post),
             "full_resolution": cfg.FULL_RESOLUTION_EVAL, "brats_empty": cfg.BRATS_EMPTY,
             "nested_regions": cfg.NESTED_REGIONS, "surface_hd95": cfg.SURFACE_HD95,
             "val_tuned": val_tuned, "test": test, "test_per_case": test_rows}
 
 
-def evaluation_spec(cfg, thresholds=None, min_component=None):
+def evaluation_spec(cfg, thresholds=None, min_component=None, post=None):
     r"""The complete scoring specification, written next to every result."""
     from .metrics import METRIC_VERSION
     from . import lesion as lesion_mod
@@ -496,6 +518,9 @@ def evaluation_spec(cfg, thresholds=None, min_component=None):
                             f"Dice 0 and HD95 {lesion_mod.PENALTY:g} mm") if cfg.LESION_WISE else False,
             "tuned": cfg.TUNE_THRESHOLDS, "thresholds": thresholds, "min_component_voxels": min_component,
             "ensemble_n": cfg.ENSEMBLE_N, "tta": cfg.USE_TTA, "case_seed": cfg.CASE_SEED,
+            "tta_flips": cfg.TTA_FLIPS if cfg.USE_TTA else None,
+            "postprocess": ({"chosen_on": "validation", "objective": "mean lesion-wise Dice", **post}
+                            if post is not None else ("validation search" if cfg.POSTPROCESS_SEARCH else None)),
             "rows": "single pass and ensemble at threshold 0.5, then tuned post-processing, all with this spec",
             "validation_selection": "working grid, threshold 0.5"
             + (", nested masks" if cfg.NESTED_REGIONS else "") + (f", surface HD95 ({cfg.HD95_CONVENTION})"

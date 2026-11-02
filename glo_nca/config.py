@@ -59,7 +59,7 @@ class GLONCAConfig:
     CACHE: str = "memory"
     # Review fixes; off by default so earlier runs stay reproducible.
     USE_GLOBAL: bool = False
-    LEVELS: int = 2                  # 2: coarse-to-fine cascade; 1: the fine level alone
+    LEVELS: int = 2                  # cascade levels: 2 (default), 3 (one more coarse level), 1 (fine level alone)
     ALL_REGION_LOSS: bool = False
     VALIDATE_EMA: bool = False
     CROP_ET_PROB: float = 0.0
@@ -77,6 +77,8 @@ class GLONCAConfig:
     PERSISTENT_WORKERS: bool = False
     HD95_CONVENTION: str = "medpy"
     LESION_WISE: bool = False        # also score lesion-wise Dice and HD95 (BraTS 2023 form)
+    TTA_FLIPS: int = 4               # 4: no flip + one flip per axis; 8: every combination of axis flips
+    POSTPROCESS_SEARCH: bool = False  # choose extra post-processing on validation (postprocess.py)
     SPLIT_BY_PATIENT: bool = False
     CACHE_DIR: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -121,9 +123,16 @@ def _set(raw: Dict[str, Any], dotted: str, value: str) -> None:
 
 
 def _levels(value):
-    r"""Number of cascade levels: 2 (coarse to fine) or 1 (the fine level alone)."""
-    if int(value) not in (1, 2):
-        raise ValueError(f"model.levels must be 1 or 2, got {value}")
+    r"""Number of cascade levels: 1 (the fine level alone), 2 (coarse to fine) or 3 (two coarse levels)."""
+    if int(value) not in (1, 2, 3):
+        raise ValueError(f"model.levels must be 1, 2 or 3, got {value}")
+    return int(value)
+
+
+def _flips(value):
+    r"""Number of flip combinations for test-time augmentation: 4 or 8."""
+    if int(value) not in (4, 8):
+        raise ValueError(f"evaluation.tta_flips must be 4 or 8, got {value}")
     return int(value)
 
 
@@ -188,6 +197,8 @@ def load_config(path: str, overrides: Optional[List[str]] = None) -> GLONCAConfi
         PERSISTENT_WORKERS=bool(t.get("persistent_workers", False)),
         HD95_CONVENTION=str(v.get("hd95_convention", "medpy")),
         LESION_WISE=bool(v.get("lesion_wise", False)),
+        TTA_FLIPS=_flips(v.get("tta_flips", 4)),
+        POSTPROCESS_SEARCH=bool(v.get("postprocess_search", False)),
         SPLIT_BY_PATIENT=bool(d.get("split_by_patient", False)),
         raw=raw,
     )

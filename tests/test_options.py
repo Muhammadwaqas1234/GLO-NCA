@@ -162,10 +162,11 @@ def test_review_options():
           and fixed.NESTED_REGIONS and fixed.SURFACE_HD95 and abs(fixed.SKIP_PROB - 0.6) < 1e-9
           and fixed.EPOCHS == base.EPOCHS and fixed.INPUT_SIZE == base.INPUT_SIZE
           and fixed.SPLIT_SEED == base.SPLIT_SEED and fixed.SEED == base.SEED)
-    check("GLO-NCA differs from the shared recipe only in the global-context block",
-          glonca.USE_GLOBAL and not fixed.USE_GLOBAL
-          and {k: v for k, v in vars(glonca).items() if k not in ("NAME", "USE_GLOBAL", "raw")}
-          == {k: v for k, v in vars(fixed).items() if k not in ("NAME", "USE_GLOBAL", "raw")})
+    extra = ("NAME", "USE_GLOBAL", "LEVELS", "STEPS", "raw")
+    check("GLO-NCA differs from the shared recipe only in the global block and the third level",
+          glonca.USE_GLOBAL and not fixed.USE_GLOBAL and glonca.LEVELS == 3 and fixed.LEVELS == 2
+          and {k: v for k, v in vars(glonca).items() if k not in extra}
+          == {k: v for k, v in vars(fixed).items() if k not in extra})
 
 
 def test_all_region_loss():
@@ -361,7 +362,7 @@ def test_labels():
     from glo_nca.trainer import build
     reg = labels_to_regions(np.array([0, 1, 2, 3, 4]))
     ok = reg[:, 2].tolist() == [0, 0, 0, 1, 1] and reg[:, 1].tolist() == [0, 1, 0, 1, 1]
-    rejects = lambda f: (lambda: (f(), False))() if False else _raises(f)
+    rejects = _raises
     cfg = load_config(os.path.join(_ROOT, "configs", "glo_nca_cascade_brats2021.yaml"), ["data.et_labels=[3]"])
     with tempfile.TemporaryDirectory() as out:
         ds, _, _, _ = build(cfg, out, out, ([], [], []))
@@ -524,11 +525,12 @@ def test_ablation_configs():
     n = {k: count(cfg) for k, cfg in (("full", full), ("noglobal", noglobal), ("single", single))}
     same = lambda a, b, skip: ({k: v for k, v in vars(a).items() if k not in skip | {"NAME", "raw"}}
                                == {k: v for k, v in vars(b).items() if k not in skip | {"NAME", "raw"}})
-    ok = (same(full, noglobal, {"USE_SE", "USE_SPATIAL", "USE_GLOBAL", "LEVELS"})
-          and same(full, single, {"MODALITIES", "USE_GLOBAL"})
+    ok = (same(full, noglobal, {"USE_SE", "USE_SPATIAL", "USE_GLOBAL", "LEVELS", "STEPS"})
+          and same(full, single, {"MODALITIES", "USE_GLOBAL", "LEVELS", "STEPS"})
+          and full.LEVELS == 3 and single.LEVELS == 2
           and noglobal.LEVELS == 1 and not (noglobal.USE_SE or noglobal.USE_SPATIAL or noglobal.USE_GLOBAL)
           and full.USE_GLOBAL and not single.USE_GLOBAL and single.MODALITIES == ["none", "t1ce", "none", "none"]
-          and (n["full"], n["noglobal"], n["single"]) == (32304, 10272, 30138) and not full.LEGACY_PATCHIFY
+          and (n["full"], n["noglobal"], n["single"]) == (52248, 10272, 30138) and not full.LEGACY_PATCHIFY
           and full.uses_final_scoring and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
     check("study configs: intended differences, parameter counts", ok,
           f"GLO-NCA {n['full']}, without global context {n['noglobal']}, T1ce only {n['single']}")
@@ -898,6 +900,52 @@ def test_review4_no_hd95():
     check("--no-hd95: no HD95 computed in the tuned path", math.isnan(out["ET"]["hd95"]) and out["ET"]["hd95_cases"] == 0 and out["ET"]["dice"] > 0.999)
 
 
+def test_postprocess():
+    r"""Post-processing steps keep the nesting; the validation search picks a step only when it helps."""
+    from glo_nca.evaluation import ALL_FLIPS
+    from glo_nca.postprocess import NONE, apply_postprocess, keep_main_tumour, tune_postprocess
+    z = lambda: np.zeros((30, 30, 30), bool)
+    wt = z(); wt[5:15, 5:15, 5:15] = True; wt[25:27, 25:27, 25:27] = True          # tumour + far false spot
+    tc = z(); tc[7:13, 7:13, 7:13] = True; tc[9:11, 9:11, 9:11] = False             # core with a hole
+    et = z(); et[8:10, 8:10, 8:10] = True
+    masks = {"WT": wt, "TC": tc | et, "ET": et}
+    kept = keep_main_tumour(wt, 0.1)
+    ok_keep = kept[6, 6, 6] and not kept[26, 26, 26] and keep_main_tumour(wt, 0) is wt
+    m = apply_postprocess(masks, {"wt_keep_ratio": 0.1, "tc_fill_holes": True, "et_rule": None})
+    ok_apply = (not m["WT"][26, 26, 26] and m["TC"][10, 10, 10] and not (m["ET"] & ~m["TC"]).any()
+                and not (m["TC"] & ~m["WT"]).any())
+    gt = np.zeros((30, 30, 30, 3), np.uint8)
+    gt[5:15, 5:15, 5:15, 0] = 1; gt[7:13, 7:13, 7:13, 1] = 1; gt[8:10, 8:10, 8:10, 2] = 1
+    post, trace = tune_postprocess([(masks, gt, (1.0, 1.0, 1.0))] * 3)
+    clean = {"WT": gt[..., 0] > 0, "TC": gt[..., 1] > 0, "ET": gt[..., 2] > 0}
+    unchanged, _ = tune_postprocess([(clean, gt, (1.0, 1.0, 1.0))] * 3)
+    check("post-processing: main tumour, TC holes, nesting; chosen only when it helps on validation",
+          ok_keep and ok_apply and post["wt_keep_ratio"] > 0 and unchanged == NONE and "none" in trace
+          and len(ALL_FLIPS) == 8 and len(set(ALL_FLIPS)) == 8, f"chosen {post}")
+
+
+def test_three_levels():
+    r"""Three-level cascade: kernels 7/7/3, one step count per level, coarsest level at a quarter of the size."""
+    from glo_nca.trainer import build
+    cfg = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_glonca.yaml"))
+    two = load_config(os.path.join(_ROOT, "configs", "experiments", "brats2021_res96_fixed.yaml"),
+                      ["model.use_global=true"])
+    with tempfile.TemporaryDirectory() as out:
+        _, cells, agent, _ = build(cfg, out, out, ([], [], []))
+        _, cells2, _, _ = build(two, out, out, ([], [], []))
+    kernels = [c.perceive_conv.kernel_size[0] for c in cells]
+    n = sum(p.numel() for c in cells for p in c.parameters())
+    n2 = sum(p.numel() for c in cells2 for p in c.parameters())
+    same = {k: v for k, v in vars(cfg).items() if k not in ("NAME", "LEVELS", "STEPS", "raw")} == \
+           {k: v for k, v in vars(two).items() if k not in ("NAME", "LEVELS", "STEPS", "raw")}
+    short = _raises(lambda: build(load_config(os.path.join(_ROOT, "configs", "experiments",
+                                                           "brats2021_res96_glonca.yaml"), ["model.steps=[20,20]"]),
+                                  ".", ".", ([], [], [])))
+    check("three levels: kernels 7/7/3, steps per level, otherwise the two-level recipe",
+          kernels == [7, 7, 3] and agent.exp.get_from_config("train_model") == 2 and n == 52248 and n2 == 32304
+          and same and short, f"params {n}")
+
+
 if __name__ == "__main__":
     for t in (test_config, test_augmentation, test_components, test_tuning, test_full_resolution, test_early_stop, test_brats_empty, test_hd95_surface,
               test_review_options, test_all_region_loss, test_et_crop, test_global_block, test_decoder,
@@ -909,7 +957,8 @@ if __name__ == "__main__":
               test_code_identity, test_resume_config_changes, test_legacy_checkpoint_names,
               test_ema_legacy_states, test_hd95_denominators, test_missing_spec_refused,
               test_empty_modality_slots, test_lesion_wise, test_lesion_in_score,
-              test_review4_split_and_device, test_review4_reporting, test_review4_no_hd95):
+              test_review4_split_and_device, test_review4_reporting, test_review4_no_hd95,
+              test_postprocess, test_three_levels):
         t()
     print(f"\n  {sum(RESULTS)}/{len(RESULTS)} passed")
     raise SystemExit(0 if all(RESULTS) else 1)

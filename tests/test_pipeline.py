@@ -167,6 +167,17 @@ def main() -> int:
         check("evaluate --lesion-wise: summary, per-case CSV, compare_runs --metric lesion_dice",
               rc == 0 and "lesion_dice" in lres["test"]["ET"] and lres["evaluation_spec"]["lesion_wise"]
               and os.path.exists(lcsv) and cmp_rc == 0)
+        # Post-processing chosen on validation, then applied by predict.py; 8-flip TTA.
+        rc = evaluate.main(["--run", os.path.join(runs, "glonca"), "--data-root", data, "--postprocess-search",
+                            "--tta-flips", "8", "--ensemble-n", "1", "--output", os.path.join(work, "post.json")])
+        pres = json.load(open(os.path.join(work, "post.json")))
+        rc2 = predict.main(["--run", os.path.join(runs, "glonca"), "--input", data, "--output",
+                            os.path.join(work, "pred_post"), "--limit", "1", "--ensemble-n", "1",
+                            "--postprocess", os.path.join(work, "post.json")])
+        check("evaluate --postprocess-search (8 flips) and predict --postprocess",
+              rc == 0 and rc2 == 0 and "postprocess" in pres and "test_without_postprocess" in pres
+              and pres["evaluation_spec"]["tta_flips"] == 8 and pres["evaluation_spec"]["postprocess"]["chosen_on"] == "validation")
+
         rc = evaluate.main(["--run", fixed, "--data-root", data, "--splits", "test", "--legacy",
                             "--output", os.path.join(work, "legacy.json")])
         mixed = compare_runs.main([fixed, os.path.join(work, "legacy.json.progress.jsonl"), "--boot", "50"])

@@ -61,10 +61,6 @@ class DataSplit():
         r"""Image entries of one split ('train', 'val' or 'test')."""
         return self.get_data(self.images[state])
 
-    def get_labels(self, state):
-        r"""Label entries of one split ('train', 'val' or 'test')."""
-        return self.get_data(self.labels[state])
-
     def get_data(self, data):
         r"""Flatten the {id: {slice: entry}} structure into a list."""
         lst_out = []

@@ -187,12 +187,13 @@ def build(cfg: GLONCAConfig, data_root: str, out_dir: str, splits) -> Tuple:
     ds.brain_mask = cfg.BRAIN_MASK
     ds.legacy_patchify = cfg.LEGACY_PATCHIFY
     ds.use_foreground_crop = cfg.USE_FOREGROUND_CROP; ds.use_nonzero_norm = cfg.USE_NONZERO_NORM
-    cells = [GLONCACell(cfg.CHANNEL_N, cfg.SKIP_PROB, dev, cfg.HIDDEN, kernel_size=7, input_channels=len(cfg.MODALITIES),
-                     use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, dropout=cfg.DROPOUT,
-                     use_global=cfg.USE_GLOBAL, norm=cfg.NORM),
-          GLONCACell(cfg.CHANNEL_N, cfg.SKIP_PROB, dev, cfg.HIDDEN, kernel_size=3, input_channels=len(cfg.MODALITIES),
-                     use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, dropout=cfg.DROPOUT,
-                     use_global=cfg.USE_GLOBAL, norm=cfg.NORM)][-cfg.LEVELS:]
+    if len(cfg.STEPS) < cfg.LEVELS:
+        raise ValueError(f"model.steps lists {len(cfg.STEPS)} step counts for {cfg.LEVELS} levels")
+    # Coarse levels use a 7^3 perception kernel, the finest level 3^3 (coarse to fine).
+    cells = [GLONCACell(cfg.CHANNEL_N, cfg.SKIP_PROB, dev, cfg.HIDDEN, kernel_size=k, input_channels=len(cfg.MODALITIES),
+                        use_se=cfg.USE_SE, use_spatial=cfg.USE_SPATIAL, dropout=cfg.DROPOUT,
+                        use_global=cfg.USE_GLOBAL, norm=cfg.NORM)
+             for k in [7] * (cfg.LEVELS - 1) + [3]]
     agent = CascadeAgent(cells)
     exp = Experiment(config, ds, cells, agent); ds.set_experiment(exp)
     agent.amp, agent.case_seed = cfg.AMP, cfg.CASE_SEED

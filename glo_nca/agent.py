@@ -211,11 +211,12 @@ class CascadeAgent:
         n = inputs_full.shape[0]
         inputs_loc = torch.zeros((n, *size, inputs_full.shape[4])).to(device)
         targets_loc = torch.zeros((n, *size, targets_full.shape[4])).to(device)
-        size_full = [int(full_res.shape[d] / scale_fac) for d in (1, 2, 3)]
+        # The patch covers size * 2^(levels below the next one) voxels of the full-resolution volume
+        # (with two levels this is half the volume, as before).
+        factor_pow = math.pow(2, self.exp.get_from_config('train_model') - m - 1)
+        size_full = [int(size[d] * factor_pow) for d in range(3)]
         full_res_new = torch.zeros((n, *size_full, full_res.shape[4])).to(device)
         full_res_gt_new = torch.zeros((n, *size_full, full_res_gt.shape[4])).to(device)
-
-        factor_pow = math.pow(2, self.exp.get_from_config('train_model') - m - 1)
         et_prob = self.exp.get_from_config('crop_et_prob') or 0.0
         for b in range(n):
             pos = self._et_crop(targets_full[b], size) if et_prob > 0 and random.random() < et_prob else None

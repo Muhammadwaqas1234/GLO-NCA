@@ -112,7 +112,6 @@ class GLONCACell(nn.Module):
         self.batch_norm = torch.nn.BatchNorm3d(hidden_size, track_running_stats=False) if norm == "batch" else None
         self.layer_norm = nn.LayerNorm(hidden_size) if norm == "layer" else None
         # Light dropout on the hidden update (regularisation; 0.0 = off).
-        self.dropout_p = dropout
         self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else None
 
         # Global-context blocks: SE (channel) and spatial.

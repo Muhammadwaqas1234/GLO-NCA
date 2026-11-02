@@ -52,6 +52,11 @@ def main(argv=None) -> int:
     ap.add_argument("--ensemble-n", type=int, default=None,
                     help="stochastic passes per case (default: the run's evaluation.ensemble_n)")
     ap.add_argument("--no-tta", action="store_true", help="disable flip test-time augmentation")
+    ap.add_argument("--tta-flips", type=int, choices=[4, 8], default=None,
+                    help="flip combinations for test-time augmentation (default: the run's setting, 4)")
+    ap.add_argument("--postprocess", default="", metavar="evaluation.json",
+                    help="apply the post-processing chosen on validation by evaluate.py --postprocess-search "
+                         "(its 'postprocess' entry: main tumour, TC holes, ET rule)")
     ap.add_argument("--case-seed", type=int, default=None,
                     help="seed the stochastic passes per case (base + hash of the case name), for exact repeats")
     ap.add_argument("--et-label", type=int, default=3, help="label for enhancing tumour (3: 2023+, 4: 2021)")
@@ -71,14 +76,18 @@ def main(argv=None) -> int:
     thresholds = _parse_regions(args.thresholds, 0.5, float)
     min_component = _parse_regions(args.min_component, 0, int)
     et_rule = tuple(float(x) for x in args.et_to_ncr.split(",")) if args.et_to_ncr else None
+    post = json.load(open(args.postprocess, encoding="utf-8"))["postprocess"] if args.postprocess else None
+    if post and et_rule:
+        print("FAILED: use either --et-to-ncr or the ET rule of --postprocess, not both.")
+        return 2
     from glo_nca.trainer import code_identity
     decoder = {"thresholds": thresholds, "min_component": min_component, "et_rule": et_rule,
-               "et_label": args.et_label}
+               "et_label": args.et_label, "postprocess": post}
 
     def write_label(prob, bbox, shape, affine, header, out_path):
         r"""Threshold, clean and relabel one probability map, then save it as a BraTS label map."""
         # The same decoder as the internal evaluation with nested regions.
-        masks = decode_regions(paste_to_scan(prob, bbox, shape), thresholds, min_component, et_rule)
+        masks = decode_regions(paste_to_scan(prob, bbox, shape), thresholds, min_component, et_rule, post=post)
         out = nib.Nifti1Image(masks_to_label(masks, args.et_label), affine, header)
         out.set_data_dtype(np.uint8)
         tmp = out_path + ".tmp.nii.gz"
@@ -95,7 +104,7 @@ def main(argv=None) -> int:
             return 2
         cases = sorted(f[:-4] for f in os.listdir(args.from_probs) if f.endswith(".npz"))[:args.limit]
         print(f"{len(cases)} cases from saved probabilities | thresholds {thresholds} | "
-              f"min component {min_component} | et-to-ncr {et_rule}", flush=True)
+              f"min component {min_component} | et-to-ncr {et_rule} | postprocess {post}", flush=True)
         for n, case in enumerate(cases, 1):
             with np.load(os.path.join(args.from_probs, case + ".npz")) as z:
                 bbox = tuple(int(v) for v in z["bbox"]) if z["bbox"].size else None
@@ -119,7 +128,7 @@ def main(argv=None) -> int:
         print(f"FAILED: {len(modalities)} modalities given, the model expects {len(cfg.MODALITIES)}.")
         return 2
     ensemble = args.ensemble_n if args.ensemble_n is not None else cfg.ENSEMBLE_N
-    tta = cfg.USE_TTA and not args.no_tta
+    tta = (args.tta_flips or cfg.TTA_FLIPS) if cfg.USE_TTA and not args.no_tta else False
     set_seed(cfg.SEED)
     ds, cells, agent, dev = build(cfg, args.input, args.run, ([], [], []))
     ds.MODALITIES = modalities
@@ -146,7 +155,7 @@ def main(argv=None) -> int:
     if args.limit:
         cases = cases[:args.limit]
     print(f"{len(cases)} cases | best epoch {ck['ep']} | ensemble {ensemble} | tta {tta} | "
-          f"thresholds {thresholds} | min component {min_component} | et-to-ncr {et_rule}", flush=True)
+          f"thresholds {thresholds} | min component {min_component} | et-to-ncr {et_rule} | postprocess {post}", flush=True)
 
     for n, case in enumerate(cases, 1):
         out_path = os.path.join(args.output, f"{case}.nii.gz")

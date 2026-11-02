@@ -47,7 +47,6 @@ def _surface(mask):
 
 # Bump when a metric definition changes, so stored per-case results are not mixed with new ones.
 METRIC_VERSION = 2
-HD95_CONVENTIONS = ("medpy", "max_directed")
 
 
 def hd95_surface(pred, target, spacing=(1.0, 1.0, 1.0), convention="medpy"):

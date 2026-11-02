@@ -1,11 +1,13 @@
-# GLO-NCA, the final model of the thesis: the shared corrected recipe (brats2021_res96_fixed.yaml)
-# with every source of global context -- SE channel recalibration, the local spatial gate, the coarse
-# 48^3 level and the attention-pooled global-context block. The ablations use the shared recipe
-# without the global block.
+# GLO-NCA, the final model of the thesis: the shared corrected recipe (brats2021_res96_fixed.yaml) with
+# every source of global context -- SE channel recalibration, the local spatial gate, two coarse cascade
+# levels (24^3 and 48^3, a whole-brain view before the 96^3 level) and the attention-pooled
+# global-context block. The ablations use the shared recipe without these.
 base: brats2021_res96_fixed.yaml
 
 experiment:
   name: GLO-NCA-BRATS2021-RES96
 
 model:
+  levels: 3                       # 24^3 -> 48^3 -> 96^3; coarse levels kernel 7, fine level kernel 3
+  steps: [20, 20, 20]             # NCA steps per level, coarse to fine
   use_global: true                # attention pooling over the volume, added to every voxel's hidden layer
