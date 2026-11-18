@@ -122,6 +122,22 @@ submission 9783820:
 On the same validation set, the BraTS 2021 and 2022 winners (nnU-Net based ensembles) report Dice
 0.928/0.878/0.845 and 0.927/0.875/0.844 (WT/TC/ET).
 
+**Local-only variant (no context mechanisms).** The same validation set, scored by the organisers
+(submission 9785335): a single-level NCA without SE, spatial gate, coarse levels or global-context
+block (`brats2021_res96_fixed_noglobal.yaml`, 10,272 parameters), with its own validation-tuned
+thresholds, ensemble ×4 + flips, full resolution and no ET relabelling.
+
+| Metric | WT | TC | ET | Mean |
+|---|---|---|---|---|
+| Dice | 0.884 | 0.801 | 0.779 | 0.821 |
+| HD95 (mm) | 20.62 | 27.46 | 25.66 | 24.58 |
+| Lesion-wise Dice | 0.647 | 0.750 | 0.723 | 0.707 |
+| Lesion-wise HD95 (mm) | 110.79 | 49.64 | 53.85 | 71.43 |
+| False-positive lesions per case | 0.95 | 0.15 | 0.33 | |
+
+Without context, mean Dice is 0.028 lower than the first GLO-NCA version (0.849), and the lesion-wise
+WT Dice falls from 0.879 to 0.647: on average almost one spurious whole-tumour lesion per case.
+
 Per-case Dice below 0.50 (standard Dice): WT 1, TC 9, ET 22 of 219 cases; Dice 0: TC 2, ET 13.
 Of the 13 ET zeros, 7 are cases without enhancing tumour where ET was predicted, 3 are missed ET,
 and 3 are misplaced ET; an ET-volume relabelling rule alone changes the ET mean by at most +0.005,
