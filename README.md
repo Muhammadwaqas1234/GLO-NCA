@@ -29,9 +29,9 @@ are contributions of this work:
 
 1. **Accuracy at a small size.** How close does a three-level NCA cascade with about 52,000 parameters
    come to much larger models in adult glioma segmentation (WT, TC, ET) on multi-parametric MRI,
-   measured as the gap in mean Dice to published results on the same official validation set? Internal
-   test (189 patients) and the official BraTS 2023 validation on Synapse (219 cases); the published
-   results are context, not a controlled comparison.
+   measured as the gap in mean Dice to published results on the same official validation set? Official
+   BraTS 2023 validation on Synapse (219 cases); the published results are context, not a controlled
+   comparison.
 2. **Information transport.** How far does information travel in the model, and how do accuracy and run
    time depend on the number of NCA steps? `glo-analyze erf`, `perturb` and `steps`.
 3. **Cost and inference choices.** What does the model cost to run, and how much accuracy comes from the
@@ -40,64 +40,15 @@ are contributions of this work:
 
 GLO-NCA is trained once (seed 42) with a fixed patient split and a frozen evaluation protocol. Larger
 models are compared through their published results on the BraTS 2023 adult glioma validation set, not
-retrained. Data: BraTS 2021 adult glioma for training and
-the internal test; BraTS 2023 adult glioma validation for the external evaluation.
-
-## Results of the first version
-
-The two-level first version (30,138 parameters, published as release v1.1.0); the results of the
-final three-level GLO-NCA follow when its training is complete.
-
-BraTS 2021: 1,251 glioma cases, seeded random split of 875 training, 187 validation and
-189 test patients. Configuration `configs/experiments/brats2021_res96_long.yaml`
-(96³ working resolution, augmentation, 150 epochs); best validation epoch 137 (mean Dice 0.830).
-The test patients were never used for training, model selection or tuning.
-
-| Test setting (189 patients) | WT Dice | TC Dice | ET Dice | Mean Dice |
-|---|---|---|---|---|
-| Single pass, 96³ | 0.893 | 0.863 | 0.754 | 0.837 |
-| Ensemble ×4 + test-time flips, 96³ | 0.894 | 0.864 | 0.756 | 0.838 |
-| **Ensemble ×4 + flips, post-processed, full resolution** | **0.921** | **0.895** | **0.817** | **0.878** |
-
-| Region (post-processed, full resolution) | IoU | HD95 mean (mm) | HD95 median (mm) | Median Dice |
-|---|---|---|---|---|
-| WT | 0.860 | 4.93 | 2.24 | 0.944 |
-| TC | 0.834 | 5.23 | 1.73 | 0.949 |
-| ET | 0.723 | 4.49 (184 of 189 cases) | 2.00 | 0.872 |
-
-- The first two rows are scored on the 96³ grid with the v7 Dice formula (an absent region scores 0).
-- The last row and the second table come from one evaluation (`evaluate.py --hd95-surface`):
-  thresholds WT/TC/ET 0.65/0.65/0.60 and small-lesion clean-up 400/25/400 voxels, both chosen
-  on validation; predictions resampled to the original 240×240×155 scans; BraTS scoring, where an
-  empty prediction of an absent region scores Dice 1.
-- HD95 is surface-based, in mm, in the medpy convention (one 95th percentile over the surface
-  distances of both directions, as `medpy.metric.binary.hd95`); for ET it is undefined in the 5 cases
-  where exactly one of the two masks is empty.
-- The ensemble passes are stochastic: the training run's own final test of the same setting gave
-  0.880 mean Dice (0.921 / 0.896 / 0.823).
-- Training: 55.8 h on one NVIDIA L4 (GCP Spot, no preemptions); peak GPU memory 10.4 GB.
-- Run history: the run was paused and resumed with changed settings (`train.log`). It validated
-  every 5 epochs until epoch 38 and every epoch from epoch 39, which is how epoch 137 was selected;
-  early stopping was 20, then 40, then off from epoch 42.
-
-| Figure | Content |
-|---|---|
-| Training curves | training loss, learning rate and validation Dice per epoch |
-| Test summary | the three test settings above and the official HD95 |
-| Per-case Dice | every test patient, post-processed at full resolution |
-| Example segmentations | best, median and worst test patient on the 96³ grid (ensemble ×4 + flips) |
-
-![Training curves](docs/figures/training_curves.png)
-![Test summary](docs/figures/test_summary.png)
-![Per-case Dice](docs/figures/test_per_case.png)
-![Example segmentations](docs/figures/test_examples.png)
+retrained. Data: BraTS 2021 adult glioma for training; BraTS 2023 adult glioma validation for the evaluation.
 
 ## Official BraTS 2023 validation (Synapse leaderboard)
 
-The model above was submitted to the **BraTS 2023 Adult Glioma continuous evaluation** on Synapse
-(219 validation cases, labels withheld, scored by the organisers; submission 9783550), with the same
-setting as the post-processed test row: ensemble ×4 + flips, thresholds 0.65/0.65/0.60, clean-up
-400/25/400 voxels, full resolution (`predict.py`).
+The first version of GLO-NCA (two levels, 30,138 parameters, published as release v1.1.0; the final
+three-level model follows when its training is complete) was submitted to the **BraTS 2023 Adult
+Glioma continuous evaluation** on Synapse (219 validation cases, labels withheld, scored by the
+organisers; submission 9783550) with ensemble ×4 + flips, thresholds 0.65/0.65/0.60, clean-up
+400/25/400 voxels and full resolution (`predict.py`).
 
 | Metric | WT | TC | ET | Mean |
 |---|---|---|---|---|
@@ -128,13 +79,6 @@ coarse levels or global-context block (submission 9785335; `brats2021_res96_fixe
 10,272 parameters). Both use their own validation-tuned thresholds, ensemble ×4 + flips, full
 resolution and no ET relabelling.
 
-| Dice | With context | Local-only | Difference |
-|---|---|---|---|
-| WT | 0.909 | 0.884 | +0.025 |
-| TC | 0.855 | 0.801 | +0.054 |
-| ET | 0.784 | 0.779 | +0.005 |
-| **Mean** | **0.849** | **0.821** | **+0.028** |
-
 | Lesion-wise Dice (BraTS 2023 ranking metric) | With context | Local-only | Difference |
 |---|---|---|---|
 | WT | 0.879 | 0.647 | +0.232 |
@@ -149,8 +93,8 @@ resolution and no ET relabelling.
 | False whole-tumour lesions, total | 7 | 209 |
 | False ET lesions, total | 13 | 72 |
 
-Paired over the 199 patients, context raises the mean Dice by 0.031 (95% CI 0.019–0.043,
-p = 1.2 × 10⁻¹²) and the mean lesion-wise Dice by 0.126 (95% CI 0.102–0.150, p = 8.8 × 10⁻²¹).
+Paired over the 199 patients, context raises the mean lesion-wise Dice by 0.126 (95% CI
+0.102–0.150, p = 8.8 × 10⁻²¹).
 Without context, the model marks tumour where there is none: 209 false whole-tumour lesions
 across 219 cases, against 7 with context.
 
@@ -232,8 +176,8 @@ downloads the three files and `SHA256SUMS` from the release (or uses them if pre
 `release/glo-nca-brats2021-res96/`), refuses files whose hashes do not match, scores the 189 test
 patients with the reported setting (ensemble x4 + flips, thresholds 0.65/0.65/0.60, clean-up
 400/25/400, full resolution, BraTS empty-region rule, independent region masks, surface HD95 in the
-medpy convention) and checks Dice within ±0.01 and HD95 within ±0.5 mm of the table above, with all
-189 cases scored; the historical ensemble passes were not seeded. See the release notes of v1.1.0 for the model's
+medpy convention) and checks Dice within ±0.01 and HD95 within ±0.5 mm of the values recorded with
+release v1.1.0, with all 189 cases scored; the historical ensemble passes were not seeded. See the release notes of v1.1.0 for the model's
 data, intended use and limitations.
 
 ## Train locally
@@ -400,7 +344,7 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 
 | Part | State |
 |---|---|
-| First model version (two levels; BraTS 2021 internal test and BraTS 2023 validation) | done; weights published as release v1.1.0 |
+| First model version (two levels; BraTS 2023 validation) | done; weights published as release v1.1.0 |
 | Code corrections from external reviews and an independent audit | done; tested (`tests/`) |
 | GLO-NCA final model (three levels, global-context block) | configured and tested; training next |
 | Lesion-wise Dice and HD95 (BraTS 2023 form) | done (`evaluate.py --lesion-wise`) |
