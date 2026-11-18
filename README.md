@@ -122,21 +122,37 @@ submission 9783820:
 On the same validation set, the BraTS 2021 and 2022 winners (nnU-Net based ensembles) report Dice
 0.928/0.878/0.845 and 0.927/0.875/0.844 (WT/TC/ET).
 
-**Local-only variant (no context mechanisms).** The same validation set, scored by the organisers
-(submission 9785335): a single-level NCA without SE, spatial gate, coarse levels or global-context
-block (`brats2021_res96_fixed_noglobal.yaml`, 10,272 parameters), with its own validation-tuned
-thresholds, ensemble ×4 + flips, full resolution and no ET relabelling.
+**With and without context.** The same validation set, scored by the organisers: GLO-NCA with its
+context mechanisms (submission 9783550) against a local-only variant without SE, spatial gate,
+coarse levels or global-context block (submission 9785335; `brats2021_res96_fixed_noglobal.yaml`,
+10,272 parameters). Both use their own validation-tuned thresholds, ensemble ×4 + flips, full
+resolution and no ET relabelling.
 
-| Metric | WT | TC | ET | Mean |
-|---|---|---|---|---|
-| Dice | 0.884 | 0.801 | 0.779 | 0.821 |
-| HD95 (mm) | 20.62 | 27.46 | 25.66 | 24.58 |
-| Lesion-wise Dice | 0.647 | 0.750 | 0.723 | 0.707 |
-| Lesion-wise HD95 (mm) | 110.79 | 49.64 | 53.85 | 71.43 |
-| False-positive lesions per case | 0.95 | 0.15 | 0.33 | |
+| Dice | With context | Local-only | Difference |
+|---|---|---|---|
+| WT | 0.909 | 0.884 | +0.025 |
+| TC | 0.855 | 0.801 | +0.054 |
+| ET | 0.784 | 0.779 | +0.005 |
+| **Mean** | **0.849** | **0.821** | **+0.028** |
 
-Without context, mean Dice is 0.028 lower than the first GLO-NCA version (0.849), and the lesion-wise
-WT Dice falls from 0.879 to 0.647: on average almost one spurious whole-tumour lesion per case.
+| Lesion-wise Dice (BraTS 2023 ranking metric) | With context | Local-only | Difference |
+|---|---|---|---|
+| WT | 0.879 | 0.647 | +0.232 |
+| TC | 0.831 | 0.750 | +0.081 |
+| ET | 0.775 | 0.723 | +0.052 |
+| **Mean** | **0.828** | **0.707** | **+0.121** |
+
+| Boundary errors and false lesions | With context | Local-only |
+|---|---|---|
+| WT HD95, mean | 6.37 mm | 20.62 mm |
+| Cases with WT HD95 > 20 mm | 15 | 65 |
+| False whole-tumour lesions, total | 7 | 209 |
+| False ET lesions, total | 13 | 72 |
+
+Paired over the 199 patients, context raises the mean Dice by 0.031 (95% CI 0.019–0.043,
+p = 1.2 × 10⁻¹²) and the mean lesion-wise Dice by 0.126 (95% CI 0.102–0.150, p = 8.8 × 10⁻²¹).
+Without context, the model marks tumour where there is none: 209 false whole-tumour lesions
+across 219 cases, against 7 with context.
 
 Per-case Dice below 0.50 (standard Dice): WT 1, TC 9, ET 22 of 219 cases; Dice 0: TC 2, ET 13.
 Of the 13 ET zeros, 7 are cases without enhancing tumour where ET was predicted, 3 are missed ET,
