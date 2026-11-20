@@ -21,17 +21,15 @@ are contributions of this work:
 | Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
-| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean Dice 0.854) |
+| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean lesion-wise Dice 0.828) |
 | Analysis | Paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 57 unit and 31 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
 
-1. **Accuracy at a small size.** How close does a three-level NCA cascade with about 52,000 parameters
-   come to much larger models in adult glioma segmentation (WT, TC, ET) on multi-parametric MRI,
-   measured as the gap in mean Dice to published results on the same official validation set? Official
-   BraTS 2023 validation on Synapse (219 cases); the published results are context, not a controlled
-   comparison.
+1. **Accuracy at a small size.** How accurately does a three-level NCA cascade with about 52,000
+   parameters segment adult glioma (WT, TC, ET) on multi-parametric MRI, measured with the official
+   lesion-wise Dice on the BraTS 2023 validation set on Synapse (219 cases)?
 2. **Information transport.** How far does information travel in the model, and how do accuracy and run
    time depend on the number of NCA steps? `glo-analyze erf`, `perturb` and `steps`.
 3. **Cost and inference choices.** What does the model cost to run, and how much accuracy comes from the
@@ -52,9 +50,8 @@ organisers; submission 9783550) with ensemble ×4 + flips, thresholds 0.65/0.65/
 
 | Metric | WT | TC | ET | Mean |
 |---|---|---|---|---|
-| Dice | 0.909 | 0.855 | 0.784 | 0.849 |
-| HD95 (mm) | 6.37 | 9.41 | 22.98 | 12.92 |
 | Lesion-wise Dice | 0.879 | 0.831 | 0.775 | 0.828 |
+| HD95 (mm) | 6.37 | 9.41 | 22.98 | 12.92 |
 | Lesion-wise HD95 (mm) | 17.51 | 20.31 | 30.54 | 22.79 |
 | Sensitivity | 0.921 | 0.869 | 0.840 | |
 | Specificity | 0.999 | 0.999 | 0.999 | |
@@ -65,13 +62,9 @@ submission 9783820:
 
 | Metric | WT | TC | ET | Mean |
 |---|---|---|---|---|
-| Dice | 0.909 | 0.855 | 0.797 | 0.854 |
-| HD95 (mm) | 6.37 | 9.41 | 24.29 | 13.36 |
 | Lesion-wise Dice | 0.879 | 0.831 | 0.794 | 0.834 |
+| HD95 (mm) | 6.37 | 9.41 | 24.29 | 13.36 |
 | Lesion-wise HD95 (mm) | 17.51 | 20.31 | 27.73 | 21.85 |
-
-On the same validation set, the BraTS 2021 and 2022 winners (nnU-Net based ensembles) report Dice
-0.928/0.878/0.845 and 0.927/0.875/0.844 (WT/TC/ET).
 
 **With and without context.** The same validation set, scored by the organisers: GLO-NCA with its
 context mechanisms (submission 9783550) against a local-only variant without SE, spatial gate,
@@ -98,11 +91,9 @@ Paired over the 199 patients, context raises the mean lesion-wise Dice by 0.126 
 Without context, the model marks tumour where there is none: 209 false whole-tumour lesions
 across 219 cases, against 7 with context.
 
-Per-case Dice below 0.50 (standard Dice): WT 1, TC 9, ET 22 of 219 cases; Dice 0: TC 2, ET 13.
-Of the 13 ET zeros, 7 are cases without enhancing tumour where ET was predicted, 3 are missed ET,
-and 3 are misplaced ET; an ET-volume relabelling rule alone changes the ET mean by at most +0.005,
-because these false ET regions are as large as true small ones. Per-case scores with predicted
-volumes: `docs/results/brats2023_validation_per_case.csv`.
+Per-case lesion-wise Dice below 0.50: WT 15, TC 21, ET 30 of 219 cases; lesion-wise Dice 0: TC 2,
+ET 11. Across all cases, GLO-NCA produced 7 / 11 / 13 false-positive and missed 9 / 6 / 14 lesions
+(WT / TC / ET).
 
 ## Model
 
