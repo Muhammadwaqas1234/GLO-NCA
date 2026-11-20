@@ -8,9 +8,9 @@ package (configs, resumable training, evaluation, figures, CI) and its GCP tooli
 GLO-NCA combines four sources of context beyond a cell's neighbourhood: channel recalibration (SE,
 pooled over the whole volume), a local 7×7×7 spatial gate in every cell, two coarse cascade levels
 (24³ and 48³, a whole-brain view before the 96³ level) and an attention-pooled global-context block
-(`brats2021_res96_glonca.yaml`, 52,248 parameters). The BraTS 2023 results reported below and the
-published weights (v1.1.0) are from the first, two-level version without the global-context block
-(30,138 parameters); the final three-level model follows when its training is complete.
+(`brats2021_res96_glonca.yaml`, 52,248 parameters; GLO-NCA v2). The BraTS 2023 results below were
+obtained with GLO-NCA v1, the two-level model with SE and spatial gating (30,138 parameters), whose
+weights are published as release v1.1.0.
 
 ## Contributions of this work
 
@@ -43,8 +43,7 @@ retrained. Data: BraTS 2021 adult glioma for training; BraTS 2023 adult glioma v
 
 ## Official BraTS 2023 validation (Synapse leaderboard)
 
-The first version of GLO-NCA (two levels, 30,138 parameters, published as release v1.1.0; the final
-three-level model follows when its training is complete) was submitted to the **BraTS 2023 Adult
+GLO-NCA v1 (two levels, 30,138 parameters, release v1.1.0) was submitted to the **BraTS 2023 Adult
 Glioma continuous evaluation** on Synapse (219 validation cases, labels withheld, scored by the
 organisers; submission 9783550) with ensemble ×4 + flips, thresholds 0.65/0.65/0.60, clean-up
 400/25/400 voxels and full resolution (`predict.py`).
@@ -125,7 +124,7 @@ T1ce alone to 15 with all four sequences.
 
 | | |
 |---|---|
-| Cascade | GLO-NCA: 3 NCA levels, 24³ → 48³ → 96³ (`model.levels: 3`); the first version: 2 levels, 48³ → 96³ (32×32×24 → 64×64×48 in v7) |
+| Cascade | GLO-NCA v2: 3 NCA levels, 24³ → 48³ → 96³ (`model.levels: 3`); GLO-NCA v1: 2 levels, 48³ → 96³ |
 | NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (config `fire_rate`/`skip_prob` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
 | Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell + attention-pooled global-context block (`model.use_global`, on in GLO-NCA), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
@@ -136,7 +135,7 @@ T1ce alone to 15 with all four sequences.
 
 The base configs reproduce the original Kaggle v7 script exactly (`legacy/kaggle/kaggle_v7.py`);
 `tests/test_equivalence.py` runs both and compares losses, validation and test metrics.
-The first version uses `configs/experiments/brats2021_res96_long.yaml`.
+GLO-NCA v1 uses `configs/experiments/brats2021_res96_long.yaml`.
 
 ## Layout
 
@@ -157,11 +156,11 @@ glo_nca/                  the package (pip install -e .)
 train.py, evaluate.py     thin wrappers so the tools also run from a checkout without installing:
 predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark, analyze
 configs/                  base recipes; configs/experiments/ inherit and extend them
-reproduce.sh              reproduce the first version's test scores from the released weights (v1.1.0)
+reproduce.sh              reproduce the GLO-NCA v1 test scores from the released weights (v1.1.0)
 legacy/kaggle/            the original Kaggle scripts (v4-v7); they run against tag kaggle-v7-reference
 tests/                    unit checks, pipeline test, v7 equivalence test, synthetic data generator
 docker/, cloud/           training image; GCP scripts and systemd units
-docs/results/             per-case BraTS 2023 validation scores of the first version
+docs/results/             per-case BraTS 2023 validation scores of GLO-NCA v1
 .github/workflows/        CI: unit and pipeline tests on every push, v7 equivalence weekly
 ```
 
@@ -174,9 +173,9 @@ pip install -e .                    # the package and the glo-train, glo-evaluat
 pip install -r requirements.lock    # optional: the exact versions behind the published weights
 ```
 
-## Reproduce the first version (release v1.1.0)
+## Reproduce GLO-NCA v1 (release v1.1.0)
 
-The weights, resolved configuration and patient split of the first version are published as release
+The weights, resolved configuration and patient split of GLO-NCA v1 are published as release
 [v1.1.0](https://github.com/Muhammadwaqas1234/GLO-NCA/releases/tag/v1.1.0), with their SHA-256 hashes in `SHA256SUMS`:
 
 | File | SHA-256 |
@@ -253,10 +252,9 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 `configs/experiments/brats2021_res96_fixed.yaml` switches the corrections above on and freezes one
 evaluation protocol (ensemble ×4 + flips with case seeds, validation-tuned
 thresholds, full resolution, BraTS empty rule, nested masks, surface HD95 in the medpy convention,
-150 epochs without early stopping). The first version was trained before these corrections, with
-all of them off: the loss skipped regions absent from a crop, validation scored the live weights
-while `best.pth` holds the EMA weights, the training crop was uniformly random, and the spatial
-block is a local 7×7×7 gate rather than a global operator.
+150 epochs without early stopping). GLO-NCA v1 was trained with the original recipe; GLO-NCA v2
+builds on this configuration with a loss on every region, EMA-based checkpoint selection,
+ET-centred training crops, a third cascade level and the attention-pooled global-context block.
 
 ## Train GLO-NCA
 
@@ -361,13 +359,13 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 
 | Part | State |
 |---|---|
-| First model version (two levels; BraTS 2023 validation) | done; weights published as release v1.1.0 |
-| Code corrections from external reviews and an independent audit | done; tested (`tests/`) |
-| GLO-NCA final model (three levels, global-context block) | configured and tested; training next |
+| GLO-NCA v1 (two levels; BraTS 2023 validation) | released as v1.1.0 |
+| External code review and independent audit | completed; covered by the test suite (`tests/`) |
+| GLO-NCA v2 (three levels, global-context block) | implemented and tested (`brats2021_res96_glonca.yaml`) |
 | Lesion-wise Dice and HD95 (BraTS 2023 form) | done (`evaluate.py --lesion-wise`) |
 | Post-processing chosen on validation, 8-flip test-time augmentation | done (`evaluate.py --postprocess-search`, `predict.py --postprocess`) |
 | Overlap of the BraTS 2023 validation cases with the training data | checked with the official ID mapping: none of the 219 cases is in the BraTS 2021 training data |
 | BraTS 2023 comparisons without context and without multimodal fusion | done (submissions 9785335 and 9785340) |
-| Analyses (knock-out, attention, false positives, decomposition, steps, modalities, receptive field, GPU cost) | tools ready; run on the final model |
+| Analyses (knock-out, attention, false positives, decomposition, steps, modalities, receptive field, GPU cost) | implemented (`glo-analyze`) |
 
 
