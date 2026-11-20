@@ -8,8 +8,9 @@ package (configs, resumable training, evaluation, figures, CI) and its GCP tooli
 GLO-NCA combines four sources of context beyond a cell's neighbourhood: channel recalibration (SE,
 pooled over the whole volume), a local 7×7×7 spatial gate in every cell, two coarse cascade levels
 (24³ and 48³, a whole-brain view before the 96³ level) and an attention-pooled global-context block
-(`brats2021_res96_glonca.yaml`, 52,248 parameters). The results reported below and the published
-weights (v1.1.0) are an earlier two-level version without the global-context block (30,138 parameters).
+(`brats2021_res96_glonca.yaml`, 52,248 parameters). The BraTS 2023 results reported below and the
+published weights (v1.1.0) are from the first, two-level version without the global-context block
+(30,138 parameters); the final three-level model follows when its training is complete.
 
 ## Contributions of this work
 
@@ -18,11 +19,11 @@ are contributions of this work:
 
 | Area | This work |
 |---|---|
-| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an attention-pooled global-context block, and the 48³ → 96³ cascade configuration used here |
+| Model | The GLO-NCA cell: squeeze-and-excitation channel recalibration and a spatial gate in every NCA cell, an attention-pooled global-context block, and a three-level 24³ → 48³ → 96³ cascade |
 | Multi-modal input | Fusion of T1, contrast-enhanced T1, T2 and FLAIR as input channels of the cell state |
 | Training recipe | BraTS 2021 pipeline: foreground crop and resampling, brain-mask normalisation, focal Tversky + BCE loss over every region, ET-centred training crops, EMA weights with matching selection, augmentation |
-| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, an ET relabelling rule, and submission to the official BraTS 2023 Synapse evaluation (mean lesion-wise Dice 0.828) |
-| Analysis | Paired patient-level statistics, inference decomposition, step budget, receptive-field and perturbation analyses, cost benchmark |
+| Evaluation | Full-resolution scoring with a shared nested decoder, surface HD95 in named conventions, validation-tuned post-processing, lesion-wise Dice and HD95 in the BraTS 2023 form, and submission to the official BraTS 2023 Synapse evaluation (mean lesion-wise Dice 0.828) |
+| Analysis | Comparisons without context and without multimodal fusion on BraTS 2023, paired patient-level statistics, knock-out, global-context attention and false-positive analyses, receptive-field and perturbation analyses, cost benchmark |
 | Engineering | Installable package, resumable cloud training, reproducibility safeguards (hashes, provenance, preflight), 57 unit and 31 pipeline checks, an equivalence test against the original script, and the published weights |
 
 ## Research questions
@@ -55,16 +56,6 @@ organisers; submission 9783550) with ensemble ×4 + flips, thresholds 0.65/0.65/
 | Lesion-wise HD95 (mm) | 17.51 | 20.31 | 30.54 | 22.79 |
 | Sensitivity | 0.921 | 0.869 | 0.840 | |
 | Specificity | 0.999 | 0.999 | 0.999 | |
-
-With ET post-processing (`predict.py --et-to-ncr 0.25,5000`: a predicted ET that is below 5,000 voxels
-and below 25% of the tumour core is relabelled as necrotic core; chosen from the validation results),
-submission 9783820:
-
-| Metric | WT | TC | ET | Mean |
-|---|---|---|---|---|
-| Lesion-wise Dice | 0.879 | 0.831 | 0.794 | 0.834 |
-| HD95 (mm) | 6.37 | 9.41 | 24.29 | 13.36 |
-| Lesion-wise HD95 (mm) | 17.51 | 20.31 | 27.73 | 21.85 |
 
 **With and without context.** The same validation set, scored by the organisers: GLO-NCA with its
 context mechanisms (submission 9783550) against a local-only variant without SE, spatial gate,
@@ -100,7 +91,8 @@ It nearly eliminates spurious detections: 7 false whole-tumour lesions across al
 against 209 without context.
 
 GLO-NCA detects the tumour reliably: the lesion-wise Dice for the whole tumour is at least 0.5 in
-204 of 219 cases, and fewer than one false-positive whole-tumour lesion occurs per 30 cases.
+204 of 219 cases, and fewer than one false-positive whole-tumour lesion occurs per 30 cases. Per-case
+scores of GLO-NCA with predicted volumes: `docs/results/brats2023_validation_per_case.csv`.
 
 **With and without multimodal fusion.** The same validation set, scored by the organisers: GLO-NCA
 with all four sequences (submission 9783550) against a variant that receives contrast-enhanced T1
@@ -133,7 +125,7 @@ T1ce alone to 15 with all four sequences.
 
 | | |
 |---|---|
-| Cascade | GLO-NCA: 3 NCA levels, 24³ → 48³ → 96³ (`model.levels: 3`); the results above: 2 levels, 48³ → 96³ (32×32×24 → 64×64×48 in v7) |
+| Cascade | GLO-NCA: 3 NCA levels, 24³ → 48³ → 96³ (`model.levels: 3`); the first version: 2 levels, 48³ → 96³ (32×32×24 → 64×64×48 in v7) |
 | NCA cell | 24 channels, hidden 128, 20 + 20 steps, update probability 0.4 (config `fire_rate`/`skip_prob` 0.6 is the skip probability), dropout 0.1, kernels 7 / 3 |
 | Context blocks | squeeze-and-excitation (global over channels) + local 7×7×7 spatial gate in every cell + attention-pooled global-context block (`model.use_global`, on in GLO-NCA), added to the hidden layer after normalisation |
 | Fusion | T1, T1ce, T2 and FLAIR stacked as input channels; coarse features fused into the fine level |
@@ -144,7 +136,7 @@ T1ce alone to 15 with all four sequences.
 
 The base configs reproduce the original Kaggle v7 script exactly (`legacy/kaggle/kaggle_v7.py`);
 `tests/test_equivalence.py` runs both and compares losses, validation and test metrics.
-The results above use `configs/experiments/brats2021_res96_long.yaml`.
+The first version uses `configs/experiments/brats2021_res96_long.yaml`.
 
 ## Layout
 
@@ -165,11 +157,11 @@ glo_nca/                  the package (pip install -e .)
 train.py, evaluate.py     thin wrappers so the tools also run from a checkout without installing:
 predict.py, ...           train, evaluate, predict, make_figures, compare_runs, benchmark, analyze
 configs/                  base recipes; configs/experiments/ inherit and extend them
-reproduce.sh              reproduce the reported test table from the released weights
+reproduce.sh              reproduce the first version's test scores from the released weights (v1.1.0)
 legacy/kaggle/            the original Kaggle scripts (v4-v7); they run against tag kaggle-v7-reference
 tests/                    unit checks, pipeline test, v7 equivalence test, synthetic data generator
 docker/, cloud/           training image; GCP scripts and systemd units
-docs/                     figures, per-case results and analyses of the reported run
+docs/results/             per-case BraTS 2023 validation scores of the first version
 .github/workflows/        CI: unit and pipeline tests on every push, v7 equivalence weekly
 ```
 
@@ -179,12 +171,12 @@ docs/                     figures, per-case results and analyses of the reported
 pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121   # or the CPU index
 pip install -e .                    # the package and the glo-train, glo-evaluate, glo-predict,
                                     # glo-figures, glo-compare, glo-benchmark and glo-analyze commands
-pip install -r requirements.lock    # optional: the exact versions behind the reported results
+pip install -r requirements.lock    # optional: the exact versions behind the published weights
 ```
 
-## Reproduce the reported results
+## Reproduce the first version (release v1.1.0)
 
-The weights, resolved configuration and patient split of the reported run are published as release
+The weights, resolved configuration and patient split of the first version are published as release
 [v1.1.0](https://github.com/Muhammadwaqas1234/GLO-NCA/releases/tag/v1.1.0), with their SHA-256 hashes in `SHA256SUMS`:
 
 | File | SHA-256 |
@@ -261,7 +253,7 @@ switch them on through `base:` inheritance, and `--override section.key=value` s
 `configs/experiments/brats2021_res96_fixed.yaml` switches the corrections above on and freezes one
 evaluation protocol (ensemble ×4 + flips with case seeds, validation-tuned
 thresholds, full resolution, BraTS empty rule, nested masks, surface HD95 in the medpy convention,
-150 epochs without early stopping). The results above were produced before these corrections, with
+150 epochs without early stopping). The first version was trained before these corrections, with
 all of them off: the loss skipped regions absent from a crop, validation scored the live weights
 while `best.pth` holds the EMA weights, the training crop was uniformly random, and the spatial
 block is a local 7×7×7 gate rather than a global operator.
@@ -375,6 +367,7 @@ python tests/test_equivalence.py /tmp/syn                       # identical to t
 | Lesion-wise Dice and HD95 (BraTS 2023 form) | done (`evaluate.py --lesion-wise`) |
 | Post-processing chosen on validation, 8-flip test-time augmentation | done (`evaluate.py --postprocess-search`, `predict.py --postprocess`) |
 | Overlap of the BraTS 2023 validation cases with the training data | checked with the official ID mapping: none of the 219 cases is in the BraTS 2021 training data |
-| Analyses (decomposition, steps, modalities, receptive field, GPU cost) | tools ready; run on the final model |
+| BraTS 2023 comparisons without context and without multimodal fusion | done (submissions 9785335 and 9785340) |
+| Analyses (knock-out, attention, false positives, decomposition, steps, modalities, receptive field, GPU cost) | tools ready; run on the final model |
 
 
