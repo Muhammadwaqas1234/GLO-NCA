@@ -102,6 +102,33 @@ against 209 without context.
 GLO-NCA detects the tumour reliably: the lesion-wise Dice for the whole tumour is at least 0.5 in
 204 of 219 cases, and fewer than one false-positive whole-tumour lesion occurs per 30 cases.
 
+**With and without multimodal fusion.** The same validation set, scored by the organisers: GLO-NCA
+with all four sequences (submission 9783550) against a variant that receives contrast-enhanced T1
+only (submission 9785340; `brats2021_res96_fixed_single.yaml`, the T1, T2 and FLAIR input slots kept
+empty), with the same inference protocol.
+
+| Lesion-wise Dice | Four sequences | T1ce only | Improvement |
+|---|---|---|---|
+| WT | **0.879** | 0.741 | +0.138 |
+| TC | **0.831** | 0.775 | +0.056 |
+| ET | 0.775 | 0.775 | on par |
+| **Mean** | **0.828** | 0.764 | **+0.064** |
+
+| Lesion-wise HD95 (mm, lower is better) | Four sequences | T1ce only | Reduction |
+|---|---|---|---|
+| WT | **17.51** | 35.02 | 2.0× |
+| TC | **20.31** | 32.49 | 1.6× |
+| ET | **30.54** | 32.84 | 1.1× |
+| **Mean** | **22.79** | 33.45 | **1.5×** |
+
+Fusing the four sequences is what makes the whole tumour reliable. Paired over the 199 patients, it
+raises the mean lesion-wise Dice by 0.065 (95% CI 0.047–0.084, p = 1.4 × 10⁻¹⁹), improving 173 of 199
+patients, and lowers the mean lesion-wise HD95 by 10.6 mm (p = 4.1 × 10⁻¹⁴). The gain is concentrated
+where it is expected: the whole tumour (+0.136 lesion-wise Dice), whose peritumoral oedema is visible
+mainly on T2 and FLAIR, while the enhancing tumour, defined by contrast enhancement on T1ce, is
+segmented equally well by both models. Cases with a whole-tumour HD95 above 20 mm fall from 33 with
+T1ce alone to 15 with all four sequences.
+
 ## Model
 
 | | |
