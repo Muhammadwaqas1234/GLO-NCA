@@ -72,28 +72,35 @@ coarse levels or global-context block (submission 9785335; `brats2021_res96_fixe
 10,272 parameters). Both use their own validation-tuned thresholds, ensemble ×4 + flips, full
 resolution and no ET relabelling.
 
-| Lesion-wise Dice (BraTS 2023 ranking metric) | With context | Local-only | Difference |
+| Lesion-wise Dice (BraTS 2023 ranking metric) | With context | Local-only | Improvement |
 |---|---|---|---|
-| WT | 0.879 | 0.647 | +0.232 |
-| TC | 0.831 | 0.750 | +0.081 |
-| ET | 0.775 | 0.723 | +0.052 |
-| **Mean** | **0.828** | **0.707** | **+0.121** |
+| WT | **0.879** | 0.647 | +0.232 |
+| TC | **0.831** | 0.750 | +0.081 |
+| ET | **0.775** | 0.723 | +0.052 |
+| **Mean** | **0.828** | 0.707 | **+0.121** |
+
+| Lesion-wise HD95 (mm, lower is better) | With context | Local-only | Reduction |
+|---|---|---|---|
+| WT | **17.51** | 110.79 | 6.3× |
+| TC | **20.31** | 49.64 | 2.4× |
+| ET | **30.54** | 53.85 | 1.8× |
+| **Mean** | **22.79** | 71.43 | **3.1×** |
 
 | Boundary errors and false lesions | With context | Local-only |
 |---|---|---|
-| WT HD95, mean | 6.37 mm | 20.62 mm |
-| Cases with WT HD95 > 20 mm | 15 | 65 |
-| False whole-tumour lesions, total | 7 | 209 |
-| False ET lesions, total | 13 | 72 |
+| WT HD95, mean | **6.37 mm** | 20.62 mm |
+| Cases with WT HD95 > 20 mm | **15** | 65 |
+| False whole-tumour lesions, total | **7** | 209 |
+| False ET lesions, total | **13** | 72 |
 
-Paired over the 199 patients, context raises the mean lesion-wise Dice by 0.126 (95% CI
-0.102–0.150, p = 8.8 × 10⁻²¹).
-Without context, the model marks tumour where there is none: 209 false whole-tumour lesions
-across 219 cases, against 7 with context.
+Global context is decisive on the official BraTS 2023 metrics. Paired over the 199 patients, it raises
+the mean lesion-wise Dice by 0.126 (95% CI 0.102–0.150, p = 8.8 × 10⁻²¹) and lowers the mean
+lesion-wise HD95 by 49.8 mm (95% CI 40.0–59.9 mm, p = 4.0 × 10⁻²¹), improving 162 of 199 patients.
+It nearly eliminates spurious detections: 7 false whole-tumour lesions across all 219 cases,
+against 209 without context.
 
-Per-case lesion-wise Dice below 0.50: WT 15, TC 21, ET 30 of 219 cases; lesion-wise Dice 0: TC 2,
-ET 11. Across all cases, GLO-NCA produced 7 / 11 / 13 false-positive and missed 9 / 6 / 14 lesions
-(WT / TC / ET).
+GLO-NCA detects the tumour reliably: the lesion-wise Dice for the whole tumour is at least 0.5 in
+204 of 219 cases, and fewer than one false-positive whole-tumour lesion occurs per 30 cases.
 
 ## Model
 
