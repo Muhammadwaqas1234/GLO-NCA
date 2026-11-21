@@ -57,10 +57,9 @@ organisers; submission 9783550) with ensemble ×4 + flips, thresholds 0.65/0.65/
 | Specificity | 0.999 | 0.999 | 0.999 | |
 
 **With and without context.** The same validation set, scored by the organisers: GLO-NCA with its
-context mechanisms (submission 9783550) against a local-only variant without SE, spatial gate,
-coarse levels or global-context block (submission 9785335; `brats2021_res96_fixed_noglobal.yaml`,
-10,272 parameters). Both use their own validation-tuned thresholds, ensemble ×4 + flips, full
-resolution and no ET relabelling.
+context mechanisms (submission 9783550) against a purely local NCA without SE, spatial gate,
+coarse levels or global-context block (submission 9785335). Both use their own validation-tuned
+thresholds, ensemble ×4 + flips, full resolution and no ET relabelling.
 
 | Lesion-wise Dice (BraTS 2023 ranking metric) | With context | Local-only | Improvement |
 |---|---|---|---|

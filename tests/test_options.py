@@ -528,9 +528,9 @@ def test_ablation_configs():
     ok = (same(full, noglobal, {"USE_SE", "USE_SPATIAL", "USE_GLOBAL", "LEVELS", "STEPS"})
           and same(full, single, {"MODALITIES", "USE_GLOBAL", "LEVELS", "STEPS"})
           and full.LEVELS == 3 and single.LEVELS == 2
-          and noglobal.LEVELS == 1 and not (noglobal.USE_SE or noglobal.USE_SPATIAL or noglobal.USE_GLOBAL)
+          and noglobal.LEVELS == 3 and not (noglobal.USE_SE or noglobal.USE_SPATIAL or noglobal.USE_GLOBAL)
           and full.USE_GLOBAL and not single.USE_GLOBAL and single.MODALITIES == ["none", "t1ce", "none", "none"]
-          and (n["full"], n["noglobal"], n["single"]) == (52248, 10272, 30138) and not full.LEGACY_PATCHIFY
+          and (n["full"], n["noglobal"], n["single"]) == (52248, 45984, 30138) and not full.LEGACY_PATCHIFY
           and full.uses_final_scoring and full.FULL_RESOLUTION_EVAL and full.ENSEMBLE_N == 4)
     check("study configs: intended differences, parameter counts", ok,
           f"GLO-NCA {n['full']}, without global context {n['noglobal']}, T1ce only {n['single']}")
