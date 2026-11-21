@@ -7,6 +7,7 @@ experiment:
   name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-NOGLOBAL
 
 model:
-  levels: 1                       # the fine level alone, without the coarse level
+  levels: 1                       # the fine level alone, without the coarse level; of the inherited
+                                  # input_size only the last entry (96^3) is used
   use_se: false                   # no squeeze-and-excitation block
   use_spatial: false              # no spatial gate
