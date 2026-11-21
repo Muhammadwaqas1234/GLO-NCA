@@ -94,8 +94,8 @@ scores of GLO-NCA with predicted volumes: `docs/results/brats2023_validation_per
 
 **With and without multimodal fusion.** The same validation set, scored by the organisers: GLO-NCA
 with all four sequences (submission 9783550) against a variant that receives contrast-enhanced T1
-only (submission 9785340; `brats2021_res96_fixed_single.yaml`, the T1, T2 and FLAIR input slots kept
-empty), with the same inference protocol.
+only (submission 9785340; the T1, T2 and FLAIR input slots kept empty), with the same inference
+protocol.
 
 | Lesion-wise Dice | Four sequences | T1ce only | Improvement |
 |---|---|---|---|

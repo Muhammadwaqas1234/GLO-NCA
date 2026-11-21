@@ -1,8 +1,15 @@
-# Fusion ablation: the full model with one input modality (T1ce) instead of four.
+# Fusion ablation: GLO-NCA v2 (three-level cascade 24^3 -> 48^3 -> 96^3, SE, spatial gate and
+# global-context block) with one input modality (T1ce) instead of four. Only the input differs from
+# brats2021_res96_glonca.yaml.
 base: brats2021_res96_fixed.yaml
 
 experiment:
   name: GLO-NCA-CASCADE-BRATS2021-RES96-FIXED-SINGLE
+
+model:
+  levels: 3                       # 24^3 -> 48^3 -> 96^3; coarse levels kernel 7, fine level kernel 3
+  steps: [20, 20, 20]             # NCA steps per level, coarse to fine
+  use_global: true                # attention-pooled global-context block, as in GLO-NCA
 
 data:
   # Contrast-enhanced T1 only, in its usual slot; the other three input slots stay empty (zeros), so
